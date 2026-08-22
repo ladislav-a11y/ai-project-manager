@@ -1,0 +1,17 @@
+﻿- [ ] Vytvořit minimální funkční projekt AI Project Manager v D:\orchestrator\ai-project-manager.
+- [ ] Trello je zdroj pravdy pro stav, prioritu, zadání, feedback, další krok a poslední výsledek projektu.
+- [ ] Jediný ruční vstup uživatele je Trello Inbox; Project Manager musí umět nové Inbox položky načíst, klasifikovat a přiřadit správnému projektu.
+- [ ] Definovat jednotný projektový záznam: název, priorita 0-5, stav, hlavní zadání, otevřené bugy/feedback, další krok, připravené zadání pro orchestrátor, poslední výstup, checkpoint, blocked_by.
+- [ ] Rozšířit projektový záznam o GitHub repo reference a Google Drive reference bez duplikace zdroje pravdy.
+- [ ] Implementovat provider registry se stavy AVAILABLE, LIMITED, ERROR a retry_after.
+- [ ] Detekovat session/quota limit providera, uložit stav a checkpoint a do retry_after providera znovu nevolat.
+- [ ] Po retry_after automaticky znovu ověřit dostupnost providera a obnovit práci od posledního checkpointu.
+- [ ] Implementovat scheduler/router, který vybírá nejvyšší neblokovaný projekt podle priority 0-5 a dostupného providera.
+- [ ] Delší implementační úlohy předávat orchestrátoru v autonomous režimu s DoD a checkpointy.
+- [ ] Implementovat projektový zámek, aby dva provideři současně neupravovali stejný projekt; zámek musí být bezpečně uvolněn při chybě nebo timeoutu.
+- [ ] Scheduler nesmí volat AI bez práce; běžné polling/řízení musí fungovat lokálně bez spotřeby AI tokenů.
+- [ ] Po každém běhu synchronizovat zpět do Trella stav projektu, provider, checkpoint, důvod zastavení, retry_after, výsledek a další krok.
+- [ ] Zachovat ochranu orchestrátoru proti opakovaným permission denial/test command pokusům.
+- [ ] Přidat testy pro provider limit/retry_after, scheduler výběr priority, project locking, checkpoint resume a stavovou synchronizaci.
+- [ ] Spustit celý test suite přes orchestrátor a všechny testy musí projít.
+- [ ] Agent nesmí vytvářet git commit; commitování zůstává odpovědností orchestrátoru.

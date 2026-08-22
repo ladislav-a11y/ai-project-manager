@@ -1,0 +1,54 @@
+{
+  "permissions": {
+    "allow": [
+      "Read",
+      "Edit",
+      "Write",
+      "Glob",
+      "Grep",
+      "Bash(python:*)",
+      "Bash(python3:*)",
+      "Bash(.venv/bin/python:*)",
+      "Bash(.venv/Scripts/python.exe:*)",
+      "Bash(.venv\\Scripts\\python.exe:*)",
+      "Bash(pytest:*)",
+      "Bash(git init:*)",
+      "Bash(git status:*)",
+      "Bash(git diff:*)",
+      "Bash(git add:*)",
+      "Bash(git log:*)"
+    ],
+    "deny": [
+      "Bash(git push:*)",
+      "Bash(git reset --hard:*)",
+      "Bash(git clean -fd:*)",
+      "Bash(git clean -fdx:*)",
+      "Bash(git rebase:*)",
+      "Bash(git filter-branch:*)",
+      "Bash(git filter-repo:*)",
+      "Bash(git commit:*)",
+      "Bash(git commit --amend:*)",
+      "Bash(git reflog expire:*)",
+      "Bash(git branch -D:*)",
+      "Bash(git tag -d:*)",
+      "Bash(rm -rf .git:*)",
+      "Bash(rm -rf .git/*)",
+      "Bash(Remove-Item .git:*)",
+      "Bash(Remove-Item -Recurse -Force .git:*)",
+      "Bash(rmdir /s .git:*)"
+    ]
+  },
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"D:\\orchestrator\\ai-orchestrator\\.venv\\Scripts\\python.exe\" \"D:\\orchestrator\\ai-orchestrator\\orchestrator\\hooks\\test_command_guard.py\""
+          }
+        ]
+      }
+    ]
+  }
+}

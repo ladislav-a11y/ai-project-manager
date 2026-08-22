@@ -1,0 +1,16 @@
+[project]
+name = "ai-project-manager"
+version = "0.1.0"
+description = "Autonomous control layer over Trello and the ai-orchestrator"
+requires-python = ">=3.10"
+dependencies = ["requests>=2.31"]
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+packages = ["ai_project_manager"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
