@@ -84,3 +84,35 @@ def test_load_config_rejects_non_numeric_poll_interval():
 
     with pytest.raises(ConfigError):
         load_config(env)
+
+
+def test_load_config_defaults_orchestrator_project_and_outbox_paths():
+    config = load_config(base_env())
+
+    assert config.orchestrator.project_paths == {}
+    assert config.orchestrator.projects_root is None
+    assert config.orchestrator.spec_dir == "specs"
+    assert config.orchestrator.outbox_dir == "outbox"
+
+
+def test_load_config_parses_project_paths_and_root_and_dirs():
+    env = base_env(
+        AI_PM_PROJECT_PATHS='{"Dashboard": "/checkouts/dashboard"}',
+        AI_PM_PROJECTS_ROOT="/checkouts",
+        AI_ORCHESTRATOR_SPEC_DIR="/tmp/specs",
+        AI_ORCHESTRATOR_OUTBOX_DIR="/tmp/outbox",
+    )
+
+    config = load_config(env)
+
+    assert config.orchestrator.project_paths == {"Dashboard": "/checkouts/dashboard"}
+    assert config.orchestrator.projects_root == "/checkouts"
+    assert config.orchestrator.spec_dir == "/tmp/specs"
+    assert config.orchestrator.outbox_dir == "/tmp/outbox"
+
+
+def test_load_config_rejects_invalid_project_paths_json():
+    env = base_env(AI_PM_PROJECT_PATHS="not json")
+
+    with pytest.raises(ConfigError):
+        load_config(env)

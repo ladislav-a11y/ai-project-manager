@@ -32,11 +32,22 @@ class TrelloConfig:
 @dataclass
 class OrchestratorConfig:
     """How to invoke the ai-orchestrator process. ``command`` is the
-    argv prefix (e.g. ``["ai-orchestrator", "run", "--mode", "autonomous"]``);
-    the per-project task payload is appended/streamed to it at call time."""
+    argv prefix (e.g. ``["ai-orchestrator"]``); ``--project``, ``--goal``,
+    ``--spec`` and ``--agent`` are appended per call (see
+    ``orchestrator_runner.build_run_fn``).
+
+    ``project_paths``/``projects_root`` map a project name onto its local
+    checkout for ``--project`` - never a single hardcoded path. ``spec_dir``
+    holds the stable per-project spec file passed as ``--spec``, and
+    ``outbox_dir`` is where the result JSON is read back from after a run.
+    """
 
     command: list
     timeout_seconds: Optional[float] = None
+    project_paths: dict = field(default_factory=dict)
+    projects_root: Optional[str] = None
+    spec_dir: str = "specs"
+    outbox_dir: str = "outbox"
 
 
 @dataclass
@@ -64,6 +75,10 @@ def load_config(env: Optional[Mapping[str, str]] = None) -> Config:
       TRELLO_INBOX_LIST                            (default "Inbox")
       AI_ORCHESTRATOR_CMD                          (default "ai-orchestrator")
       AI_ORCHESTRATOR_TIMEOUT_SECONDS              (optional)
+      AI_PM_PROJECT_PATHS                          (optional JSON object: project name -> local path)
+      AI_PM_PROJECTS_ROOT                          (optional shared base dir for project checkouts)
+      AI_ORCHESTRATOR_SPEC_DIR                     (default "specs")
+      AI_ORCHESTRATOR_OUTBOX_DIR                   (default "outbox")
       AI_PM_PROVIDERS                              (default "claude")
       AI_PM_PROVIDERS_FOR_PROJECT                  (optional JSON object)
       AI_PM_POLL_INTERVAL_SECONDS                  (default "300")
@@ -86,9 +101,21 @@ def load_config(env: Optional[Mapping[str, str]] = None) -> Config:
         raise ConfigError(
             f"AI_ORCHESTRATOR_TIMEOUT_SECONDS must be a number, got {timeout_raw!r}"
         ) from exc
+    project_paths: dict = {}
+    raw_project_paths = env.get("AI_PM_PROJECT_PATHS")
+    if raw_project_paths:
+        try:
+            project_paths = json.loads(raw_project_paths)
+        except (ValueError, json.JSONDecodeError) as exc:
+            raise ConfigError(f"AI_PM_PROJECT_PATHS must be valid JSON: {exc}") from exc
+
     orchestrator = OrchestratorConfig(
         command=shlex.split(orchestrator_cmd),
         timeout_seconds=timeout_seconds,
+        project_paths=project_paths,
+        projects_root=env.get("AI_PM_PROJECTS_ROOT"),
+        spec_dir=env.get("AI_ORCHESTRATOR_SPEC_DIR", "specs"),
+        outbox_dir=env.get("AI_ORCHESTRATOR_OUTBOX_DIR", "outbox"),
     )
 
     providers = [p.strip() for p in env.get("AI_PM_PROVIDERS", "claude").split(",") if p.strip()]

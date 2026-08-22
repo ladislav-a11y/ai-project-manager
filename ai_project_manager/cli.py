@@ -72,7 +72,14 @@ def main(
         provider_registry.mark_available(name)
 
     if run_fn is None:
-        run_fn = build_run_fn(provider_registry, command=config.orchestrator.command)
+        run_fn = build_run_fn(
+            provider_registry,
+            command=config.orchestrator.command,
+            project_paths=config.orchestrator.project_paths,
+            projects_root=config.orchestrator.projects_root,
+            spec_dir=config.orchestrator.spec_dir,
+            outbox_dir=config.orchestrator.outbox_dir,
+        )
 
     logger.info(
         "starting ai-project-manager (once=%s, providers=%s, poll_interval=%ss)",
