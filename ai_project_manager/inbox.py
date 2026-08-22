@@ -19,6 +19,13 @@ from .models import ProjectRecord, ProjectStatus
 # rather than an existing one.
 DEFAULT_MATCH_THRESHOLD = 0.34
 
+# Appended to an Inbox card's description once it has been folded into a
+# project, so a later tick skips it instead of re-applying the same
+# feedback/next-step every run. The card is deliberately left in Inbox
+# (Trello stays the single source of truth / audit trail) rather than
+# moved or deleted.
+PROCESSED_MARKER = "<!-- PM-INBOX-PROCESSED -->"
+
 _WORD_RE = re.compile(r"[a-zA-Z0-9áčďéěíňóřšťúůýž]+", re.IGNORECASE)
 
 
@@ -125,6 +132,10 @@ def apply_classification(
     return project
 
 
+def _is_processed(card: dict) -> bool:
+    return PROCESSED_MARKER in (card.get("desc") or "")
+
+
 def process_inbox(
     client,
     projects: list[ProjectRecord],
@@ -132,13 +143,16 @@ def process_inbox(
     inbox_list_name: str = "Inbox",
     default_priority: int = 2,
 ) -> list[ProjectRecord]:
-    """Fetch new cards from the Trello Inbox list, classify each one and
-    fold it into the right project. Returns the list of ProjectRecords
-    that changed (new ones included) so the caller can sync them back.
+    """Fetch new (not yet processed) cards from the Trello Inbox list,
+    classify each one and fold it into the right project. Returns the
+    list of ProjectRecords that changed (new ones included) so the
+    caller can sync them back.
 
-    Processed inbox cards are archived-in-place by moving them out of
-    Inbox onto their target project's list by the caller after sync;
-    this function only performs classification/merging.
+    Each processed card is marked in-place (``PROCESSED_MARKER`` appended
+    to its description) so a later tick does not fold the same feedback
+    or next-step into a project a second time. Cards stay in Inbox as a
+    human-readable audit trail; Trello remains the single source of
+    truth throughout.
     """
     from .trello_sync import build_list_maps
 
@@ -151,9 +165,15 @@ def process_inbox(
     changed: list[ProjectRecord] = []
 
     for card in client.list_cards(inbox_list_id):
+        if _is_processed(card):
+            continue
+
         result = classifier(card, list(projects_by_name.values()))
         project = apply_classification(card, result, projects_by_name, default_priority=default_priority)
         projects_by_name[project.name] = project
         changed.append(project)
+
+        marked_desc = "\n\n".join(part for part in ((card.get("desc") or "").strip(), PROCESSED_MARKER) if part)
+        client.update_card(card["id"], desc=marked_desc)
 
     return changed

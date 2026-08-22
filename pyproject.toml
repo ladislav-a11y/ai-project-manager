@@ -5,6 +5,9 @@ description = "Autonomous control layer over Trello and the ai-orchestrator"
 requires-python = ">=3.10"
 dependencies = ["requests>=2.31"]
 
+[project.scripts]
+ai-project-manager = "ai_project_manager.cli:main"
+
 [build-system]
 requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"

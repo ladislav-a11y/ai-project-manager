@@ -14,6 +14,7 @@ retry_after, last output and next step - back onto the Trello card.
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from typing import Callable, Optional
 
@@ -23,6 +24,8 @@ from .models import ProjectRecord, ProjectStatus
 from .providers import ProviderRegistry
 from .scheduler import pick_next_project
 from .trello_sync import sync_project_to_trello
+
+logger = logging.getLogger("ai_project_manager")
 
 # run_fn performs the actual provider/orchestrator call for one project
 # and returns a result dict with any of: checkpoint, last_output,
@@ -81,6 +84,7 @@ def run_once(
         default_providers=default_providers,
     )
     if decision is None:
+        logger.info("no schedulable project with an available provider")
         return RunOutcome(ran=False, reason="no schedulable project with an available provider")
 
     project = decision.project
@@ -88,9 +92,15 @@ def run_once(
     lock_manager = lock_manager or ProjectLockManager()
     guard = guard or OrchestratorGuard()
 
+    logger.info("selected project=%r provider=%s", project.name, provider)
+
     try:
         with lock_manager.hold(project.name, holder):
             project.provider = provider
+            logger.info(
+                "dispatching project=%r to provider=%s in autonomous mode (checkpoint=%s)",
+                project.name, provider, project.checkpoint,
+            )
             try:
                 result = run_fn(project, provider)
             except Exception as exc:  # noqa: BLE001 - run failures are reported on the card, not raised
@@ -100,7 +110,12 @@ def run_once(
                 if halted:
                     project.status = ProjectStatus.BLOCKED
                     project.blocked_by = f"repeated failure: {signature}"
+                logger.warning(
+                    "run failed project=%r provider=%s error=%s halted=%s",
+                    project.name, provider, signature, halted,
+                )
                 sync_project_to_trello(client, project)
+                logger.info("synced project=%r state to trello (card=%s)", project.name, project.trello_card_id)
                 return RunOutcome(
                     ran=True,
                     project_name=project.name,
@@ -111,7 +126,12 @@ def run_once(
 
             guard.reset(project.name)
             _apply_run_result(project, result)
+            logger.info(
+                "run result project=%r provider=%s status=%s stop_reason=%s retry_after=%s",
+                project.name, provider, project.status.value, project.stop_reason, project.retry_after,
+            )
             sync_project_to_trello(client, project)
+            logger.info("synced project=%r state to trello (card=%s)", project.name, project.trello_card_id)
             return RunOutcome(
                 ran=True,
                 project_name=project.name,
@@ -119,4 +139,5 @@ def run_once(
                 reason=project.stop_reason,
             )
     except ProjectLockError as exc:
+        logger.info("project=%r locked by another worker, skipping: %s", project.name, exc)
         return RunOutcome(ran=False, project_name=project.name, provider=provider, reason=str(exc))
