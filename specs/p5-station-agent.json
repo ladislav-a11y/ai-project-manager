@@ -1,0 +1,10 @@
+{
+  "project_name": "P5 \u2014 Station Agent",
+  "mode": "autonomous",
+  "task": "",
+  "definition_of_done": [
+    ""
+  ],
+  "checkpoint": {},
+  "provider": "claude-code"
+}

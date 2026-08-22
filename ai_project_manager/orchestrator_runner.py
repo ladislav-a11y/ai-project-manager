@@ -7,22 +7,34 @@ autonomous command - it does not read a task off stdin, and it does not
 print a JSON result to stdout. A run is invoked as::
 
     <command...> --project <local-project-path> --goal <goal text> \
-        --spec <path-to-spec-file> --agent <provider>
+        --spec <path-to-spec-file> --agent <agent-name> --run-id <run-id>
 
 and its result is written as a JSON file under an outbox directory
 (``outbox/autonomous-<project-slug>*.json``), which this module reads
 back after the process exits.
 
-Two extra pieces of configuration make that contract work without any
+Several extra pieces make that contract work correctly and without any
 hardcoded single project or path:
 
 - ``project_paths``/``projects_root`` map a Trello-backed
   ``ProjectRecord`` onto the local checkout ai-orchestrator should
   operate on (see ``resolve_project_path``).
-- ``spec_dir`` holds one stable, per-project spec file (named after the
-  project's slug, overwritten every run) carrying the task/DoD/checkpoint
-  - see ``write_spec_file`` - so ai-orchestrator's own checkpoint resume
-  keys off a spec whose identity never changes between runs.
+- ``spec_dir`` holds one stable, per-project Markdown spec file (named
+  after the project's slug, overwritten every run) carrying the goal and
+  a real ``- [ ] ...`` Definition of Done checklist ai-orchestrator can
+  actually parse - see ``write_spec_file``/``parse_spec_markdown`` - so
+  ai-orchestrator's own checkpoint resume keys off a spec whose identity
+  never changes between runs.
+- every run gets a fresh ``run_id`` (passed both as ``--run-id`` and
+  embedded in the spec's metadata block) and the outbox result is only
+  ever accepted if it echoes that same run_id back - never by "newest
+  file matching the project's name" - so a stale or unrelated result
+  file can never be mistaken for this run's outcome (see
+  ``_read_outbox_result``).
+- ``outbox_dir``/``spec_dir`` are resolved to absolute paths at
+  ``build_run_fn`` time, so the directories ai-orchestrator's result is
+  written to and read back from can never silently drift with the
+  Project Manager process's own current working directory.
 
 Any sign of a session/quota limit - a non-zero exit whose output looks
 like a limit, a raised subprocess error, or an explicit
@@ -37,7 +49,7 @@ from __future__ import annotations
 import json
 import re
 import subprocess
-import time
+import uuid
 from datetime import timedelta
 from pathlib import Path
 from typing import Callable, Optional
@@ -46,19 +58,39 @@ from .models import ProjectRecord
 from .orchestrator_handoff import OrchestratorTask, build_orchestrator_task
 from .providers import ProviderRegistry, detect_limit
 
-# command (argv, already including --project/--goal/--spec/--agent) ->
-# a subprocess.CompletedProcess-like object with .returncode, .stdout,
-# .stderr. Injectable so tests never spawn a real process and callers can
-# point at any ai-orchestrator invocation shape.
+# command (argv, already including --project/--goal/--spec/--agent/
+# --run-id) -> a subprocess.CompletedProcess-like object with
+# .returncode, .stdout, .stderr. Injectable so tests never spawn a real
+# process and callers can point at any ai-orchestrator invocation shape.
 SubprocessFn = Callable[[list], "subprocess.CompletedProcess"]
 
-# (outbox_dir, project_name, since_timestamp) -> the parsed result JSON.
-# Injectable so tests can fake the outbox without touching the filesystem.
-ReadOutboxFn = Callable[[str, str, float], dict]
+# (outbox_dir, project_name, run_id) -> the parsed result JSON, matched
+# strictly by run_id. Injectable so tests can fake the outbox without
+# touching the filesystem.
+ReadOutboxFn = Callable[[str, str, str], dict]
 
 _DEFAULT_LIMIT_BACKOFF = timedelta(minutes=30)
 _DEFAULT_SPEC_DIR = "specs"
 _DEFAULT_OUTBOX_DIR = "outbox"
+
+# Project Manager's own provider registry/locking/Trello state always
+# uses its own stable provider name (e.g. "claude") - never anything
+# translated. Only the argv/spec handed to the real ai-orchestrator CLI
+# needs its agent identifier, which is not always the same string; this
+# is the single place that translation happens.
+DEFAULT_PROVIDER_AGENT_MAP = {"claude": "claude-code"}
+
+
+def map_provider_to_agent(provider: str, provider_agent_map: Optional[dict] = None) -> str:
+    """Translate a Project Manager provider name into the agent
+    identifier ai-orchestrator's ``--agent`` expects. Unknown providers
+    pass through unchanged."""
+    mapping = provider_agent_map if provider_agent_map is not None else DEFAULT_PROVIDER_AGENT_MAP
+    return mapping.get(provider, provider)
+
+
+def _default_run_id() -> str:
+    return uuid.uuid4().hex
 
 
 def _default_subprocess_run(command: list) -> "subprocess.CompletedProcess":
@@ -116,19 +148,95 @@ def spec_file_path(spec_dir: str, project_name: str) -> Path:
     """Stable per-project spec path - one file per project slug,
     overwritten every run - so ai-orchestrator's checkpoint resume keys
     off a spec whose identity doesn't change between runs."""
-    return Path(spec_dir) / f"{_slugify(project_name)}.json"
+    return Path(spec_dir) / f"{_slugify(project_name)}.md"
 
 
-def write_spec_file(spec_dir: str, task: OrchestratorTask) -> Path:
-    """Write the Definition of Done (plus goal/checkpoint) for this run to
-    the project's stable spec file and return its path."""
+_CHECKPOINT_BLOCK_RE = re.compile(r"<!--\s*PM-CHECKPOINT\s*(.*?)-->", re.DOTALL)
+_GOAL_SECTION_RE = re.compile(r"##\s*Goal\s*\n(.*?)\n##", re.DOTALL)
+_DOD_ITEM_RE = re.compile(r"^- \[ \] (.+)$", re.MULTILINE)
+_TITLE_RE = re.compile(r"^#\s*(.+)$", re.MULTILINE)
+_CONSTRAINTS_SECTION_RE = re.compile(r"##\s*Constraints\s*\n(.*?)(?:\n##|\n<!--|\Z)", re.DOTALL)
+
+# Committing is the orchestrator's job, run only after it has verified the
+# agent's result - never the agent's own. This is spelled out to the agent
+# in every spec so an autonomous run can never create its own git commits.
+NO_COMMIT_INSTRUCTION = (
+    "Do not run `git commit` (or `git commit --amend`) under any circumstances. "
+    "Committing the result is the orchestrator's responsibility only, performed "
+    "after it has verified your work."
+)
+
+
+def _render_spec_markdown(task: OrchestratorTask, run_id: str) -> str:
+    """Render the goal and Definition of Done as a real Markdown
+    checklist ai-orchestrator can parse (``- [ ] ...`` items), instead of
+    a JSON object serialized onto a single DoD line. Checkpoint/provider/
+    run_id metadata - needed for resume but not part of the human-
+    readable checklist - travels in a fenced HTML comment, the same
+    embedded-JSON-block pattern trello_sync.py uses for its data block."""
+    lines = [f"# {task.project_name}", "", "## Goal", "", task.task.strip(), "", "## Definition of Done", ""]
+    for item in task.definition_of_done:
+        text = (item or "").strip()
+        if text:
+            lines.append(f"- [ ] {text}")
+    lines += ["", "## Constraints", "", f"- {NO_COMMIT_INSTRUCTION}"]
+    meta = {
+        "run_id": run_id,
+        "checkpoint": task.checkpoint,
+        "provider": task.provider,
+        "project_name": task.project_name,
+    }
+    lines += ["", "<!-- PM-CHECKPOINT", json.dumps(meta, indent=2, ensure_ascii=False), "-->", ""]
+    return "\n".join(lines)
+
+
+def parse_spec_markdown(text: str) -> dict:
+    """Parse a spec file written by ``write_spec_file`` back into its
+    parts. Used by tests (and any other consumer standing in for
+    ai-orchestrator) to verify the Markdown DoD contract round-trips."""
+    title_match = _TITLE_RE.search(text)
+    project_name = title_match.group(1).strip() if title_match else ""
+
+    goal_match = _GOAL_SECTION_RE.search(text)
+    goal = goal_match.group(1).strip() if goal_match else ""
+
+    dod = [item.strip() for item in _DOD_ITEM_RE.findall(text)]
+
+    constraints_match = _CONSTRAINTS_SECTION_RE.search(text)
+    constraints = constraints_match.group(1).strip() if constraints_match else ""
+
+    meta = {}
+    checkpoint_match = _CHECKPOINT_BLOCK_RE.search(text)
+    if checkpoint_match:
+        meta = json.loads(checkpoint_match.group(1))
+
+    return {
+        "project_name": project_name,
+        "goal": goal,
+        "definition_of_done": dod,
+        "constraints": constraints,
+        "checkpoint": meta.get("checkpoint", {}),
+        "provider": meta.get("provider"),
+        "run_id": meta.get("run_id"),
+    }
+
+
+def write_spec_file(spec_dir: str, task: OrchestratorTask, run_id: str) -> Path:
+    """Write the goal and Definition of Done checklist (plus checkpoint/
+    run_id metadata) for this run to the project's stable spec file and
+    return its path."""
     path = spec_file_path(spec_dir, task.project_name)
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(task.to_dict(), indent=2), encoding="utf-8")
+    path.write_text(_render_spec_markdown(task, run_id), encoding="utf-8")
     return path
 
 
-def _read_outbox_result(outbox_dir: str, project_name: str, since_ts: float) -> dict:
+def _read_outbox_result(outbox_dir: str, project_name: str, run_id: str) -> dict:
+    """Read this run's result from the outbox, matched strictly by the
+    run_id this run was launched with - never by "the newest file whose
+    name matches the project" - so a stale result from a previous run,
+    or one for a similarly-named project, can never be mistaken for this
+    run's outcome."""
     slug = _slugify(project_name)
     outbox = Path(outbox_dir)
     candidates = sorted(
@@ -138,17 +246,22 @@ def _read_outbox_result(outbox_dir: str, project_name: str, since_ts: float) -> 
     )
     if not candidates:
         raise FileNotFoundError(
-            f"no outbox result found for project {project_name!r} in {outbox_dir!r} "
+            f"no outbox result found for project {project_name!r} run_id={run_id!r} in {outbox_dir!r} "
             f"(expected autonomous-{slug}*.json)"
         )
-    newest = candidates[0]
-    if newest.stat().st_mtime < since_ts - 1.0:
-        raise FileNotFoundError(
-            f"outbox result for project {project_name!r} in {outbox_dir!r} is stale "
-            "(last written before this run started) - ai-orchestrator may not have produced a new result"
-        )
-    with newest.open("r", encoding="utf-8") as handle:
-        return json.load(handle)
+    for candidate in candidates:
+        try:
+            with candidate.open("r", encoding="utf-8") as handle:
+                payload = json.load(handle)
+        except (ValueError, json.JSONDecodeError):
+            continue
+        if payload.get("run_id") == run_id:
+            return payload
+    raise FileNotFoundError(
+        f"no outbox result matched run_id={run_id!r} for project {project_name!r} in {outbox_dir!r} "
+        f"({len(candidates)} candidate file(s) found but none echoed this run's run_id - "
+        "ai-orchestrator may not have finished yet, or wrote a stale/foreign result)"
+    )
 
 
 def _mark_limited_result(
@@ -191,17 +304,27 @@ def build_run_fn(
     subprocess_run: SubprocessFn = _default_subprocess_run,
     read_outbox: ReadOutboxFn = _read_outbox_result,
     definition_of_done: Optional[list] = None,
-    clock: Callable[[], float] = time.time,
+    run_id_fn: Callable[[], str] = _default_run_id,
+    provider_agent_map: Optional[dict] = None,
 ):
     """Build a ``run_fn(project, provider) -> dict`` that dispatches to the
-    real ai-orchestrator ``--project``/``--goal``/``--spec``/``--agent``
-    autonomous CLI, carrying the project's goal/DoD/checkpoint via a
-    stable per-project spec file, and reads the result back from the
-    outbox instead of assuming JSON on stdout.
+    real ai-orchestrator ``--project``/``--goal``/``--spec``/``--agent``/
+    ``--run-id`` autonomous CLI, carrying the project's goal/DoD/checkpoint
+    via a stable per-project Markdown spec file, and reads the result back
+    from the outbox - matched strictly by this run's run_id - instead of
+    assuming JSON on stdout.
+
+    ``spec_dir``/``outbox_dir`` are resolved to absolute paths here, once,
+    so the directories ai-orchestrator is told to write to and that this
+    process later reads back from can never drift with either process's
+    working directory changing between the two.
     """
+    abs_spec_dir = str(Path(spec_dir).resolve())
+    abs_outbox_dir = str(Path(outbox_dir).resolve())
 
     def run_fn(project: ProjectRecord, provider: str) -> dict:
-        task = build_orchestrator_task(project, definition_of_done=definition_of_done, provider=provider)
+        agent_name = map_provider_to_agent(provider, provider_agent_map)
+        task = build_orchestrator_task(project, definition_of_done=definition_of_done, provider=agent_name)
 
         try:
             project_path = resolve_project_path(
@@ -210,16 +333,16 @@ def build_run_fn(
         except ProjectPathError as exc:
             raise OrchestratorProcessError(str(exc)) from exc
 
-        spec_path = write_spec_file(spec_dir, task)
+        run_id = run_id_fn()
+        spec_path = write_spec_file(abs_spec_dir, task, run_id)
 
         full_command = list(command) + [
             "--project", project_path,
             "--goal", task.task,
             "--spec", str(spec_path),
-            "--agent", provider,
+            "--agent", agent_name,
+            "--run-id", run_id,
         ]
-
-        started_at = clock()
 
         try:
             completed = subprocess_run(full_command)
@@ -243,7 +366,7 @@ def build_run_fn(
             )
 
         try:
-            payload = read_outbox(outbox_dir, task.project_name, started_at)
+            payload = read_outbox(abs_outbox_dir, task.project_name, run_id)
         except (FileNotFoundError, ValueError, json.JSONDecodeError) as exc:
             raise OrchestratorProcessError(f"could not read ai-orchestrator outbox result: {exc}") from exc
 

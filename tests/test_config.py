@@ -1,3 +1,5 @@
+import os
+
 import pytest
 
 from ai_project_manager.config import ConfigError, load_config
@@ -91,8 +93,12 @@ def test_load_config_defaults_orchestrator_project_and_outbox_paths():
 
     assert config.orchestrator.project_paths == {}
     assert config.orchestrator.projects_root is None
-    assert config.orchestrator.spec_dir == "specs"
-    assert config.orchestrator.outbox_dir == "outbox"
+    # Always absolute - never a bare relative "specs"/"outbox" that would
+    # resolve against whatever the process's cwd happens to be later.
+    assert os.path.isabs(config.orchestrator.spec_dir)
+    assert config.orchestrator.spec_dir == os.path.abspath("specs")
+    assert os.path.isabs(config.orchestrator.outbox_dir)
+    assert config.orchestrator.outbox_dir == os.path.abspath("outbox")
 
 
 def test_load_config_parses_project_paths_and_root_and_dirs():
@@ -107,8 +113,9 @@ def test_load_config_parses_project_paths_and_root_and_dirs():
 
     assert config.orchestrator.project_paths == {"Dashboard": "/checkouts/dashboard"}
     assert config.orchestrator.projects_root == "/checkouts"
-    assert config.orchestrator.spec_dir == "/tmp/specs"
-    assert config.orchestrator.outbox_dir == "/tmp/outbox"
+    # A relative-looking override is still normalized to an absolute path.
+    assert config.orchestrator.spec_dir == os.path.abspath("/tmp/specs")
+    assert config.orchestrator.outbox_dir == os.path.abspath("/tmp/outbox")
 
 
 def test_load_config_rejects_invalid_project_paths_json():

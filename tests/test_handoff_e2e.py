@@ -17,7 +17,7 @@ from datetime import timedelta, datetime, timezone
 from ai_project_manager.daemon import run_tick
 from ai_project_manager.lock import ProjectLockManager
 from ai_project_manager.models import ProjectRecord, ProjectStatus
-from ai_project_manager.orchestrator_runner import build_run_fn
+from ai_project_manager.orchestrator_runner import build_run_fn, parse_spec_markdown
 from ai_project_manager.providers import ProviderRegistry, ProviderState
 from ai_project_manager.trello_client import InMemoryTrelloClient
 from ai_project_manager.trello_sync import build_list_maps, project_from_card, sync_project_to_trello
@@ -33,17 +33,19 @@ def _args_to_dict(argv):
 
 
 def _fake_ai_orchestrator(outbox_dir, responses):
-    """A stand-in ai-orchestrator process: reads the --spec file, looks up
-    a scripted response by project name, and writes it to the outbox -
-    the real process's actual contract."""
+    """A stand-in ai-orchestrator process: reads the --spec Markdown file,
+    looks up a scripted response by project name, and writes it to the
+    outbox tagged with this run's run_id - the real process's actual
+    contract (see orchestrator_runner.py)."""
     calls = []
 
     def subprocess_run(command):
         args = _args_to_dict(command)
         calls.append(command)
-        spec = json.loads(open(args["spec"], encoding="utf-8").read())
+        spec = parse_spec_markdown(open(args["spec"], encoding="utf-8").read())
         project_name = spec["project_name"]
-        response = responses[project_name]
+        response = dict(responses[project_name])
+        response["run_id"] = args["run-id"]
 
         slug = project_name.strip().lower().replace(" ", "-")
         outbox_dir.mkdir(parents=True, exist_ok=True)
@@ -99,7 +101,10 @@ def test_project_manager_hands_off_to_orchestrator_and_syncs_result_back(tmp_pat
     args = _args_to_dict(calls[0])
     assert args["project"] == str(tmp_path / "dashboard-checkout")
     assert args["goal"] == "Implement the live status widget"
-    assert args["agent"] == "claude"
+    # PM's own provider name is "claude"; the real ai-orchestrator CLI
+    # expects its agent identifier, "claude-code" (item 5).
+    assert args["agent"] == "claude-code"
+    assert args["run-id"]
 
     id_to_name, _ = build_list_maps(client)
     reloaded = project_from_card(client.get_card(project.trello_card_id), id_to_name)
@@ -154,7 +159,7 @@ def test_project_manager_resumes_from_checkpoint_after_provider_limit_via_real_c
 
     assert outcome_2.ran is True
     assert registry.get_status("claude").state == ProviderState.AVAILABLE
-    spec = json.loads(open(_args_to_dict(calls[0])["spec"], encoding="utf-8").read())
+    spec = parse_spec_markdown(open(_args_to_dict(calls[0])["spec"], encoding="utf-8").read())
     assert spec["checkpoint"] == {"step": 5}
 
     id_to_name, _ = build_list_maps(client)

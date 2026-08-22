@@ -1,0 +1,12 @@
+- [x] Opravit převod Trello ProjectRecord na skutečný neprázdný goal/task pro ai-orchestrator.
+- [x] Opravit generování spec souboru: autonomous musí dostat checklist/Markdown DoD ve formátu, který ai-orchestrator skutečně parsuje; neposílat JSON objekt jako jeden DoD řádek.
+- [x] Nikdy nespouštět autonomous, pokud je task/goal prázdný nebo DoD neobsahuje žádný skutečný požadavek; takový stav ukončit bez spotřeby AI tokenů a s jasnou diagnostikou.
+- [x] Z Trello karty použít hlavní zadání, otevřené bugy/feedback a další krok pro sestavení konkrétního zadání.
+- [x] Opravit čtení výsledku z absolutního outbox adresáře ai-orchestratoru, ne z relativního outboxu Project Manageru.
+- [x] Výsledek párovat s konkrétním právě spuštěným autonomous run ID, ne podle názvu projektu nebo patternu autonomous-p5-station-agent.
+- [x] Sjednotit provider/agent názvy: Project Manager může používat provider claude, ale při volání ai-orchestratoru jej správně mapovat na claude-code.
+- [x] Zachovat checkpoint resume, retry_after, session-limit detekci, project locking a Trello sync.
+- [x] Přidat regresní test na skutečný Station Agent payload: goal nesmí být "{", task nesmí být prázdný a DoD nesmí obsahovat prázdný řetězec.
+- [x] Přidat end-to-end test skutečného CLI kontraktu a načtení outbox výsledku podle run ID.
+- [ ] Spustit celý test suite a všechny testy musí projít. (ověřuje orchestrátor po dokončení běhu)
+- [x] Agent nesmí vytvářet git commit; commitování zůstává odpovědností orchestrátoru.

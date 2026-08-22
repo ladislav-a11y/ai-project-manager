@@ -33,6 +33,15 @@ def needs_orchestrator_handoff(
     return len(project.orchestrator_ready_task or "") >= threshold
 
 
+class InvalidTaskError(RuntimeError):
+    """Raised when a project has no real work to hand to the autonomous
+    orchestrator - no goal/task text at all, and/or a Definition of Done
+    with no concrete requirement (e.g. an all-blank list). Starting an
+    autonomous run in that state cannot do anything useful and only
+    burns AI tokens, so this is checked and refused before any dispatch
+    happens - see ``build_orchestrator_task``."""
+
+
 @dataclass
 class OrchestratorTask:
     """The payload handed to the autonomous orchestrator for one run."""
@@ -55,10 +64,63 @@ class OrchestratorTask:
         }
 
 
-def _default_dod(project: ProjectRecord) -> list:
-    items = [project.next_step] if project.next_step else []
-    items.extend(project.open_feedback)
-    return items or [project.main_task]
+def _goal_text(project: ProjectRecord) -> str:
+    """Build the concrete goal handed to ai-orchestrator.
+
+    Prefers an already-prepared ``orchestrator_ready_task``. Otherwise
+    assembles one from the Trello card's main task, open feedback/bugs
+    and next step, so a project is never handed off with an empty goal
+    just because nobody filled in ``orchestrator_ready_task`` yet."""
+    if project.orchestrator_ready_task and project.orchestrator_ready_task.strip():
+        return project.orchestrator_ready_task.strip()
+
+    parts = []
+    if project.main_task and project.main_task.strip():
+        parts.append(project.main_task.strip())
+    open_feedback = [f.strip() for f in project.open_feedback if f and f.strip()]
+    if open_feedback:
+        parts.append("Open feedback/bugs:\n" + "\n".join(f"- {item}" for item in open_feedback))
+    if project.next_step and project.next_step.strip():
+        parts.append(f"Next step: {project.next_step.strip()}")
+    return "\n\n".join(parts)
+
+
+def _default_dod(project: ProjectRecord, goal_text: str) -> list:
+    """Concrete DoD requirements pulled from the Trello card: the main
+    task, the next step and every open feedback/bug item - never a
+    blank placeholder. Falls back to the resolved goal text itself only
+    when none of those are set, so a project with just a prepared
+    ``orchestrator_ready_task`` still gets a non-empty DoD."""
+    items = []
+    if project.main_task and project.main_task.strip():
+        items.append(project.main_task.strip())
+    if project.next_step and project.next_step.strip():
+        items.append(project.next_step.strip())
+    items.extend(f.strip() for f in project.open_feedback if f and f.strip())
+    if not items and goal_text:
+        items.append(goal_text)
+
+    deduped: list = []
+    seen: set = set()
+    for item in items:
+        if item not in seen:
+            seen.add(item)
+            deduped.append(item)
+    return deduped
+
+
+def _validate_task(task_text: str, dod: list) -> None:
+    if not (task_text or "").strip():
+        raise InvalidTaskError(
+            "project has no goal/task text (empty orchestrator_ready_task, main_task, "
+            "open_feedback and next_step) - refusing to start an autonomous run"
+        )
+    real_items = [item for item in dod if isinstance(item, str) and item.strip()]
+    if not real_items:
+        raise InvalidTaskError(
+            "definition_of_done has no concrete requirement (empty, or blank strings only) - "
+            "refusing to start an autonomous run"
+        )
 
 
 def build_orchestrator_task(
@@ -68,12 +130,18 @@ def build_orchestrator_task(
 ) -> OrchestratorTask:
     """Build the task handed to the autonomous orchestrator: the prepared
     work, an explicit DoD it must satisfy, and the checkpoint to resume
-    from (empty for a fresh run)."""
-    dod = list(definition_of_done) if definition_of_done else _default_dod(project)
+    from (empty for a fresh run).
+
+    Raises ``InvalidTaskError`` rather than building a task with an
+    empty goal or an all-blank DoD - see ``_validate_task``.
+    """
+    task_text = _goal_text(project)
+    dod = list(definition_of_done) if definition_of_done else _default_dod(project, task_text)
+    _validate_task(task_text, dod)
     return OrchestratorTask(
         project_name=project.name,
         mode="autonomous",
-        task=project.orchestrator_ready_task or project.main_task,
+        task=task_text,
         definition_of_done=dod,
         checkpoint=dict(project.checkpoint),
         provider=provider or project.provider,
