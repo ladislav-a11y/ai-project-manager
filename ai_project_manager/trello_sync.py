@@ -87,7 +87,18 @@ def _strip_data_block(desc: str) -> str:
 
 def project_from_card(card: dict, list_id_to_name: dict[str, str]) -> ProjectRecord:
     """Build a ProjectRecord snapshot from a raw Trello card dict."""
-    data = _parse_data_block(card.get("desc", ""))
+    raw_desc = card.get("desc", "")
+    data = _parse_data_block(raw_desc)
+    notes = _strip_data_block(raw_desc)
+
+    if not any([
+        data.get("main_task"),
+        data.get("orchestrator_ready_task"),
+        data.get("next_step"),
+        data.get("open_feedback"),
+    ]) and notes:
+        data["main_task"] = notes
+        data["orchestrator_ready_task"] = notes
     priority = priority_from_labels(card.get("labels", []))
     status = status_from_list(card.get("list_id"), list_id_to_name)
 

@@ -1,0 +1,6 @@
+__pycache__/
+*.pyc
+*.bak
+runner_before_*.py
+fix_*.py
+ai_project_manager_backup_*/

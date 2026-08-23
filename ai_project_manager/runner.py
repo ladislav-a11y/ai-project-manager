@@ -24,6 +24,7 @@ from .models import ProjectRecord, ProjectStatus
 from .providers import ProviderRegistry
 from .scheduler import pick_next_project
 from .trello_sync import sync_project_to_trello
+from .slack_notify import notify
 
 logger = logging.getLogger("ai_project_manager")
 
@@ -93,6 +94,7 @@ def run_once(
     guard = guard or OrchestratorGuard()
 
     logger.info("selected project=%r provider=%s", project.name, provider)
+    notify("Selected project: " + project.name + " | Provider: " + provider)
 
     try:
         with lock_manager.hold(project.name, holder):
@@ -101,6 +103,7 @@ def run_once(
                 "dispatching project=%r to provider=%s in autonomous mode (checkpoint=%s)",
                 project.name, provider, project.checkpoint,
             )
+            notify("Dispatching: " + project.name + " | Provider: " + provider)
             try:
                 result = run_fn(project, provider)
             except Exception as exc:  # noqa: BLE001 - run failures are reported on the card, not raised
@@ -116,6 +119,7 @@ def run_once(
                 )
                 sync_project_to_trello(client, project)
                 logger.info("synced project=%r state to trello (card=%s)", project.name, project.trello_card_id)
+                notify("Provider error: " + project.name + " | " + signature)
                 return RunOutcome(
                     ran=True,
                     project_name=project.name,
