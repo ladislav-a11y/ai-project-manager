@@ -341,6 +341,7 @@ def build_run_fn(
             "--goal", task.task,
             "--spec", str(spec_path),
             "--agent", agent_name,
+            "--run-id", run_id,
             
         ]
 

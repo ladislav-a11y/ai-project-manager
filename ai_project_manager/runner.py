@@ -94,7 +94,7 @@ def run_once(
     guard = guard or OrchestratorGuard()
 
     logger.info("selected project=%r provider=%s", project.name, provider)
-    notify("Selected project: " + project.name + " | Provider: " + provider)
+    # notify("Selected project: " + project.name + " | Provider: " + provider)
 
     try:
         with lock_manager.hold(project.name, holder):
@@ -103,7 +103,7 @@ def run_once(
                 "dispatching project=%r to provider=%s in autonomous mode (checkpoint=%s)",
                 project.name, provider, project.checkpoint,
             )
-            notify("Dispatching: " + project.name + " | Provider: " + provider)
+            # notify("Dispatching: " + project.name + " | Provider: " + provider)
             try:
                 result = run_fn(project, provider)
             except Exception as exc:  # noqa: BLE001 - run failures are reported on the card, not raised

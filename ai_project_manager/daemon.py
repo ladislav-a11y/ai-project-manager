@@ -19,6 +19,7 @@ from typing import Callable, Optional
 from .inbox import process_inbox
 from .lock import ProjectLockManager
 from .providers import ProviderRegistry, ProviderState
+from .provider_state import save_provider_state
 from .runner import DEFAULT_HOLDER, RunFn, RunOutcome, run_once
 from .trello_sync import fetch_all_projects, sync_project_to_trello
 from .slack_notify import notify
@@ -87,7 +88,7 @@ def run_tick(
     """Run exactly one scheduler tick: recheck due providers, load real
     Trello state, and run at most one project. Never spends an AI token
     when there is nothing schedulable."""
-    notify("AI Project Manager scheduler tick")
+    # notify("AI Project Manager scheduler tick")
     recheck_due_providers(provider_registry, probe=probe)
 
     projects = load_projects_and_inbox(client, inbox_list_name=inbox_list_name)
@@ -111,6 +112,8 @@ def run_tick(
     else:
         logger.info("no schedulable work this tick (%s)", outcome.reason)
         _log_providers_waiting_on_retry_after(provider_registry)
+
+    save_provider_state("provider_state.json", provider_registry)
 
     return outcome
 

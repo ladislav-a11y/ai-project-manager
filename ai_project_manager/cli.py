@@ -20,6 +20,7 @@ from .config import ConfigError, load_config
 from .daemon import run_loop
 from .orchestrator_runner import build_run_fn
 from .providers import ProviderRegistry
+from .provider_state import load_provider_state
 from .trello_client import RealTrelloClient
 
 logger = logging.getLogger("ai_project_manager")
@@ -70,6 +71,8 @@ def main(
     provider_registry = ProviderRegistry()
     for name in config.providers:
         provider_registry.mark_available(name)
+
+    load_provider_state("provider_state.json", provider_registry)
 
     if run_fn is None:
         run_fn = build_run_fn(
