@@ -19,11 +19,28 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
+from email.utils import parsedate_to_datetime
 from typing import Callable, Optional
 
 
 def _utcnow() -> datetime:
     return datetime.now(timezone.utc)
+
+
+def _as_utc(value: datetime) -> datetime:
+    """Normalize legacy naive timestamps and aware timestamps to UTC.
+
+    Older integrations and deterministic test clocks may still return naive
+    datetimes.  Provider retry deadlines are persisted as timezone-aware ISO
+    values, and Python refuses to compare the two forms.  Treat a naive value
+    as UTC, which is the registry's documented clock convention.
+    """
+    if value.tzinfo is None:
+        return value.replace(tzinfo=timezone.utc)
+    return value.astimezone(timezone.utc)
+
+
+_DEFAULT_RECHECK_BACKOFF = timedelta(minutes=5)
 
 
 class ProviderState:
@@ -116,8 +133,8 @@ class ProviderRegistry:
 
     def _resolve_retry_after(self, retry_after: datetime | timedelta) -> datetime:
         if isinstance(retry_after, timedelta):
-            return self._clock() + retry_after
-        return retry_after
+            return _as_utc(self._clock()) + retry_after
+        return _as_utc(retry_after)
 
     def is_due_for_recheck(self, name: str) -> bool:
         status = self.get_status(name)
@@ -125,7 +142,7 @@ class ProviderRegistry:
             return False
         if status.retry_after is None:
             return False
-        return self._clock() >= status.retry_after
+        return _as_utc(self._clock()) >= _as_utc(status.retry_after)
 
     def is_available(self, name: str) -> bool:
         """Cheap, local availability check - no network/AI call. Does
@@ -152,14 +169,25 @@ class ProviderRegistry:
         try:
             ok = probe()
         except Exception as exc:  # noqa: BLE001 - provider probes may raise anything
-            return self.mark_error(name, str(exc), retry_after=None, checkpoint=status.checkpoint)
+            # Do not call a broken probe again on every scheduler tick.
+            return self.mark_error(
+                name,
+                str(exc),
+                retry_after=_DEFAULT_RECHECK_BACKOFF,
+                checkpoint=status.checkpoint,
+            )
         if ok:
             resumed_checkpoint = dict(status.checkpoint)
             status = self.mark_available(name)
             status.checkpoint = resumed_checkpoint
             return status
         # Still not available; keep it gated a bit longer.
-        return self.mark_error(name, "recheck probe returned false", retry_after=timedelta(minutes=5), checkpoint=status.checkpoint)
+        return self.mark_error(
+            name,
+            "recheck probe returned false",
+            retry_after=_DEFAULT_RECHECK_BACKOFF,
+            checkpoint=status.checkpoint,
+        )
 
     def available_providers(self, names: Optional[list[str]] = None) -> list[str]:
         candidates = names if names is not None else self.registered_names()
@@ -172,7 +200,7 @@ class ProviderRegistry:
 # ---- Limit detection -------------------------------------------------
 
 _LIMIT_PATTERNS = re.compile(
-    r"rate limit|quota|too many requests|429|session limit|usage limit|limit exceeded",
+    r"rate limit|quota|too many requests|\b429\b|session limit|usage limit|limit exceeded",
     re.IGNORECASE,
 )
 _DEFAULT_LIMIT_BACKOFF = timedelta(minutes=30)
@@ -190,14 +218,26 @@ def detect_limit(exc: BaseException, headers: Optional[dict] = None) -> Optional
     if headers:
         retry_after_header = headers.get("Retry-After") or headers.get("retry-after")
 
-    is_limit = status_code == 429 or bool(_LIMIT_PATTERNS.search(message))
+    is_limit = str(status_code) == "429" or bool(_LIMIT_PATTERNS.search(message))
     if not is_limit:
         return None
 
     if retry_after_header is not None:
         try:
-            return timedelta(seconds=int(retry_after_header))
+            seconds = int(retry_after_header)
         except (TypeError, ValueError):
-            pass
+            try:
+                retry_at = parsedate_to_datetime(str(retry_after_header))
+                if retry_at.tzinfo is None:
+                    retry_at = retry_at.replace(tzinfo=timezone.utc)
+                seconds = max(0, (retry_at - _utcnow()).total_seconds())
+            except (TypeError, ValueError, OverflowError):
+                pass
+            else:
+                return timedelta(seconds=seconds)
+        else:
+            # A malformed negative delta must not make a limited provider
+            # immediately eligible for another request.
+            return timedelta(seconds=max(0, seconds))
 
     return _DEFAULT_LIMIT_BACKOFF

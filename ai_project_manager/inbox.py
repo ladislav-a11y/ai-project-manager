@@ -10,21 +10,23 @@ creating a new project record when nothing matches closely enough.
 from __future__ import annotations
 
 import re
+import hashlib
+import unicodedata
 from dataclasses import dataclass
 from typing import Callable, Optional
 
-from .models import ProjectRecord, ProjectStatus
+from .models import DoDItem, ProjectRecord, ProjectStatus
 
 # Below this score a card is treated as belonging to a brand-new project
 # rather than an existing one.
 DEFAULT_MATCH_THRESHOLD = 0.34
 
-# Appended to an Inbox card's description once it has been folded into a
-# project, so a later tick skips it instead of re-applying the same
-# feedback/next-step every run. The card is deliberately left in Inbox
-# (Trello stays the single source of truth / audit trail) rather than
-# moved or deleted.
+# Legacy acknowledgement used by older PM versions. Current code moves every
+# successfully processed Inbox card into the proper workflow instead of
+# leaving acknowledged cards behind.
 PROCESSED_MARKER = "<!-- PM-INBOX-PROCESSED -->"
+INBOX_RECEIPTS_KEY = "inbox_receipts"
+INBOX_SOURCE_KEY = "inbox_source"
 
 _WORD_RE = re.compile(r"[a-zA-Z0-9áčďéěíňóřšťúůýž]+", re.IGNORECASE)
 
@@ -59,6 +61,147 @@ class ClassificationResult:
 # The default is a free local heuristic; a smarter (possibly
 # AI-assisted) classifier can be swapped in without touching callers.
 ClassifierFn = Callable[[dict, list[ProjectRecord]], ClassificationResult]
+PersistProjectFn = Callable[[ProjectRecord], None]
+
+
+@dataclass(frozen=True)
+class InboxReceiptMatch:
+    """An existing board record proving that an Inbox card was handled."""
+
+    project: ProjectRecord
+    receipt: dict
+    matched_by: str
+
+
+def _normalize_source_text(text: str) -> str:
+    """Normalize editable Inbox text before computing its stable fingerprint."""
+    normalized = unicodedata.normalize("NFKC", text or "")
+    return " ".join(normalized.casefold().split())
+
+
+def inbox_content_hash(card: dict) -> str:
+    """Return a deterministic, non-secret fingerprint of an Inbox card."""
+    source_text = "\n".join(
+        (
+            _normalize_source_text(str(card.get("name") or "")),
+            _normalize_source_text(str(card.get("desc") or "")),
+        )
+    )
+    return hashlib.sha256(source_text.encode("utf-8")).hexdigest()
+
+
+def inbox_source_reference(card: dict, target_card_id: Optional[str] = None) -> dict:
+    """Build the source receipt persisted on the main-board target card.
+
+    The main Trello Inbox is writable by PM, while the separate personal
+    Inbox is not part of this client.  The source card ID remains primary;
+    URL and content hash are secondary duplicate/revision evidence.
+    """
+    source_id = str(card.get("id") or "").strip()
+    if not source_id:
+        raise ValueError("Inbox card must have a non-empty id")
+    reference = {
+        "source_system": "trello_inbox",
+        "source_card_id": source_id,
+        "content_sha256": inbox_content_hash(card),
+    }
+    source_url = str(card.get("url") or "").strip()
+    if source_url:
+        reference["source_card_url"] = source_url
+    if target_card_id:
+        reference["target_card_id"] = str(target_card_id)
+    return reference
+
+
+def _project_inbox_receipts(project: ProjectRecord):
+    extra = project.extra_data or {}
+    direct = extra.get(INBOX_SOURCE_KEY)
+    if isinstance(direct, dict):
+        yield direct
+    receipts = extra.get(INBOX_RECEIPTS_KEY)
+    if isinstance(receipts, list):
+        for receipt in receipts:
+            if isinstance(receipt, dict):
+                yield receipt
+    # Keep legacy IDs useful for cards written by older PM versions, even
+    # though those records do not carry a content hash yet.
+    legacy_ids = extra.get("processed_inbox_card_ids")
+    if isinstance(legacy_ids, list):
+        for source_id in legacy_ids:
+            if isinstance(source_id, str) and source_id:
+                yield {"source_card_id": source_id}
+
+
+def find_inbox_receipt(
+    projects: list[ProjectRecord], card: dict
+) -> Optional[InboxReceiptMatch]:
+    """Find an exact source-ID, URL, or content-hash receipt on the board.
+
+    A content-hash match is deliberately treated as a duplicate only when
+    it is exact.  Fuzzy/semantic similarity belongs to a later review step
+    and must never silently merge two different Inbox requests.
+    """
+    reference = inbox_source_reference(card)
+    source_id = reference["source_card_id"]
+    source_url = reference.get("source_card_url")
+    content_hash = reference["content_sha256"]
+    revision_match: Optional[InboxReceiptMatch] = None
+    for project in projects:
+        for receipt in _project_inbox_receipts(project):
+            if receipt.get("source_card_id") == source_id:
+                if receipt.get("content_sha256") == content_hash:
+                    return InboxReceiptMatch(project, receipt, "source_card_id")
+                revision_match = InboxReceiptMatch(project, receipt, "source_card_id_revision")
+                continue
+            if source_url and receipt.get("source_card_url") == source_url:
+                if receipt.get("content_sha256") == content_hash:
+                    return InboxReceiptMatch(project, receipt, "source_card_url")
+                revision_match = InboxReceiptMatch(project, receipt, "source_card_url_revision")
+                continue
+            if receipt.get("content_sha256") == content_hash:
+                return InboxReceiptMatch(project, receipt, "content_sha256")
+    return revision_match
+
+
+def record_inbox_receipt(
+    project: ProjectRecord,
+    card: dict,
+    *,
+    target_card_id: Optional[str] = None,
+) -> dict:
+    """Persist one idempotent Inbox receipt in the target card contract."""
+    reference = inbox_source_reference(card, target_card_id=target_card_id)
+    extra = project.extra_data if isinstance(project.extra_data, dict) else {}
+    receipts = extra.get(INBOX_RECEIPTS_KEY)
+    if not isinstance(receipts, list):
+        receipts = []
+    if not any(
+        isinstance(existing, dict)
+        and (
+            (
+                existing.get("source_card_id") == reference["source_card_id"]
+                and existing.get("content_sha256") == reference["content_sha256"]
+            )
+            or (
+                reference.get("source_card_url")
+                and existing.get("source_card_url") == reference["source_card_url"]
+                and existing.get("content_sha256") == reference["content_sha256"]
+            )
+            or existing.get("content_sha256") == reference["content_sha256"]
+        )
+        for existing in receipts
+    ):
+        receipts.append(reference)
+    extra[INBOX_RECEIPTS_KEY] = receipts
+    # Preserve the old field for backwards-compatible readback and tests.
+    legacy_ids = extra.get("processed_inbox_card_ids")
+    if not isinstance(legacy_ids, list):
+        legacy_ids = []
+    if reference["source_card_id"] not in legacy_ids:
+        legacy_ids.append(reference["source_card_id"])
+    extra["processed_inbox_card_ids"] = legacy_ids
+    project.extra_data = extra
+    return reference
 
 
 def looks_like_feedback(text: str) -> bool:
@@ -125,15 +268,60 @@ def apply_classification(
         )
 
     project = projects_by_name[result.project_name]
+    receipt_ids = list((project.extra_data or {}).get("processed_inbox_card_ids") or [])
+    card_id = card.get("id")
+    if card_id in receipt_ids:
+        return project
     if result.as_feedback:
         project.open_feedback = [*project.open_feedback, text]
     else:
         project.next_step = text
+    record_inbox_receipt(project, card, target_card_id=project.trello_card_id)
     return project
 
 
 def _is_processed(card: dict) -> bool:
     return PROCESSED_MARKER in (card.get("desc") or "")
+
+
+def _build_inbox_receipt_card(
+    card: dict,
+    target: ProjectRecord,
+    *,
+    outcome: str,
+    matched_by: Optional[str] = None,
+):
+    """Represent an Inbox source card as a durable Done receipt.
+
+    This is safe because the main board Inbox is PM-owned.  It is not used
+    for the separate personal read-only Inbox.
+    """
+    source = inbox_source_reference(card, target_card_id=target.trello_card_id)
+    details = f"Zařazeno do karty: {target.name}"
+    if outcome == "duplicate":
+        details = f"Duplicitní požadavek; již pokryto kartou: {target.name}"
+    elif outcome == "revision":
+        details = f"Nová revize požadavku; zpracováno v kartě: {target.name}"
+    if matched_by:
+        details += f" (shoda podle {matched_by})"
+    receipt = ProjectRecord(
+        name=f"Zpracováno — {card.get('name', '').strip() or 'Inbox položka'}",
+        priority=target.priority,
+        status=ProjectStatus.DONE,
+        main_task=(card.get("desc") or card.get("name") or "").strip(),
+        last_output=details,
+        dod=[DoDItem(text="Položka Inboxu byla zpracována a zařazena.", checked=True)],
+        trello_card_id=card.get("id"),
+        trello_card_url=card.get("url"),
+        trello_list_id=card.get("list_id"),
+        extra_data={
+            "inbox_receipt": source,
+            "inbox_receipt_outcome": outcome,
+            "inbox_target_card_id": target.trello_card_id,
+        },
+    )
+    receipt.transition_to(ProjectStatus.DONE)
+    return receipt
 
 
 def process_inbox(
@@ -142,17 +330,17 @@ def process_inbox(
     classifier: ClassifierFn = classify_inbox_card,
     inbox_list_name: str = "Inbox",
     default_priority: int = 2,
+    persist_project: Optional[PersistProjectFn] = None,
 ) -> list[ProjectRecord]:
     """Fetch new (not yet processed) cards from the Trello Inbox list,
     classify each one and fold it into the right project. Returns the
     list of ProjectRecords that changed (new ones included) so the
     caller can sync them back.
 
-    Each processed card is marked in-place (``PROCESSED_MARKER`` appended
-    to its description) so a later tick does not fold the same feedback
-    or next-step into a project a second time. Cards stay in Inbox as a
-    human-readable audit trail; Trello remains the single source of
-    truth throughout.
+    New work keeps the original card identity and moves to Ready/New. Input
+    folded into an existing project becomes a completed receipt card. The
+    target contract stores the Inbox card ID, making retries idempotent if a
+    write fails between persisting the target and moving the receipt.
     """
     from .trello_sync import build_list_maps
 
@@ -165,15 +353,94 @@ def process_inbox(
     changed: list[ProjectRecord] = []
 
     for card in client.list_cards(inbox_list_id):
-        if _is_processed(card):
+        if _is_processed(card) and persist_project is None:
+            continue
+
+        # Check the immutable source ID first, then URL/content hash.  This
+        # makes retries and a second copy of the same Inbox request safe
+        # without relying on an editable title or a local database.
+        previous = find_inbox_receipt(list(projects_by_name.values()), card)
+        if previous is not None:
+            target = previous.project
+            if previous.matched_by.endswith("_revision"):
+                target_card_id = previous.receipt.get("target_card_id") or target.trello_card_id
+                target = next(
+                    (
+                        candidate
+                        for candidate in projects_by_name.values()
+                        if candidate.trello_card_id == target_card_id
+                    ),
+                    target,
+                )
+                text = card.get("desc", "").strip() or card.get("name", "").strip()
+                if looks_like_feedback(text):
+                    target.open_feedback = [*target.open_feedback, text]
+                else:
+                    target.next_step = text
+                record_inbox_receipt(target, card, target_card_id=target.trello_card_id)
+                if persist_project is not None:
+                    persist_project(target)
+                    if target.trello_card_id == card.get("id"):
+                        # A new revision of a source card that is also the
+                        # target work card must remain the work card; do not
+                        # turn it into a Done receipt.
+                        continue
+                    from .trello_sync import sync_project_to_trello
+                    sync_project_to_trello(
+                        client,
+                        _build_inbox_receipt_card(
+                            card,
+                            target,
+                            outcome="revision",
+                            matched_by=previous.matched_by,
+                        ),
+                    )
+                continue
+            if target.trello_card_id == card.get("id"):
+                # A prior write may have persisted the target contract but
+                # failed before moving the original Inbox card.  Re-syncing
+                # that same card completes the intended board transition.
+                if persist_project is not None:
+                    persist_project(target)
+                continue
+            if persist_project is not None:
+                from .trello_sync import sync_project_to_trello
+                sync_project_to_trello(
+                    client,
+                    _build_inbox_receipt_card(
+                        card,
+                        target,
+                        outcome="duplicate",
+                        matched_by=previous.matched_by,
+                    ),
+                )
             continue
 
         result = classifier(card, list(projects_by_name.values()))
         project = apply_classification(card, result, projects_by_name, default_priority=default_priority)
         projects_by_name[project.name] = project
-        changed.append(project)
 
-        marked_desc = "\n\n".join(part for part in ((card.get("desc") or "").strip(), PROCESSED_MARKER) if part)
-        client.update_card(card["id"], desc=marked_desc)
+        if result.is_new_project:
+            # Move this exact card through the workflow. Never create a
+            # duplicate with a new Trello identity for the same Inbox item.
+            project.trello_card_id = card.get("id")
+            project.trello_card_url = card.get("url")
+            project.trello_list_id = card.get("list_id")
+            record_inbox_receipt(project, card, target_card_id=project.trello_card_id)
+
+        # This ordering is intentional. The marker is an acknowledgement,
+        # not merely decoration: writing it before the project would turn a
+        # transient failure of the latter write into permanent input loss.
+        if persist_project is not None:
+            persist_project(project)
+            if not result.is_new_project:
+                # The source item is itself processed work. Preserve it as a
+                # durable, identity-bound receipt in Done/Hotovo.
+                from .trello_sync import sync_project_to_trello
+                sync_project_to_trello(
+                    client,
+                    _build_inbox_receipt_card(card, project, outcome="processed"),
+                )
+        changed.append(project)
 
     return changed

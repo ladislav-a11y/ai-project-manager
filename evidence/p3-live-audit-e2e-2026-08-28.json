@@ -1,0 +1,51 @@
+{
+  "schema_version": 2,
+  "independent_live_sources": {
+    "trello_action_implementation_to_testing": {"endpoint": "/1/actions/6a91840a04ad8131ef0d155b", "date": "2026-08-28T12:50:18.457Z", "card_id": "6a8f24cd96c0f5c5e7ebe5b7", "list_before": "Pracuje se", "list_after": "Testování"},
+    "trello_action_testing_to_done": {"endpoint": "/1/actions/6a9184e34dadf6f56e5c82a7", "date": "2026-08-28T12:53:55.648Z", "card_id": "6a8f24cd96c0f5c5e7ebe5b7", "list_before": "Testování", "list_after": "Hotovo"},
+    "trello_final_card": {"endpoint": "/1/cards/6a8f24cd96c0f5c5e7ebe5b7", "date_last_activity": "2026-08-28T12:54:05.153Z", "list_name": "Hotovo"},
+    "ai_orchestrator_outbox": {"file": "D:/orchestrator/ai-orchestrator/outbox/autonomous-8c864392813049fc957a64f47363081b.json", "sha256": "0813E554A299759F0F3DDE2C0EC4267C23B484C2C7F3A499765411996632EA07", "last_modified_local": "2026-08-28T14:50:17+02:00", "run_id": "8c864392813049fc957a64f47363081b", "status": "completed", "audit_iteration": 4, "audit_performed": true, "audit_rejected_indices": [], "audit_protocol_error": false}
+  },
+  "reverification": {"trello": "Read-only GET each endpoint with TRELLO_KEY/TRELLO_TOKEN and compare card ids, dates and list transitions.", "outbox": "Recompute SHA-256 and inspect final iteration audit fields and checkpoint.run_id.", "secrets_in_receipt": false},
+  "verified_at": "2026-08-28T13:00:00Z",
+  "verification": "read-only live Trello API and ai-orchestrator outbox readback",
+  "project": {
+    "name": "P3 — AI Orchestrator: měření tokenů a nákladů běhů",
+    "trello_card_id": "6a8f24cd96c0f5c5e7ebe5b7",
+    "trello_short_link": "3w1OMmq3",
+    "priority_label": "P3"
+  },
+  "implementation_to_testing": {
+    "trello_action_id": "6a91840a04ad8131ef0d155b",
+    "at": "2026-08-28T12:50:18.457Z",
+    "from": "Pracuje se",
+    "to": "Testování",
+    "created_by_api_app": true
+  },
+  "audit_only": {
+    "authority": "ai-orchestrator",
+    "run_id": "8c864392813049fc957a64f47363081b",
+    "outbox_file": "D:/orchestrator/ai-orchestrator/outbox/autonomous-8c864392813049fc957a64f47363081b.json",
+    "status": "completed",
+    "audit_performed": true,
+    "audit_rejected_indices": [],
+    "completed_dod_indices": [0, 1, 2, 3, 4, 5, 6],
+    "tests_passed": true,
+    "test_summary": "259 passed, 2 skipped"
+  },
+  "testing_to_done": {
+    "trello_action_id": "6a9184e34dadf6f56e5c82a7",
+    "at": "2026-08-28T12:53:55.648Z",
+    "from": "Testování",
+    "to": "Hotovo",
+    "created_by_api_app": true
+  },
+  "final_readback": {
+    "trello_list": "Hotovo",
+    "project_status": "done",
+    "checkpoint_run_id": "8c864392813049fc957a64f47363081b",
+    "completed_dod_indices": [0, 1, 2, 3, 4, 5, 6]
+  },
+  "result": "passed",
+  "claim": "A live P3 card followed Pracuje se -> Testování -> ai-orchestrator audit-only accepted -> Hotovo."
+}

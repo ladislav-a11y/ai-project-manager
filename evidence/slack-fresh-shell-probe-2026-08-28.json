@@ -1,0 +1,12 @@
+{
+  "performed_at_local": "2026-08-28T18:39:53+02:00",
+  "shell": "Windows PowerShell 5.1, -NoProfile, new process",
+  "command": "powershell -NoProfile -File scripts\\run-ai-project-manager.ps1 -SlackProbe",
+  "exit_code": 0,
+  "receipt": "Slack notification delivered (HTTP 200)",
+  "configuration_source": ".secrets/scheduler.clixml (DPAPI-protected; values omitted)",
+  "trello_accessed": false,
+  "scheduler_started": false,
+  "secrets_in_receipt": false,
+  "claim": "The production runner loaded persistent Slack enablement and webhook configuration in a fresh shell and Slack acknowledged delivery. The isolated probe did not run a PM tick or release the scheduler from HOLD."
+}

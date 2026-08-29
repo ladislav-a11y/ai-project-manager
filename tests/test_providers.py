@@ -86,6 +86,11 @@ def test_recheck_still_failing_keeps_provider_gated(clock):
     assert status.state == ProviderState.ERROR
     assert registry.is_available("claude") is False
     assert status.checkpoint == {"step": 3}
+    assert status.retry_after == clock.now + timedelta(minutes=5)
+
+    probe_calls = []
+    registry.recheck("claude", probe=lambda: probe_calls.append(1) or True)
+    assert probe_calls == []
 
 
 def test_recheck_probe_raising_marks_error_and_preserves_checkpoint(clock):
@@ -100,6 +105,11 @@ def test_recheck_probe_raising_marks_error_and_preserves_checkpoint(clock):
 
     assert status.state == ProviderState.ERROR
     assert status.checkpoint == {"step": 3}
+    assert status.retry_after == clock.now + timedelta(minutes=5)
+
+    probe_calls = []
+    registry.recheck("claude", probe=lambda: probe_calls.append(1) or True)
+    assert probe_calls == []
 
 
 def test_available_providers_filters_correctly(clock):

@@ -47,6 +47,8 @@ class ProjectLockManager:
         clock: Callable[[], datetime] = _utcnow,
         default_timeout: timedelta = DEFAULT_LOCK_TIMEOUT,
     ):
+        if default_timeout <= timedelta(0):
+            raise ValueError("default_timeout must be positive")
         self._clock = clock
         self._default_timeout = default_timeout
         self._locks: dict[str, LockHandle] = {}
@@ -57,6 +59,21 @@ class ProjectLockManager:
     def is_locked(self, project_name: str) -> bool:
         lock = self._locks.get(project_name)
         return lock is not None and not self._is_expired(lock)
+
+    def is_locked_by_other(self, project_name: str, holder: str) -> bool:
+        """Return whether another holder currently owns a live lock.
+
+        The scheduler uses this before choosing work so a busy high-priority
+        project cannot starve every lower-priority project.  ``acquire`` still
+        performs the authoritative check afterwards, closing the race between
+        scheduling and lock acquisition.
+        """
+        lock = self._locks.get(project_name)
+        return (
+            lock is not None
+            and not self._is_expired(lock)
+            and lock.holder != holder
+        )
 
     def acquire(
         self,
@@ -74,10 +91,13 @@ class ProjectLockManager:
                 f"project {project_name!r} is locked by {existing.holder!r} "
                 f"until {existing.expires_at.isoformat()}"
             )
+        effective_timeout = self._default_timeout if timeout is None else timeout
+        if effective_timeout <= timedelta(0):
+            raise ValueError("timeout must be positive")
         handle = LockHandle(
             project_name=project_name,
             holder=holder,
-            expires_at=self._clock() + (timeout or self._default_timeout),
+            expires_at=self._clock() + effective_timeout,
         )
         self._locks[project_name] = handle
         return handle

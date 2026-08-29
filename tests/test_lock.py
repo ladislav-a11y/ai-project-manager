@@ -5,6 +5,26 @@ import pytest
 from ai_project_manager.lock import ProjectLockError, ProjectLockManager
 
 
+def test_rejects_non_positive_default_timeout():
+    with pytest.raises(ValueError, match="default_timeout must be positive"):
+        ProjectLockManager(default_timeout=timedelta(0))
+
+    with pytest.raises(ValueError, match="default_timeout must be positive"):
+        ProjectLockManager(default_timeout=timedelta(seconds=-1))
+
+
+def test_acquire_rejects_non_positive_explicit_timeout():
+    manager = ProjectLockManager()
+
+    with pytest.raises(ValueError, match="timeout must be positive"):
+        manager.acquire("demo", "worker", timeout=timedelta(0))
+
+    with pytest.raises(ValueError, match="timeout must be positive"):
+        manager.acquire("demo", "worker", timeout=timedelta(seconds=-1))
+
+    assert manager.is_locked("demo") is False
+
+
 class FakeClock:
     def __init__(self, start: datetime):
         self.now = start

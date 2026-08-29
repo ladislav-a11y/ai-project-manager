@@ -17,23 +17,59 @@ import sys
 from typing import Optional, Sequence
 
 from .config import ConfigError, load_config
-from .daemon import run_loop
-from .orchestrator_runner import build_run_fn
+from .daemon import run_loop, run_maintenance_only
+from .orchestrator_runner import build_audit_run_fn, build_run_fn
 from .providers import ProviderRegistry
 from .provider_state import load_provider_state
+from .self_update import RESTART_REQUIRED_EXIT_CODE
+from .slack_notify import notify
 from .trello_client import RealTrelloClient
 
 logger = logging.getLogger("ai_project_manager")
+
+_LOG_LEVELS = ("CRITICAL", "ERROR", "WARNING", "INFO", "DEBUG")
+
+
+def _log_level(value: str) -> str:
+    level = value.upper()
+    if level not in _LOG_LEVELS:
+        raise argparse.ArgumentTypeError(
+            f"invalid log level {value!r}; choose from {', '.join(_LOG_LEVELS)}"
+        )
+    return level
 
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="ai-project-manager")
     parser.add_argument(
+        "--slack-probe",
+        action="store_true",
+        help=(
+            "send one production Slack delivery probe and exit; does not load "
+            "Trello, dispatch work, or start the scheduler"
+        ),
+    )
+    parser.add_argument(
         "--once",
         action="store_true",
         help="run a single scheduler tick and exit, instead of looping forever",
     )
-    parser.add_argument("--log-level", default="INFO", help="logging level (default: INFO)")
+    parser.add_argument(
+        "--maintain-only",
+        action="store_true",
+        help=(
+            "run one live Trello Card Contract migration/cleanup pass and exit - "
+            "never dispatches a project or touches provider state; the scheduler "
+            "itself stays on HOLD"
+        ),
+    )
+    parser.add_argument(
+        "--log-level",
+        default="INFO",
+        type=_log_level,
+        metavar="LEVEL",
+        help="logging level: CRITICAL, ERROR, WARNING, INFO, or DEBUG (default: INFO)",
+    )
     return parser
 
 
@@ -41,19 +77,26 @@ def main(
     argv: Optional[Sequence[str]] = None,
     client=None,
     run_fn=None,
+    audit_run_fn=None,
 ) -> int:
-    """Entrypoint. ``client``/``run_fn`` are only ever passed by tests to
-    inject an in-memory Trello client / fake orchestrator dispatch and
-    exercise the real config -> registry -> scheduler-loop wiring without
-    a network call; production use (the console script / ``python -m
-    ai_project_manager``) always leaves them unset and gets the real
-    ``RealTrelloClient`` + ``build_run_fn`` built from ``load_config()``.
+    """Entrypoint. ``client``/``run_fn``/``audit_run_fn`` are only ever
+    passed by tests to inject an in-memory Trello client / fake
+    orchestrator dispatch and exercise the real config -> registry ->
+    scheduler-loop wiring without a network call; production use (the
+    console script / ``python -m ai_project_manager``) always leaves them
+    unset and gets the real ``RealTrelloClient`` + ``build_run_fn`` /
+    ``build_audit_run_fn`` built from ``load_config()``.
     """
     args = build_parser().parse_args(argv)
     logging.basicConfig(
-        level=getattr(logging, args.log_level.upper(), logging.INFO),
+        level=getattr(logging, args.log_level),
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
     )
+
+    if args.slack_probe:
+        logger.info("starting isolated Slack delivery probe")
+        delivered = notify("AI Project Manager: fresh-shell production Slack probe")
+        return 0 if delivered else 1
 
     try:
         config = load_config()
@@ -68,11 +111,16 @@ def main(
             board_id=config.trello.board_id,
         )
 
+    if args.maintain_only:
+        issues = run_maintenance_only(client)
+        logger.info("maintenance-only pass complete: %d issue(s)", len(issues))
+        return 1 if issues else 0
+
     provider_registry = ProviderRegistry()
     for name in config.providers:
         provider_registry.mark_available(name)
 
-    load_provider_state("provider_state.json", provider_registry)
+    load_provider_state(config.provider_state_path, provider_registry)
 
     if run_fn is None:
         run_fn = build_run_fn(
@@ -82,6 +130,18 @@ def main(
             projects_root=config.orchestrator.projects_root,
             spec_dir=config.orchestrator.spec_dir,
             outbox_dir=config.orchestrator.outbox_dir,
+            timeout_seconds=config.orchestrator.timeout_seconds,
+        )
+
+    if audit_run_fn is None:
+        audit_run_fn = build_audit_run_fn(
+            provider_registry,
+            command=config.orchestrator.command,
+            project_paths=config.orchestrator.project_paths,
+            projects_root=config.orchestrator.projects_root,
+            spec_dir=config.orchestrator.spec_dir,
+            outbox_dir=config.orchestrator.outbox_dir,
+            timeout_seconds=config.orchestrator.timeout_seconds,
         )
 
     logger.info(
@@ -99,10 +159,26 @@ def main(
         providers_for_project=config.providers_for_project,
         default_providers=config.providers,
         inbox_list_name=config.trello.inbox_list_name,
+        provider_state_path=config.provider_state_path,
+        project_paths=config.orchestrator.project_paths,
+        card_project_keys=config.card_project_keys,
+        recovery_max_attempts=config.recovery_max_attempts,
+        audit_run_fn=audit_run_fn,
     )
+
+    if outcome.restart_required:
+        # Never restart in-process - the whole point is that this
+        # process's already-imported modules are stale. Exit with a
+        # dedicated code so the supervising watchdog (watchdog.py), a
+        # separate parent process, is the only thing that ever launches
+        # the replacement.
+        logger.warning("exiting for supervised restart: %s", outcome.reason)
+        return RESTART_REQUIRED_EXIT_CODE
 
     if args.once:
         logger.info("--once tick complete: ran=%s reason=%s", outcome.ran, outcome.reason)
+        if outcome.operational_error:
+            return 1
     return 0
 
 

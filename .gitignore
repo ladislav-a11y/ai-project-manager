@@ -1,8 +1,15 @@
 __pycache__/
 *.pyc
+.venv/
+*.egg-info/
+.pytest_cache/
+.pytest-basetemp-*/
 *.bak
+*.bak-*
 runner_before_*.py
 fix_*.py
 ai_project_manager_backup_*/
 provider_state.json
 runtime/
+.secrets/
+.claude/.test_guard_state/

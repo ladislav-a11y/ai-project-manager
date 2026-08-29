@@ -10,6 +10,7 @@ never an independent store that could drift from Trello.
 from __future__ import annotations
 
 from dataclasses import dataclass, field, asdict
+from datetime import datetime, timezone
 from enum import Enum
 from typing import Any, Optional
 
@@ -25,6 +26,7 @@ class ProjectStatus(str, Enum):
     NEW = "new"
     READY = "ready"
     IN_PROGRESS = "in_progress"
+    TESTING = "testing"
     PAUSED = "paused"
     BLOCKED = "blocked"
     DONE = "done"
@@ -48,6 +50,39 @@ class GitHubRef:
         if not data:
             return None
         return cls(repo_url=data["repo_url"], default_branch=data.get("default_branch"))
+
+
+@dataclass
+class DoDItem:
+    """One Definition-of-Done checklist entry, carried on
+    ``ProjectRecord.dod``.
+
+    Persisted through the Trello structured block (see
+    ``trello_sync.card_updates_from_project``) so a card's exact
+    checklist -- every item, in the deterministic order it was first
+    read in, and which of them are already checked -- survives every
+    sync round trip instead of being silently re-derived (and losing
+    items or checked state) on each read.
+    """
+
+    text: str
+    checked: bool = False
+    phase: str = "implementation"
+
+    def __post_init__(self) -> None:
+        if self.phase not in {"implementation", "audit"}:
+            raise ValueError(f"DoD phase must be 'implementation' or 'audit', got {self.phase!r}")
+
+    def to_dict(self) -> dict:
+        return {
+            "text": self.text,
+            "checked": self.checked,
+            "phase": self.phase,
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict) -> "DoDItem":
+        return cls(text=data.get("text", ""), checked=bool(data.get("checked")), phase=data.get("phase", "implementation"))
 
 
 @dataclass
@@ -89,6 +124,13 @@ class ProjectRecord:
         trello_sync.sync_project_to_trello)
       - github_repo / google_drive_ref -> card description (structured block),
         reference only, never a second source of truth
+      - project_key                -> any non-priority Trello label on the
+        card (see trello_sync.project_key_from_labels). This is the card's
+        stable *project* identity, set once and independent of both the
+        card's title text and its P0-P5 priority label -- a work card's
+        title is free-form status prose ("Izolace testovacich Slack
+        notifikaci") that need not mention the project it belongs to at
+        all, so identity cannot be inferred from title wording alone.
     """
 
     name: str
@@ -103,6 +145,48 @@ class ProjectRecord:
     blocked_by: Optional[str] = None
     stop_reason: Optional[str] = None
     retry_after: Optional[str] = None
+    status_updated_at: Optional[str] = None
+    waiting_since: Optional[str] = None
+    completed_at: Optional[str] = None
+    project_key: Optional[str] = None
+    # Unattended blocked-task recovery (see recovery.py): how many
+    # auto-recovery cycles have requeued this project since it last made
+    # real forward progress (reset on a successful run - see
+    # runner.run_once), and the earliest time the recovery scan should
+    # reconsider it again while still blocked. Never set outside
+    # recovery.py / runner.py.
+    recovery_attempts: int = 0
+    review_at: Optional[str] = None
+
+    # Human-intervention visibility (see daemon._run_recovery_pass):
+    # ``human_notified_reason`` is the exact reason text already reported to
+    # Slack/Trello for the current block - comparing against it is what lets
+    # the recovery pass send exactly one Slack message per distinct blocked
+    # state instead of repeating it every time the backoff review comes due.
+    # ``human_action_step`` is the concrete action a human should take,
+    # shown alongside the reason in both the Slack message and the visible
+    # Trello card text. Both are cleared back to None the moment the block
+    # is lifted (auto-recovered or fixed by a human directly on the board),
+    # which is what triggers the one-time "processing resumed" message.
+    human_notified_reason: Optional[str] = None
+    human_action_step: Optional[str] = None
+
+    # The card's permalink (e.g. "https://trello.com/c/abc123"), read back
+    # from Trello on every fetch (see trello_sync.project_from_card) - never
+    # persisted through PM-DATA, since it is derived Trello metadata, not
+    # something this process owns. Included here (rather than threaded
+    # separately) so any caller that already has a ProjectRecord - Slack
+    # notification, visible card text - can link straight to the card.
+    trello_card_url: Optional[str] = None
+
+    # The card's full Definition-of-Done checklist -- merged, in
+    # deterministic order, from the visible checklist above the PM-DATA
+    # block and any explicit structured checklist (see
+    # trello_sync.project_from_card) -- and each item's checked state.
+    # Never re-derived once set: persisted verbatim through every sync so
+    # a run can only ever add checked items, never drop or re-shuffle the
+    # original set (see orchestrator_handoff.apply_dod_progress).
+    dod: list = field(default_factory=list)
 
     github_repo: Optional[GitHubRef] = None
     google_drive_ref: Optional[GoogleDriveRef] = None
@@ -110,6 +194,9 @@ class ProjectRecord:
     trello_card_id: Optional[str] = None
     trello_list_id: Optional[str] = None
     provider: Optional[str] = None
+    # Fields from a newer/extended but still compatible card contract that
+    # this PM does not interpret. They must survive every read/write roundtrip.
+    extra_data: dict = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         if isinstance(self.status, str):
@@ -121,7 +208,52 @@ class ProjectRecord:
 
     @property
     def is_blocked(self) -> bool:
-        return bool(self.blocked_by) or self.status == ProjectStatus.BLOCKED
+        """Lifecycle-authoritative: the physical Trello list (``status``)
+        decides, never stale ``blocked_by`` metadata on its own.
+
+        ``status == BLOCKED`` is always blocked. ``PAUSED`` (the shared
+        "Čeká na AI" list also used for plain provider-limit waits, see
+        trello_sync.LIST_NAME_TO_STATUS) is only blocked when a real
+        ``blocked_by`` reason is attached - this is what keeps a
+        legacy-mapped blocked card (no stored ``lifecycle_status`` yet)
+        eligible for recovery.py's scan. Every other status (READY,
+        IN_PROGRESS, DONE, ...) is never blocked, even if ``blocked_by``
+        still carries a leftover reason from before the card was moved -
+        see trello_sync.project_from_card, which clears that leftover at
+        load time, and scheduler.is_schedulable, which must not be
+        overridden by it either.
+        """
+        if self.status == ProjectStatus.BLOCKED:
+            return True
+        if self.status == ProjectStatus.PAUSED:
+            return bool(self.blocked_by)
+        return False
+
+    @property
+    def returned_from_testing(self) -> bool:
+        """Whether the card is corrective work returned by the audit gate."""
+        return bool(self.extra_data.get("returned_from_testing"))
+
+    def mark_returned_from_testing(self, reason: Optional[str] = None) -> None:
+        """Record an audit return without losing its Trello priority context."""
+        self.extra_data["returned_from_testing"] = True
+        if reason:
+            self.extra_data["return_reason"] = reason
+
+    def transition_to(self, status: ProjectStatus | str, at: Optional[str] = None) -> None:
+        """Change lifecycle state and maintain its human-visible timestamps."""
+        target = ProjectStatus(status) if isinstance(status, str) else status
+        stamp = at or datetime.now(timezone.utc).isoformat()
+        if target != self.status:
+            self.status_updated_at = stamp
+        self.status = target
+        if target == ProjectStatus.DONE and not self.completed_at:
+            self.completed_at = stamp
+        if target in {ProjectStatus.PAUSED, ProjectStatus.BLOCKED, ProjectStatus.ERROR}:
+            if not self.waiting_since:
+                self.waiting_since = stamp
+        else:
+            self.waiting_since = None
 
     def to_dict(self) -> dict:
         data: dict[str, Any] = {
@@ -137,11 +269,22 @@ class ProjectRecord:
             "blocked_by": self.blocked_by,
             "stop_reason": self.stop_reason,
             "retry_after": self.retry_after,
+            "status_updated_at": self.status_updated_at,
+            "waiting_since": self.waiting_since,
+            "completed_at": self.completed_at,
+            "recovery_attempts": self.recovery_attempts,
+            "review_at": self.review_at,
+            "human_notified_reason": self.human_notified_reason,
+            "human_action_step": self.human_action_step,
+            "trello_card_url": self.trello_card_url,
+            "dod": [item.to_dict() for item in self.dod],
             "github_repo": self.github_repo.to_dict() if self.github_repo else None,
             "google_drive_ref": self.google_drive_ref.to_dict() if self.google_drive_ref else None,
             "trello_card_id": self.trello_card_id,
             "trello_list_id": self.trello_list_id,
             "provider": self.provider,
+            "project_key": self.project_key,
+            "extra_data": dict(self.extra_data),
         }
         return data
 
@@ -150,4 +293,5 @@ class ProjectRecord:
         data = dict(data)
         data["github_repo"] = GitHubRef.from_dict(data.get("github_repo"))
         data["google_drive_ref"] = GoogleDriveRef.from_dict(data.get("google_drive_ref"))
+        data["dod"] = [DoDItem.from_dict(item) for item in data.get("dod") or []]
         return cls(**data)
