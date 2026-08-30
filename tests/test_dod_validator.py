@@ -161,3 +161,151 @@ def test_reproduced_p5_combined_dod_rejection():
     assert "dirty" in reasons_text
     assert "HEAD zůstal 4f9c001" in reasons_text
     assert "git remote -v je prázdný" in reasons_text
+
+
+def test_ambiguous_validator_dod_passes_with_test_evidence_even_when_head_unchanged():
+    # Exact reproduction of the P5 ambiguity:
+    # DoD describes validator behavior, not a runtime action to create a commit in the audited repo.
+    exact_text = "Git commit DoD ověřit proti skutečnému HEAD; požadavek na nový commit nesmí projít, pokud HEAD nezměnil očekávaný stav"
+    head = "17e632beec1bf635718b67feb8b9cb28f1e742b6"
+    run_git = fake_git({"rev-parse": head})
+
+    res = validate_dod_item(
+        2,
+        exact_text,
+        repo_path="/fake/ai-project-manager",
+        initial_head=head,
+        evidence="582 passed in 10.5s",
+        run_git=run_git,
+    )
+    assert res.valid is True
+    assert res.reasons == []
+
+
+def test_ambiguous_validator_dod_fails_closed_without_test_evidence():
+    exact_text = "Git commit DoD ověřit proti skutečnému HEAD; požadavek na nový commit nesmí projít, pokud HEAD nezměnil očekávaný stav"
+    head = "17e632beec1bf635718b67feb8b9cb28f1e742b6"
+    run_git = fake_git({"rev-parse": head})
+
+    # Empty evidence fails
+    res_empty = validate_dod_item(
+        2,
+        exact_text,
+        repo_path="/fake/ai-project-manager",
+        initial_head=head,
+        evidence="",
+        run_git=run_git,
+    )
+    assert res_empty.valid is False
+    assert any("chybí výstup testů" in r for r in res_empty.reasons)
+
+    # Failed test output fails
+    res_failed = validate_dod_item(
+        2,
+        exact_text,
+        repo_path="/fake/ai-project-manager",
+        initial_head=head,
+        evidence="580 passed, 2 failed in 8.1s",
+        run_git=run_git,
+    )
+    assert res_failed.valid is False
+    assert any("selhání" in r for r in res_failed.reasons)
+
+    # Generic trivial placeholder fails
+    res_trivial = validate_dod_item(
+        2,
+        exact_text,
+        repo_path="/fake/ai-project-manager",
+        initial_head=head,
+        evidence="hotovo",
+        run_git=run_git,
+    )
+    assert res_trivial.valid is False
+
+
+def test_validation_rule_dod_proven_by_test_not_head_change():
+    text1 = "ověřit, že nový commit bez změny HEAD neprojde"
+    text2 = "validační DoD typu „ověřit, že nový commit bez změny HEAD neprojde“ musí být dokazatelný regresním testem, ne změnou HEAD aktuálního repa"
+    head = "17e632beec1bf635718b67feb8b9cb28f1e742b6"
+    run_git = fake_git({"rev-parse": head})
+
+    for text in (text1, text2):
+        res = validate_dod_item(
+            0,
+            text,
+            repo_path="/fake/ai-project-manager",
+            initial_head=head,
+            evidence="pytest passed: 10 passed, 0 failed",
+            run_git=run_git,
+        )
+        assert res.valid is True, f"Failed for text: {text}, reasons: {res.reasons}"
+        assert res.reasons == []
+
+
+def test_genuine_new_commit_dod_fails_when_head_unchanged():
+    # A genuine DoD requesting a commit must still fail if HEAD did not change
+    head = "17e632beec1bf635718b67feb8b9cb28f1e742b6"
+    run_git = fake_git({"rev-parse": head})
+
+    res = validate_dod_item(
+        0,
+        "vytvořit nový commit",
+        repo_path="/fake/repo",
+        initial_head=head,
+        evidence="pytest passed: 582 passed",
+        run_git=run_git,
+    )
+    assert res.valid is False
+    assert any(f"požadavek na nový commit nesplněn: HEAD zůstal {head}" in r for r in res.reasons)
+
+
+def test_genuine_new_commit_dod_passes_when_head_changed():
+    initial_head = "17e632beec1bf635718b67feb8b9cb28f1e742b6"
+    new_head = "9a8b7c6d5e4f3a2b1c0d9e8f7a6b5c4d3e2f1a0b"
+    run_git = fake_git({"rev-parse": new_head})
+
+    res = validate_dod_item(
+        0,
+        "vytvořit nový commit",
+        repo_path="/fake/repo",
+        initial_head=initial_head,
+        evidence="nový commit 9a8b7c6d vytvořen, testy prošly: 582 passed",
+        run_git=run_git,
+    )
+    assert res.valid is True
+    assert res.reasons == []
+
+
+def test_full_p5_audit_passes_with_regression_test_evidence():
+    # Card with full P5 checklist from current prompt:
+    dod_texts = [
+        "dohledat pravidlo/heuristiku, která z textu DoD odvozuje typ povinné evidence",
+        "rozlišit DoD o implementaci validační logiky od DoD vyžadujícího konkrétní runtime Git akci v aktuálním repu",
+        "Git commit DoD ověřit proti skutečnému HEAD; požadavek na nový commit nesmí projít, pokud HEAD nezměnil očekávaný stav",
+        "validační DoD typu „ověřit, že nový commit bez změny HEAD neprojde“ musí být dokazatelný regresním testem, ne změnou HEAD aktuálního repa",
+        "přidat regresní test pro přesně tento dvojznačný text a potvrdit správné rozlišení",
+        "přidat negativní regresní test, že skutečný požadavek na nový commit bez změny HEAD stále selže",
+        "žádný neověřený DoD nesmí vést k lifecycle_status=done",
+        "syntaxe -> cílené testy -> git --no-pager diff -> git --no-pager diff --check -> kompletní testy podle D:\\orchestrator\\AI_PROJECT_PROTOCOL.md",
+    ]
+    head = "17e632beec1bf635718b67feb8b9cb28f1e742b6"
+    run_git = fake_git({"rev-parse": head})
+
+    project = ProjectRecord(
+        name="P5 — APM: fail-closed validace důkazů DoD",
+        dod=[DoDItem(text=t) for t in dod_texts],
+    )
+
+    report = validate_project_dod(
+        project,
+        repo_path="/fake/ai-project-manager",
+        initial_head=head,
+        evidence="pytest -q: 590 passed, 0 failed in 12.3s",
+        run_git=run_git,
+    )
+
+    assert report.is_valid is True
+    assert report.rejected_indices == []
+    assert report.verified_indices == list(range(len(dod_texts)))
+
+

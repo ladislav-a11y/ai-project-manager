@@ -120,6 +120,20 @@ _TEST_KEYWORD_RE = re.compile(
 _GENERIC_TRIVIAL_EVIDENCE_RE = re.compile(
     r"(?i)^\s*(?:done|ok|hotovo|vše\s+splněno|splněno|completed|pass|passed)\s*$"
 )
+_VALIDATION_META_RE = re.compile(
+    r"(?i)(?:"
+    r"\b(?:validac[eai]|validačn[íý]|validátor[a-z]*|validate|validating|validation|validator)\b|"
+    r"\b(?:pravidl[oa]|heuristik[a-z]*|rule|heuristics)\b|"
+    r"\b(?:specifikac[eai]|specifikuj[eai]|specification|popisuj[eai]|chování\s+validátoru|auditní\s+semantik[a-z]*)\b|"
+    r"\b(?:rozlišit|implementovat\s+validaci|implementace\s+validačn[íý])\b|"
+    r"\b(?:regresn[íý]\s+test[a-z]*|negativn[íý]\s+test[a-z]*|unit\s*test[a-z]*|testovac[íý]\s+případ[a-z]*|dokazateln[ýé]\s+testem)\b|"
+    r"\b(?:ověřit,\s*že|ověření,\s*že|ověřit\s+proti|ověřovat|ověřuje|verify\s+that|check\s+that|testovat,\s*že)\b|"
+    r"\b(?:dod\s+ověřit|dod\s+popisující|dod\s+typu|validační\s+dod|skutečný\s+dod)\b|"
+    r"\b(?:nesmí\s+projít|musí\s+selhat|nesmí\s+být\s+přijat|musí\s+být\s+zamítnut|must\s+fail|must\s+not\s+pass|should\s+fail|neprojde)\b|"
+    r"\b(?:pokud\s+.*(?:nezměn[a-z]*|nemá|selh[a-z]*|chyb[a-z]*|beze?\s+změny)|when\s+.*(?:unchanged|fails|missing)|without\s+.*(?:change))\b|"
+    r"\b(?:požadavek\s+na\s+.*(?:nesmí|musí|selh[a-z]*))\b"
+    r")"
+)
 
 
 def validate_dod_item(
@@ -137,9 +151,10 @@ def validate_dod_item(
     matched_category = False
 
     evidence_str = (evidence or "").strip()
+    is_meta_or_validation = bool(_VALIDATION_META_RE.search(text))
 
-    # 1. Clean/dirty tree check
-    if _CLEANUP_KEYWORD_RE.search(text):
+    # 1. Clean/dirty tree check (only for direct runtime actions on the audited repo)
+    if _CLEANUP_KEYWORD_RE.search(text) and not is_meta_or_validation:
         matched_category = True
         status_ok, status_out = get_git_status(repo_path, run_git=run_git)
         details["git_status_ok"] = status_ok
@@ -157,8 +172,8 @@ def validate_dod_item(
         if diff_ok and diff_out:
             reasons.append("pracovní strom obsahuje neuložené změny v git diff")
 
-    # 2. Git commit check
-    if _COMMIT_KEYWORD_RE.search(text):
+    # 2. Git commit check (only for direct runtime actions on the audited repo)
+    if _COMMIT_KEYWORD_RE.search(text) and not is_meta_or_validation:
         matched_category = True
         current_head = get_git_head(repo_path, run_git=run_git)
         details["git_head"] = current_head
@@ -175,8 +190,8 @@ def validate_dod_item(
             ):
                 reasons.append("důkaz uvádí, že commit nebyl vytvořen")
 
-    # 3. Remote / backup / push check
-    if _REMOTE_BACKUP_KEYWORD_RE.search(text):
+    # 3. Remote / backup / push check (only for direct runtime actions on the audited repo)
+    if _REMOTE_BACKUP_KEYWORD_RE.search(text) and not is_meta_or_validation:
         matched_category = True
         remotes_ok, remotes_out = get_git_remotes(repo_path, run_git=run_git)
         details["git_remotes_ok"] = remotes_ok
@@ -196,15 +211,15 @@ def validate_dod_item(
             ):
                 reasons.append("důkaz nepotvrzuje úspěšnou zálohu/push na remote (remote chybí nebo push selhal)")
 
-    # 4. Test check
-    if _TEST_KEYWORD_RE.search(text):
+    # 4. Test check and Validation logic check
+    if _TEST_KEYWORD_RE.search(text) or is_meta_or_validation:
         matched_category = True
         if not evidence_str:
-            reasons.append("chybí výstup testů jako důkaz pro testovací DoD bod")
+            reasons.append("chybí výstup testů jako důkaz pro testovací/validační DoD bod")
         else:
             has_failed = bool(
                 re.search(r"(?i)\b(?:failed|errors?|syntaxerror|failure)\b", evidence_str)
-                and not re.search(r"(?i)\b(?:0\s+failed|0\s+errors)\b", evidence_str)
+                and not re.search(r"(?i)\b(?:0\s+failed|0\s+errors|0\s+failures)\b", evidence_str)
             )
             has_passed = bool(
                 re.search(r"(?i)\b(?:passed|ok|tests\s+passed|testy\s+prošly|úspěch|\d+\s+passed)\b", evidence_str)
