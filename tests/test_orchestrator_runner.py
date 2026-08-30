@@ -13,6 +13,7 @@ from ai_project_manager.orchestrator_runner import (
     ProjectPathError,
     build_audit_run_fn,
     build_run_fn,
+    _controller_finalization_is_verified,
     _finalization_needs_refresh,
     map_provider_to_agent,
     parse_spec_markdown,
@@ -134,6 +135,21 @@ def test_finalization_refresh_is_needed_when_card_proof_has_old_head(tmp_path):
         return completed("new-head\n")
 
     assert _finalization_needs_refresh(project, str(tmp_path / "demo-checkout"), fake_git) is True
+
+
+def test_controller_finalization_accepts_clean_refresh_without_second_commit():
+    head = "9a8b7c6d5e4f3a2b1c0d9e8f7a6b5c4d3e2f1a0b"
+    finalization = {
+        "status": "completed",
+        "done": True,
+        "committed": False,
+        "clean": True,
+        "pushed": True,
+        "commit_hash": head,
+        "remote_commit": head,
+    }
+
+    assert _controller_finalization_is_verified(finalization, head) is True
 
 
 def test_audit_run_fn_uses_supported_autonomous_cli_and_reads_internal_audit(tmp_path):

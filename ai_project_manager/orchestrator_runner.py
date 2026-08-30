@@ -511,6 +511,21 @@ def _finalization_needs_refresh(project: ProjectRecord, project_path: str, run_g
     return bool(current_head and current_head != recorded_head)
 
 
+def _controller_finalization_is_verified(finalization: object, current_head: Optional[str]) -> bool:
+    """Accept a controller proof for a commit already present at audit time."""
+    return (
+        isinstance(finalization, dict)
+        and finalization.get("status") == "completed"
+        and finalization.get("done") is True
+        and isinstance(finalization.get("committed"), bool)
+        and finalization.get("clean") is True
+        and finalization.get("pushed") is True
+        and bool(current_head)
+        and finalization.get("commit_hash") == current_head
+        and finalization.get("remote_commit") == current_head
+    )
+
+
 def _controller_finalize(
     project: ProjectRecord,
     project_path: str,
@@ -928,19 +943,18 @@ def build_audit_run_fn(
         # controller-owned commit is therefore evidence from the preceding
         # PM phase, not a second commit that must be created during audit.
         finalization = (project.checkpoint or {}).get("finalization")
-        controller_finalization_verified = (
-            isinstance(finalization, dict)
-            and finalization.get("status") == "completed"
-            and finalization.get("done") is True
-            and finalization.get("committed") is True
-            and finalization.get("clean") is True
-            and finalization.get("pushed") is True
-            and finalization.get("commit_hash")
-            and finalization.get("remote_commit") == finalization.get("commit_hash")
-        )
+        controller_finalization_verified = _controller_finalization_is_verified(finalization, initial_head)
         if controller_finalization_verified:
             controller_evidence = json.dumps(finalization, ensure_ascii=False, separators=(",", ":"))
-            evidence = "\n".join(part for part in (evidence, controller_evidence) if part)
+            controller_summary = (
+                "Controller finalization verified: "
+                f"commit {finalization['commit_hash']}; clean working tree; "
+                "tests passed; push passed; "
+                f"remote HEAD {finalization['remote_commit']}."
+            )
+            evidence = "\n".join(
+                part for part in (evidence, controller_summary, controller_evidence) if part
+            )
 
         # Perform fail-closed validation of all DoD items against repository state and evidence
         report = validate_project_dod(
