@@ -55,6 +55,12 @@ from datetime import timedelta
 from pathlib import Path
 from typing import Callable, Optional
 
+from .dod_validator import (
+    RunCommand,
+    default_run_command,
+    get_git_head,
+    validate_project_dod,
+)
 from .models import ProjectRecord
 from .orchestrator_handoff import (
     AUDIT_VERDICT_ACCEPTED,
@@ -507,6 +513,7 @@ def build_run_fn(
     definition_of_done: Optional[list] = None,
     run_id_fn: Callable[[], str] = _default_run_id,
     provider_agent_map: Optional[dict] = None,
+    run_git: Optional[RunCommand] = None,
 ):
     """Build a ``run_fn(project, provider) -> dict`` that dispatches to the
     real ai-orchestrator ``--project``/``--goal``/``--spec``/``--agent``/
@@ -531,6 +538,7 @@ def build_run_fn(
     """
     abs_spec_dir = str(Path(spec_dir).resolve())
     abs_outbox_dir = str(Path(outbox_dir).resolve())
+    git_cmd = run_git or default_run_command
     if subprocess_run is None:
         subprocess_run = functools.partial(_default_subprocess_run, timeout=timeout_seconds)
 
@@ -545,6 +553,7 @@ def build_run_fn(
         except ProjectPathError as exc:
             raise OrchestratorProcessError(str(exc)) from exc
 
+        initial_head = get_git_head(project_path, run_git=git_cmd)
         run_id = run_id_fn()
         # The card title is mutable (including its P0-P5 prefix).  Key the
         # reusable spec/checkpoint path by the persisted project identity so a
@@ -688,6 +697,7 @@ def build_audit_run_fn(
     read_outbox: ReadOutboxFn = _read_outbox_result,
     run_id_fn: Callable[[], str] = _default_run_id,
     provider_agent_map: Optional[dict] = None,
+    run_git: Optional[RunCommand] = None,
 ):
     """Build an ``audit_run_fn(project, provider) -> dict`` that dispatches
     a Testování card to ai-orchestrator's audit-only mode and reads back
@@ -711,6 +721,7 @@ def build_audit_run_fn(
     """
     abs_spec_dir = str(Path(spec_dir).resolve())
     abs_outbox_dir = str(Path(outbox_dir).resolve())
+    git_cmd = run_git or default_run_command
     if subprocess_run is None:
         subprocess_run = functools.partial(_default_subprocess_run, timeout=timeout_seconds)
 
@@ -725,6 +736,7 @@ def build_audit_run_fn(
         except ProjectPathError as exc:
             raise OrchestratorProcessError(str(exc)) from exc
 
+        initial_head = get_git_head(project_path, run_git=git_cmd)
         run_id = run_id_fn()
         spec_path = write_spec_file(
             abs_spec_dir,
@@ -811,16 +823,37 @@ def build_audit_run_fn(
             else None
         )
         audit_protocol_error = bool(last_iteration.get("audit_protocol_error")) if isinstance(last_iteration, dict) else False
+        evidence = payload.get("last_output") or (last_iteration.get("test_output") if isinstance(last_iteration, dict) else None) or payload.get("evidence")
+
+        # Perform fail-closed validation of all DoD items against repository state and evidence
+        report = validate_project_dod(
+            project,
+            repo_path=project_path,
+            initial_head=initial_head,
+            evidence=evidence,
+            run_git=git_cmd,
+        )
+
         if audit_performed and not audit_protocol_error and not rejected_indices and payload.get("status") == "completed":
-            verdict = AUDIT_VERDICT_ACCEPTED
-            evidence = payload.get("last_output") or last_iteration.get("test_output")
-            return {"verdict": verdict, "evidence": evidence, "usage": payload.get("usage")}
+            if report.is_valid:
+                verdict = AUDIT_VERDICT_ACCEPTED
+                return {"verdict": verdict, "evidence": evidence, "usage": payload.get("usage")}
+            else:
+                detail = report.rejection_summary or "DoD validace selhala"
+                return {
+                    "verdict": AUDIT_VERDICT_REJECTED,
+                    "reason": f"ai-orchestrator audit rejected DoD index(es) {report.rejected_indices}: {detail}",
+                    "evidence": evidence,
+                    "reject_target": "in_progress",
+                    "usage": payload.get("usage"),
+                }
         if audit_performed and rejected_indices:
-            detail = last_iteration.get("note") or payload.get("stop_reason") or "ai-orchestrator audit rejected the implementation"
+            all_rejected = sorted(set(list(rejected_indices) + report.rejected_indices))
+            detail = report.rejection_summary or (last_iteration.get("note") if isinstance(last_iteration, dict) else None) or payload.get("stop_reason") or "ai-orchestrator audit rejected the implementation"
             return {
                 "verdict": AUDIT_VERDICT_REJECTED,
-                "reason": f"ai-orchestrator audit rejected DoD index(es) {rejected_indices}: {detail}",
-                "evidence": last_iteration.get("test_output"),
+                "reason": f"ai-orchestrator audit rejected DoD index(es) {all_rejected}: {detail}",
+                "evidence": last_iteration.get("test_output") if isinstance(last_iteration, dict) else evidence,
                 "reject_target": "in_progress",
                 "usage": payload.get("usage"),
             }
@@ -831,9 +864,18 @@ def build_audit_run_fn(
                 "independent audit verdict; refusing to guess an accepted/rejected outcome"
             )
 
+        if verdict == AUDIT_VERDICT_ACCEPTED and not report.is_valid:
+            return {
+                "verdict": AUDIT_VERDICT_REJECTED,
+                "reason": f"ai-orchestrator audit rejected DoD index(es) {report.rejected_indices}: {report.rejection_summary}",
+                "evidence": evidence,
+                "reject_target": "in_progress",
+                "usage": payload.get("usage"),
+            }
+
         result: dict = {"verdict": verdict, "reason": payload.get("reason")}
-        if "evidence" in payload:
-            result["evidence"] = payload["evidence"]
+        if "evidence" in payload or evidence:
+            result["evidence"] = payload.get("evidence") or evidence
         if "reject_target" in payload:
             result["reject_target"] = payload["reject_target"]
         if "checkpoint" in payload:

@@ -1,0 +1,285 @@
+"""Fail-closed validation for Definition of Done (DoD) items.
+
+Every DoD item must be substantiated by concrete, verifiable evidence before
+it can be marked as checked or accepted in an audit.
+
+Key validations:
+- Git commit DoD: checked against actual HEAD commit; requires git HEAD to be resolvable
+  and, if a new commit was required, to have changed from initial HEAD.
+- Clean/dirty DoD: checked against actual git status and git diff; dirty tree fails validation.
+- Remote DoD: checked against actual git remote -v; empty remote fails validation.
+- Backup/push DoD: requires configured remote and explicit proof of push/backup.
+- Test DoD: requires test execution evidence showing passed tests and no failures.
+- Generic DoD: fail-closed validation requiring non-empty, concrete evidence matching the task.
+"""
+
+from __future__ import annotations
+
+import logging
+import re
+import subprocess
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Callable, Optional, Sequence, Union
+
+from .models import DoDItem, ProjectRecord
+
+logger = logging.getLogger("ai_project_manager.dod_validator")
+
+RunCommand = Callable[..., subprocess.CompletedProcess]
+
+
+def default_run_command(command: Sequence[str], cwd: Optional[str] = None) -> subprocess.CompletedProcess:
+    return subprocess.run(
+        list(command),
+        cwd=cwd,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+
+def get_git_head(repo_path: Optional[str], run_git: RunCommand = default_run_command) -> Optional[str]:
+    if not repo_path:
+        return None
+    try:
+        res = run_git(("git", "-C", str(repo_path), "rev-parse", "HEAD"))
+        if res.returncode == 0 and res.stdout.strip():
+            return res.stdout.strip()
+    except Exception as exc:
+        logger.debug("get_git_head failed on %s: %s", repo_path, exc)
+    return None
+
+
+def get_git_status(repo_path: Optional[str], run_git: RunCommand = default_run_command) -> tuple[bool, str]:
+    if not repo_path:
+        return False, "repo path not specified"
+    try:
+        res = run_git(("git", "-C", str(repo_path), "status", "--porcelain"))
+        if res.returncode != 0:
+            return False, res.stderr.strip() or res.stdout.strip() or f"exit code {res.returncode}"
+        return True, res.stdout.strip()
+    except Exception as exc:
+        return False, str(exc)
+
+
+def get_git_diff(repo_path: Optional[str], run_git: RunCommand = default_run_command) -> tuple[bool, str]:
+    if not repo_path:
+        return False, "repo path not specified"
+    try:
+        res = run_git(("git", "-C", str(repo_path), "diff"))
+        if res.returncode != 0:
+            return False, res.stderr.strip() or res.stdout.strip() or f"exit code {res.returncode}"
+        return True, res.stdout.strip()
+    except Exception as exc:
+        return False, str(exc)
+
+
+def get_git_remotes(repo_path: Optional[str], run_git: RunCommand = default_run_command) -> tuple[bool, str]:
+    if not repo_path:
+        return False, "repo path not specified"
+    try:
+        res = run_git(("git", "-C", str(repo_path), "remote", "-v"))
+        if res.returncode != 0:
+            return False, res.stderr.strip() or res.stdout.strip() or f"exit code {res.returncode}"
+        return True, res.stdout.strip()
+    except Exception as exc:
+        return False, str(exc)
+
+
+@dataclass
+class ItemValidationResult:
+    index: int
+    text: str
+    valid: bool
+    reasons: list[str] = field(default_factory=list)
+    details: dict = field(default_factory=dict)
+
+
+@dataclass
+class DoDValidationReport:
+    is_valid: bool
+    items: list[ItemValidationResult]
+    verified_indices: list[int]
+    rejected_indices: list[int]
+    rejection_summary: str = ""
+
+
+_COMMIT_KEYWORD_RE = re.compile(
+    r"(?i)\b(?:commit[a-z]*|commity|zacommitov[a-z]*|head)\b"
+)
+_CLEANUP_KEYWORD_RE = re.compile(
+    r"(?i)\b(?:cleanup|clean|čist[ýáé]|dirty|neuložen[éý][a-z]*\s+změn[a-z]*|pracovní[a-z]*\s+strom|žádné\s+neuložené)\b"
+)
+_REMOTE_BACKUP_KEYWORD_RE = re.compile(
+    r"(?i)\b(?:remote|záloh[a-z]*|backup|push|pushnout|odsunout)\b"
+)
+_TEST_KEYWORD_RE = re.compile(
+    r"(?i)\b(?:test[yůeai]?|pytest|unittest|syntax[eai]?|diff\s+--check|sada|suite)\b"
+)
+_GENERIC_TRIVIAL_EVIDENCE_RE = re.compile(
+    r"(?i)^\s*(?:done|ok|hotovo|vše\s+splněno|splněno|completed|pass|passed)\s*$"
+)
+
+
+def validate_dod_item(
+    index: int,
+    item_text: str,
+    repo_path: Optional[str] = None,
+    initial_head: Optional[str] = None,
+    evidence: Optional[str] = None,
+    run_git: RunCommand = default_run_command,
+    expected_new_commit: bool = True,
+) -> ItemValidationResult:
+    text = (item_text or "").strip()
+    reasons = []
+    details = {}
+    matched_category = False
+
+    evidence_str = (evidence or "").strip()
+
+    # 1. Clean/dirty tree check
+    if _CLEANUP_KEYWORD_RE.search(text):
+        matched_category = True
+        status_ok, status_out = get_git_status(repo_path, run_git=run_git)
+        details["git_status_ok"] = status_ok
+        details["git_status"] = status_out
+        if not status_ok:
+            reasons.append(f"ověření git status selhalo: {status_out}")
+        elif status_out:
+            lines = status_out.splitlines()
+            reasons.append(
+                f"pracovní strom je dirty (nalezeno {len(lines)} neuložených změn v git status)"
+            )
+
+        diff_ok, diff_out = get_git_diff(repo_path, run_git=run_git)
+        details["git_diff_ok"] = diff_ok
+        if diff_ok and diff_out:
+            reasons.append("pracovní strom obsahuje neuložené změny v git diff")
+
+    # 2. Git commit check
+    if _COMMIT_KEYWORD_RE.search(text):
+        matched_category = True
+        current_head = get_git_head(repo_path, run_git=run_git)
+        details["git_head"] = current_head
+        details["initial_head"] = initial_head
+        if not current_head:
+            reasons.append("git HEAD repozitáře nelze zjistit nebo repozitář neexistuje")
+        else:
+            if initial_head and current_head == initial_head and expected_new_commit:
+                reasons.append(
+                    f"požadavek na nový commit nesplněn: HEAD zůstal {current_head} (žádný nový commit nevznikl)"
+                )
+            if evidence_str and re.search(
+                r"(?i)\b(?:no\s+commit|commit\s+skipped|commit\s+failed|nevznikl\s+commit)\b", evidence_str
+            ):
+                reasons.append("důkaz uvádí, že commit nebyl vytvořen")
+
+    # 3. Remote / backup / push check
+    if _REMOTE_BACKUP_KEYWORD_RE.search(text):
+        matched_category = True
+        remotes_ok, remotes_out = get_git_remotes(repo_path, run_git=run_git)
+        details["git_remotes_ok"] = remotes_ok
+        details["git_remotes"] = remotes_out
+        if not remotes_ok:
+            reasons.append(f"ověření git remote -v selhalo: {remotes_out}")
+        elif not remotes_out:
+            reasons.append(
+                "git remote -v je prázdný: repozitář nemá žádný nastavený remote pro push/zálohu; absence remote brání splnění zálohy"
+            )
+        else:
+            if not evidence_str:
+                reasons.append("chybí explicitní důkaz o provedení zálohy / push na remote")
+            elif re.search(
+                r"(?i)\b(?:no\s+remote|remote\s+is\s+empty|prázdný\s+remote|push\s+failed|fatal:\s+no\s+configured\s+push)\b",
+                evidence_str,
+            ):
+                reasons.append("důkaz nepotvrzuje úspěšnou zálohu/push na remote (remote chybí nebo push selhal)")
+
+    # 4. Test check
+    if _TEST_KEYWORD_RE.search(text):
+        matched_category = True
+        if not evidence_str:
+            reasons.append("chybí výstup testů jako důkaz pro testovací DoD bod")
+        else:
+            has_failed = bool(
+                re.search(r"(?i)\b(?:failed|errors?|syntaxerror|failure)\b", evidence_str)
+                and not re.search(r"(?i)\b(?:0\s+failed|0\s+errors)\b", evidence_str)
+            )
+            has_passed = bool(
+                re.search(r"(?i)\b(?:passed|ok|tests\s+passed|testy\s+prošly|úspěch|\d+\s+passed)\b", evidence_str)
+            )
+            if has_failed:
+                reasons.append("výstup testů obsahuje selhání nebo chyby")
+            elif not has_passed:
+                reasons.append("výstup testů neobsahuje potvrzení o úspěšném proběhnutí testů")
+
+    # 5. General fail-closed validation for other / all items
+    if not evidence_str:
+        if not matched_category or not reasons:
+            reasons.append(f"chybí konkrétní ověřitelný důkaz pro DoD bod: '{text}'")
+    elif _GENERIC_TRIVIAL_EVIDENCE_RE.match(evidence_str):
+        reasons.append(
+            f"obecné tvrzení '{evidence_str}' není konkrétním ověřitelným důkazem pro DoD bod: '{text}'"
+        )
+
+    is_valid = len(reasons) == 0
+    return ItemValidationResult(
+        index=index,
+        text=text,
+        valid=is_valid,
+        reasons=reasons,
+        details=details,
+    )
+
+
+def validate_project_dod(
+    project_or_dod: Union[ProjectRecord, list[DoDItem], list[str]],
+    repo_path: Optional[str] = None,
+    initial_head: Optional[str] = None,
+    evidence: Optional[str] = None,
+    run_git: RunCommand = default_run_command,
+    target_indices: Optional[Sequence[int]] = None,
+) -> DoDValidationReport:
+    if isinstance(project_or_dod, ProjectRecord):
+        dod_items = project_or_dod.dod
+    elif isinstance(project_or_dod, list):
+        dod_items = project_or_dod
+    else:
+        dod_items = []
+
+    results: list[ItemValidationResult] = []
+    indices_to_check = set(target_indices) if target_indices is not None else set(range(len(dod_items)))
+
+    for idx, item in enumerate(dod_items):
+        if idx not in indices_to_check:
+            continue
+        text = item.text if isinstance(item, DoDItem) else str(item)
+        res = validate_dod_item(
+            index=idx,
+            item_text=text,
+            repo_path=repo_path,
+            initial_head=initial_head,
+            evidence=evidence,
+            run_git=run_git,
+        )
+        results.append(res)
+
+    verified_indices = [r.index for r in results if r.valid]
+    rejected_indices = [r.index for r in results if not r.valid]
+    is_valid = len(rejected_indices) == 0 and len(results) > 0
+
+    rejection_lines = [
+        f"bod [{r.index}] ({r.text}): {'; '.join(r.reasons)}"
+        for r in results
+        if not r.valid
+    ]
+    rejection_summary = "; ".join(rejection_lines)
+
+    return DoDValidationReport(
+        is_valid=is_valid,
+        items=results,
+        verified_indices=verified_indices,
+        rejected_indices=rejected_indices,
+        rejection_summary=rejection_summary,
+    )

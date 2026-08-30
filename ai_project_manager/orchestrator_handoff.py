@@ -403,6 +403,11 @@ def apply_audit_verdict(
         )
 
     if verdict == AUDIT_VERDICT_ACCEPTED:
+        from .dod_validator import _GENERIC_TRIVIAL_EVIDENCE_RE
+        if _GENERIC_TRIVIAL_EVIDENCE_RE.match(evidence.strip()):
+            raise AuditVerdictError(
+                f"accepted audit verdict requires concrete evidence, but got trivial placeholder '{evidence.strip()}'"
+            )
         for item in project.dod:
             item.checked = True
         # A successful audit closes the corrective loop. Leaving the return

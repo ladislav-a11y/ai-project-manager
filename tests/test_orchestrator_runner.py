@@ -39,11 +39,13 @@ def write_outbox_result(outbox_dir, project_name, payload, run_id=None):
     real ai-orchestrator process is expected to - the reader only ever
     accepts a result whose run_id matches the run it just launched."""
     outbox_dir.mkdir(parents=True, exist_ok=True)
-    slug = project_name.strip().lower().replace(" ", "-")
+    slug = re.sub(r"[^a-zA-Z0-9]+", "-", project_name.strip().lower()).strip("-")
     body = dict(payload)
     if run_id is not None:
         body["run_id"] = run_id
-    path = outbox_dir / f"autonomous-{slug}.json"
+        path = outbox_dir / f"autonomous-{run_id}.json"
+    else:
+        path = outbox_dir / f"autonomous-{slug}.json"
     path.write_text(json.dumps(body), encoding="utf-8")
     return path
 
@@ -1122,3 +1124,157 @@ def test_run_fn_keeps_pm_side_provider_name_for_registry_while_mapping_agent_for
     assert registry.get_status("claude").state == ProviderState.LIMITED
     assert registry.get_status("claude-code").state == ProviderState.AVAILABLE
     assert result["status"] == "paused"
+
+
+# ---- P5 false completion regression (item 7) -------------------------
+
+def test_p5_false_completion_regression_audit_rejects_dirty_unchanged_head_empty_remote(tmp_path):
+    """Regression test for P5 false completion bug:
+    P5 'AO: cleanup, commit a záloha po Hermes integraci' was marked Hotovo
+    despite ai-orchestrator being dirty, HEAD remaining 4f9c001 (no new commit),
+    and git remote -v being empty.
+    With fail-closed validation, the audit MUST reject this run and refuse
+    transition to Hotovo.
+    """
+    registry = ProviderRegistry()
+    registry.mark_available("claude")
+    project = ProjectRecord(
+        name="P5 — AO: cleanup, commit a záloha po Hermes integraci",
+        status=ProjectStatus.TESTING,
+        main_task="AO: cleanup, commit a záloha po Hermes integraci",
+        dod=[DoDItem(text="AO: cleanup, commit a záloha po Hermes integraci", checked=False)],
+        checkpoint={"completed_dod_indices": [0]},
+    )
+
+    def fake_git(command, cwd=None):
+        subcmd = command[3] if len(command) > 3 and command[1] == "-C" else command[1] if len(command) > 1 else ""
+        if subcmd == "rev-parse":
+            return subprocess.CompletedProcess(args=list(command), returncode=0, stdout="4f9c001\n", stderr="")
+        if subcmd == "status":
+            return subprocess.CompletedProcess(args=list(command), returncode=0, stdout="M hermes.py\n?? scratch.py\n", stderr="")
+        if subcmd == "diff":
+            return subprocess.CompletedProcess(args=list(command), returncode=0, stdout="diff content\n", stderr="")
+        if subcmd == "remote":
+            return subprocess.CompletedProcess(args=list(command), returncode=0, stdout="", stderr="")
+        return subprocess.CompletedProcess(args=list(command), returncode=0, stdout="", stderr="")
+
+    def fake_subprocess_run(command):
+        write_outbox_result(
+            tmp_path / "outbox",
+            project.name,
+            {
+                "status": "completed",
+                "last_output": "Hermes cleanup, commit a záloha hotova",
+                "iterations": [{
+                    "audit_performed": True,
+                    "audit_rejected_indices": [],
+                    "audit_protocol_error": False,
+                    "test_output": "5 passed",
+                }],
+            },
+            run_id="p5-audit-run",
+        )
+        return completed()
+
+    audit_run_fn = build_audit_run_fn(
+        registry,
+        command=["ai-orchestrator"],
+        project_paths={project.name: str(tmp_path / "ai-orchestrator")},
+        spec_dir=str(tmp_path / "specs"),
+        outbox_dir=str(tmp_path / "outbox"),
+        subprocess_run=fake_subprocess_run,
+        run_id_fn=lambda: "p5-audit-run",
+        run_git=fake_git,
+    )
+
+    result = audit_run_fn(project, "claude")
+
+    assert result["verdict"] == "rejected"
+    assert "0" in result["reason"]
+    assert "dirty" in result["reason"]
+    assert "4f9c001" in result["reason"]
+    assert "remote" in result["reason"]
+    assert result["reject_target"] == "in_progress"
+
+
+def test_p5_false_completion_regression_run_once_audit_never_moves_to_done(tmp_path):
+    """End-to-end regression: run_once_audit with failing DoD git verification
+    leaves the card in IN_PROGRESS (Pracuje se) and never moves it to Hotovo (DONE).
+    """
+    from ai_project_manager.runner import run_once_audit
+    from ai_project_manager.trello_client import InMemoryTrelloClient
+    from ai_project_manager.trello_sync import build_list_maps, project_from_card, sync_project_to_trello
+
+    project = ProjectRecord(
+        name="P5 — AO: cleanup, commit a záloha po Hermes integraci",
+        priority=5,
+        status=ProjectStatus.TESTING,
+        main_task="AO: cleanup, commit a záloha po Hermes integraci",
+        dod=[DoDItem(text="AO: cleanup, commit a záloha po Hermes integraci", checked=False)],
+    )
+    client = InMemoryTrelloClient()
+    created = sync_project_to_trello(client, project)
+    project.trello_card_id = created["id"]
+
+    registry = ProviderRegistry()
+    registry.mark_available("claude")
+
+    def fake_git(command, cwd=None):
+        subcmd = command[3] if len(command) > 3 and command[1] == "-C" else command[1] if len(command) > 1 else ""
+        if subcmd == "rev-parse":
+            return subprocess.CompletedProcess(args=list(command), returncode=0, stdout="4f9c001\n", stderr="")
+        if subcmd == "status":
+            return subprocess.CompletedProcess(args=list(command), returncode=0, stdout="M hermes.py\n", stderr="")
+        if subcmd == "diff":
+            return subprocess.CompletedProcess(args=list(command), returncode=0, stdout="diff content\n", stderr="")
+        if subcmd == "remote":
+            return subprocess.CompletedProcess(args=list(command), returncode=0, stdout="", stderr="")
+        return subprocess.CompletedProcess(args=list(command), returncode=0, stdout="", stderr="")
+
+    def fake_subprocess_run(command):
+        write_outbox_result(
+            tmp_path / "outbox",
+            project.name,
+            {
+                "status": "completed",
+                "last_output": "Hermes cleanup hotov",
+                "iterations": [{
+                    "audit_performed": True,
+                    "audit_rejected_indices": [],
+                    "audit_protocol_error": False,
+                    "test_output": "5 passed",
+                }],
+            },
+            run_id="p5-audit-run",
+        )
+        return completed()
+
+    audit_run_fn = build_audit_run_fn(
+        registry,
+        command=["ai-orchestrator"],
+        project_paths={project.name: str(tmp_path / "ai-orchestrator")},
+        spec_dir=str(tmp_path / "specs"),
+        outbox_dir=str(tmp_path / "outbox"),
+        subprocess_run=fake_subprocess_run,
+        run_id_fn=lambda: "p5-audit-run",
+        run_git=fake_git,
+    )
+
+    outcome = run_once_audit(
+        client,
+        [project],
+        registry,
+        audit_run_fn,
+        default_providers=["claude"],
+    )
+
+    assert outcome.ran is True
+    assert project.status == ProjectStatus.IN_PROGRESS
+    assert project.dod[0].checked is False
+
+    id_to_name, _ = build_list_maps(client)
+    reloaded = project_from_card(client.get_card(project.trello_card_id), id_to_name)
+    assert reloaded.status == ProjectStatus.IN_PROGRESS
+    assert reloaded.status != ProjectStatus.DONE
+    assert reloaded.dod[0].checked is False
+
