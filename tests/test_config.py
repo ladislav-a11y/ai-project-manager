@@ -67,6 +67,19 @@ def test_load_config_defaults_providers_and_orchestrator_command():
     assert config.orchestrator.command == ["ai-orchestrator"]
     assert config.poll_interval_seconds == 300.0
     assert config.holder == "project-manager"
+    assert config.inbox_enabled is False
+
+
+def test_load_config_can_explicitly_enable_inbox_intake():
+    config = load_config(base_env(AI_PM_ENABLE_INBOX="true"))
+
+    assert config.inbox_enabled is True
+
+
+@pytest.mark.parametrize("value", ["", "maybe", "2"])
+def test_load_config_rejects_invalid_inbox_enabled_value(value):
+    with pytest.raises(ConfigError, match="AI_PM_ENABLE_INBOX"):
+        load_config(base_env(AI_PM_ENABLE_INBOX=value))
 
 
 def test_load_config_parses_custom_providers_and_orchestrator_command():

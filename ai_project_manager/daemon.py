@@ -350,14 +350,20 @@ def load_projects_and_inbox(
     default_priority: int = 2,
     project_paths: Optional[dict] = None,
     card_project_keys: Optional[dict] = None,
+    process_inbox_enabled: bool = False,
 ) -> list:
-    """Pull real project records from Trello and fold in any new Inbox
-    cards - the single manual input point - returning the up-to-date
-    project list."""
+    """Pull workflow project records from Trello.
+
+    Inbox intake is deliberately opt-in while its lifecycle is incomplete;
+    production PM scheduling only sees governed workflow lists.
+    """
     projects = fetch_all_projects(client, exclude_list_names=(inbox_list_name,))
     _bootstrap_project_keys(
         client, projects, project_paths=project_paths, card_project_keys=card_project_keys
     )
+
+    if not process_inbox_enabled:
+        return projects
 
     def persist_inbox_project(project):
         card = sync_project_to_trello(client, project)
@@ -422,6 +428,7 @@ def run_tick(
     providers_for_project: Optional[dict] = None,
     default_providers: Optional[list] = None,
     inbox_list_name: str = "Inbox",
+    process_inbox_enabled: bool = False,
     lock_manager: Optional[ProjectLockManager] = None,
     probe: ProbeFn = _default_probe,
     provider_state_path: str = "provider_state.json",
@@ -462,6 +469,7 @@ def run_tick(
         projects = load_projects_and_inbox(
             client,
             inbox_list_name=inbox_list_name,
+            process_inbox_enabled=process_inbox_enabled,
             project_paths=project_paths,
             card_project_keys=card_project_keys,
         )
@@ -582,6 +590,7 @@ def run_loop(
     providers_for_project: Optional[dict] = None,
     default_providers: Optional[list] = None,
     inbox_list_name: str = "Inbox",
+    process_inbox_enabled: bool = False,
     lock_manager: Optional[ProjectLockManager] = None,
     probe: ProbeFn = _default_probe,
     max_iterations: Optional[int] = None,
@@ -666,6 +675,7 @@ def run_loop(
                     providers_for_project=providers_for_project,
                     default_providers=default_providers,
                     inbox_list_name=inbox_list_name,
+                    process_inbox_enabled=process_inbox_enabled,
                     lock_manager=lock_manager,
                     probe=probe,
                     provider_state_path=provider_state_path,

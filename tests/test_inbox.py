@@ -39,6 +39,26 @@ def test_classify_creates_new_project_when_no_match():
     assert result.project_name == "Totally unrelated new idea"
 
 
+def test_classify_never_merges_new_inbox_work_into_terminal_done_project():
+    projects = [
+        ProjectRecord(
+            name="P1 — Audit and stabilization ai-orchestrator",
+            status=ProjectStatus.DONE,
+            main_task="Station Agent audit and stabilization",
+        )
+    ]
+    card = {
+        "id": "c-done",
+        "name": "Station Agent new live-test requirements",
+        "desc": "Add bearing and distance to the selected station",
+    }
+
+    result = classify_inbox_card(card, projects)
+
+    assert result.is_new_project is True
+    assert result.project_name == card["name"]
+
+
 def test_looks_like_feedback_detects_bug_language():
     assert looks_like_feedback("This button nefunguje spravne") is True
     assert looks_like_feedback("Add a new export feature") is False

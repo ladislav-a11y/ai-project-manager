@@ -223,7 +223,13 @@ def classify_inbox_card(
 
     best: Optional[ProjectRecord] = None
     best_score = 0.0
+    # A terminal project is not a valid destination for new Inbox work.  A
+    # keyword overlap with a historical Hotovo card must create a fresh
+    # Ready item instead of silently turning unfinished input into a Done
+    # receipt.
     for project in projects:
+        if project.status == ProjectStatus.DONE:
+            continue
         score = _score(text, project)
         if score > best_score:
             best_score = score

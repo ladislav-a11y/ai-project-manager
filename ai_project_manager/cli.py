@@ -132,6 +132,9 @@ def main(
             spec_dir=config.orchestrator.spec_dir,
             outbox_dir=config.orchestrator.outbox_dir,
             timeout_seconds=config.orchestrator.timeout_seconds,
+            finalize_command=config.orchestrator.finalize_command,
+            finalize_paths=config.orchestrator.finalize_paths,
+            allowed_push_remotes=config.orchestrator.allowed_push_remotes,
         )
 
     if audit_run_fn is None:
@@ -160,6 +163,7 @@ def main(
         providers_for_project=config.providers_for_project,
         default_providers=config.providers,
         inbox_list_name=config.trello.inbox_list_name,
+        process_inbox_enabled=config.inbox_enabled,
         provider_state_path=config.provider_state_path,
         project_paths=(
             config.orchestrator.project_paths if validate_repository_paths else None

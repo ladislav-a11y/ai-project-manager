@@ -467,6 +467,98 @@ def _mark_limited_result(
     return result
 
 
+def _identity_setting(settings: Optional[dict], identity: Optional[str]):
+    if not settings or not identity:
+        return None
+    normalized = _project_identity(identity)
+    matches = [value for key, value in settings.items() if _project_identity(key) == normalized]
+    if len(matches) > 1 and any(value != matches[0] for value in matches[1:]):
+        raise OrchestratorProcessError(f"ambiguous controller-finalize setting for {identity!r}")
+    return matches[0] if matches else None
+
+
+def _finalization_kind(text: str) -> Optional[str]:
+    value = re.sub(r"\s+", " ", text.casefold()).strip()
+    if "post-commit" in value or "post commit" in value or "po commitu" in value:
+        return "post_commit"
+    if ("push" in value or "pushnout" in value) and (
+        "remote" in value or "vzdálen" in value or "vzdalen" in value
+    ):
+        return "push"
+    if "commit" in value and ("orchestr" in value or "schválen" in value or "schvalen" in value):
+        return "commit"
+    return None
+
+
+def _finalization_indices(project: ProjectRecord) -> Optional[list[int]]:
+    pending = [
+        (index, item)
+        for index, item in enumerate(project.dod)
+        if item.phase == "implementation" and not item.checked
+    ]
+    if not pending or any(_finalization_kind(item.text) is None for _, item in pending):
+        return None
+    return [index for index, _ in pending]
+
+
+def _controller_finalize(
+    project: ProjectRecord,
+    project_path: str,
+    task: OrchestratorTask,
+    run_id: str,
+    command: list,
+    finalize_paths: Optional[dict],
+    allowed_push_remotes: Optional[dict],
+    subprocess_run: SubprocessFn,
+    indices: list[int],
+) -> dict:
+    paths = _identity_setting(finalize_paths, project.project_key) or []
+    allowed_remote = _identity_setting(allowed_push_remotes, project.project_key)
+    full_command = list(command) + [
+        "--project", project_path,
+        "--run-id", run_id,
+        "--goal", task.task,
+        "--push",
+    ]
+    for path in paths:
+        full_command.extend(["--path", path])
+    if allowed_remote:
+        full_command.extend(["--allowed-remote", allowed_remote])
+    try:
+        completed = subprocess_run(full_command)
+    except Exception as exc:  # noqa: BLE001 - finalization is a governed boundary
+        return {
+            "status": "blocked", "stop_reason": f"controller finalization failed to start: {exc}",
+        }
+    try:
+        payload = json.loads((completed.stdout or "").strip())
+    except (TypeError, ValueError, json.JSONDecodeError):
+        payload = {
+            "status": "blocked",
+            "error": (completed.stderr or completed.stdout or "invalid finalizer output").strip(),
+        }
+    if not isinstance(payload, dict) or payload.get("status") != "completed" or payload.get("done") is not True:
+        reason = payload.get("error", "controller finalization did not complete") if isinstance(payload, dict) else "invalid finalizer result"
+        return {"status": "blocked", "stop_reason": str(reason), "finalization": payload}
+    if any(_finalization_kind(project.dod[index].text) == "push" for index in indices) and payload.get("pushed") is not True:
+        return {
+            "status": "blocked", "stop_reason": "controller finalization did not provide verified push evidence",
+            "finalization": payload,
+        }
+    checkpoint = dict(project.checkpoint or {})
+    completed_indices = set(checkpoint.get("completed_dod_indices") or [])
+    completed_indices.update(indices)
+    checkpoint["completed_dod_indices"] = sorted(completed_indices)
+    checkpoint["finalization"] = payload
+    return {
+        "status": "done", "checkpoint": checkpoint,
+        "last_output": json.dumps(payload, ensure_ascii=False, separators=(",", ":")),
+        "next_step": "ai-orchestrator audit",
+        "stop_reason": "controller commit, clean status and verified remote completed",
+        "finalization": payload,
+    }
+
+
 def build_run_fn(
     provider_registry: ProviderRegistry,
     command: list,
@@ -481,6 +573,9 @@ def build_run_fn(
     run_id_fn: Callable[[], str] = _default_run_id,
     provider_agent_map: Optional[dict] = None,
     run_git: Optional[RunCommand] = None,
+    finalize_command: Optional[list] = None,
+    finalize_paths: Optional[dict] = None,
+    allowed_push_remotes: Optional[dict] = None,
 ):
     """Build a ``run_fn(project, provider) -> dict`` that dispatches to the
     real ai-orchestrator ``--project``/``--goal``/``--spec``/``--agent``/
@@ -527,8 +622,16 @@ def build_run_fn(
                 f"or is not a directory: {project_path}"
             )
 
-        initial_head = get_git_head(project_path, run_git=git_cmd)
         run_id = run_id_fn()
+        finalization_indices = _finalization_indices(project)
+        if finalize_command and finalization_indices is not None:
+            return _controller_finalize(
+                project, project_path, task, run_id, finalize_command,
+                finalize_paths, allowed_push_remotes, subprocess_run,
+                finalization_indices,
+            )
+
+        initial_head = get_git_head(project_path, run_git=git_cmd)
         # The card title is mutable (including its P0-P5 prefix).  Key the
         # reusable spec/checkpoint path by the persisted project identity so a
         # reprioritization or title edit cannot silently start a fresh run.

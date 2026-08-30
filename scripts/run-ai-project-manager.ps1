@@ -77,10 +77,43 @@ try {
     $env:AI_PM_SLACK_ENABLED = '1'
 
     $env:TRELLO_INBOX_LIST = 'INBOX / Nápady'
+    # Inbox intake is intentionally disabled until its lifecycle/governance is
+    # complete. PM may schedule only Testování -> Čeká na AI -> Pracuje se -> Připraveno.
+    $env:AI_PM_ENABLE_INBOX = '0'
     $env:AI_PM_PROVIDERS = 'auto'
     $env:AI_PM_POLL_INTERVAL_SECONDS = [string]$PollIntervalSeconds
     $env:AI_ORCHESTRATOR_TIMEOUT_SECONDS = '3600'
     $env:AI_ORCHESTRATOR_CMD = "`"$orchestratorPython`" `"$orchestratorScript`" autonomous --no-commit"
+    $finalizeScript = Join-Path $OrchestratorRoot 'finalize.py'
+    if (-not (Test-Path -LiteralPath $finalizeScript -PathType Leaf)) {
+        throw "Orchestrator finalizer is missing: $finalizeScript"
+    }
+    $finalizeTestCommand = "$PythonExe -B -m pytest -q -p no:cacheprovider"
+    $env:AI_ORCHESTRATOR_FINALIZE_CMD = "`"$orchestratorPython`" `"$finalizeScript`" --test-command `"$finalizeTestCommand`""
+    $env:AI_ORCHESTRATOR_ALLOWED_PUSH_REMOTES = (@{
+        'AI Project Manager' = 'https://github.com/ladislav-a11y/ai-project-manager.git'
+    } | ConvertTo-Json -Compress)
+    $finalizePaths = [ordered]@{
+        'AI Project Manager' = @(
+            'ai_project_manager/cli.py',
+            'ai_project_manager/config.py',
+            'ai_project_manager/daemon.py',
+            'ai_project_manager/inbox.py',
+            'ai_project_manager/orchestrator_runner.py',
+            'ai_project_manager/trello_sync.py',
+            'scripts/run-ai-project-manager.ps1',
+            'scripts/verify_once_resolves_project_path.py',
+            'tests/test_cli.py',
+            'tests/test_config.py',
+            'tests/test_daemon.py',
+            'tests/test_handoff_e2e.py',
+            'tests/test_inbox.py',
+            'tests/test_orchestrator_runner.py',
+            'tests/test_recovery_e2e.py',
+            'tests/test_trello_sync.py'
+        )
+    }
+    $env:AI_ORCHESTRATOR_FINALIZE_PATHS = $finalizePaths | ConvertTo-Json -Compress
     $env:AI_ORCHESTRATOR_SPEC_DIR = Join-Path $projectRoot 'runtime\specs'
     $env:AI_ORCHESTRATOR_OUTBOX_DIR = Join-Path $OrchestratorRoot 'outbox'
     $env:AI_PM_PROVIDER_STATE_PATH = Join-Path $projectRoot 'runtime\provider_state.json'
@@ -177,10 +210,14 @@ finally {
     $env:SLACK_WEBHOOK_URL = $null
     $env:AI_PM_SLACK_ENABLED = $null
     $env:TRELLO_INBOX_LIST = $null
+    $env:AI_PM_ENABLE_INBOX = $null
     $env:AI_PM_PROVIDERS = $null
     $env:AI_PM_POLL_INTERVAL_SECONDS = $null
     $env:AI_ORCHESTRATOR_TIMEOUT_SECONDS = $null
     $env:AI_ORCHESTRATOR_CMD = $null
+    $env:AI_ORCHESTRATOR_FINALIZE_CMD = $null
+    $env:AI_ORCHESTRATOR_ALLOWED_PUSH_REMOTES = $null
+    $env:AI_ORCHESTRATOR_FINALIZE_PATHS = $null
     $env:AI_ORCHESTRATOR_SPEC_DIR = $null
     $env:AI_ORCHESTRATOR_OUTBOX_DIR = $null
     $env:AI_PM_PROVIDER_STATE_PATH = $null

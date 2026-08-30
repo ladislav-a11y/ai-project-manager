@@ -82,6 +82,9 @@ class OrchestratorConfig:
     """
 
     command: list
+    finalize_command: Optional[list] = None
+    allowed_push_remotes: dict = field(default_factory=dict)
+    finalize_paths: dict = field(default_factory=dict)
     timeout_seconds: Optional[float] = None
     project_paths: dict = field(default_factory=dict)
     projects_root: Optional[str] = None
@@ -96,6 +99,9 @@ class Config:
     providers: list
     poll_interval_seconds: float = 300.0
     holder: str = "project-manager"
+    # Inbox intake remains opt-in until its lifecycle and governance are
+    # complete. The production launcher keeps this disabled explicitly.
+    inbox_enabled: bool = False
     providers_for_project: dict = field(default_factory=dict)
     # One-time migration input for pre-existing production cards that
     # predate the project_key label: Trello card ID *or* exact current
@@ -159,6 +165,17 @@ def _absolute_path_setting(
     return os.path.abspath(_non_empty(env, name, default))
 
 
+def _boolean_setting(env: Mapping[str, str], name: str, default: bool = False) -> bool:
+    """Read a strict boolean environment setting."""
+    raw = env.get(name, "1" if default else "0")
+    normalized = raw.strip().lower()
+    if normalized in {"1", "true", "yes", "on"}:
+        return True
+    if normalized in {"0", "false", "no", "off"}:
+        return False
+    raise ConfigError(f"{name} must be a boolean (0/1, true/false, yes/no, on/off)")
+
+
 def _load_string_mapping(raw: str, name: str, *, list_values: bool = False) -> dict:
     """Parse a JSON object whose keys and values have a fixed string shape.
 
@@ -196,6 +213,9 @@ def load_config(env: Optional[Mapping[str, str]] = None) -> Config:
       TRELLO_KEY, TRELLO_TOKEN, TRELLO_BOARD_ID   (required)
       TRELLO_INBOX_LIST                            (default "Inbox")
       AI_ORCHESTRATOR_CMD                          (default "ai-orchestrator")
+      AI_ORCHESTRATOR_FINALIZE_CMD                 (optional controller finalize command)
+      AI_ORCHESTRATOR_ALLOWED_PUSH_REMOTES         (optional JSON identity -> exact remote URL)
+      AI_ORCHESTRATOR_FINALIZE_PATHS               (optional JSON identity -> explicit path list)
       AI_ORCHESTRATOR_TIMEOUT_SECONDS              (optional)
       AI_PM_PROJECT_PATHS                          (optional JSON object: project name -> local path)
       AI_PM_PROJECTS_ROOT                          (optional shared base dir for project checkouts)
@@ -206,6 +226,7 @@ def load_config(env: Optional[Mapping[str, str]] = None) -> Config:
       AI_PM_CARD_PROJECT_KEYS                      (optional JSON object: Trello card ID or exact title -> project identity)
       AI_PM_POLL_INTERVAL_SECONDS                  (default "300")
       AI_PM_HOLDER                                 (default "project-manager")
+      AI_PM_ENABLE_INBOX                           (default "0"; opt-in only)
       AI_PM_PROVIDER_STATE_PATH                    (default "provider_state.json")
       AI_PM_RECOVERY_MAX_ATTEMPTS                  (default "5")
     """
@@ -219,6 +240,7 @@ def load_config(env: Optional[Mapping[str, str]] = None) -> Config:
     )
 
     orchestrator_cmd = env.get("AI_ORCHESTRATOR_CMD", "ai-orchestrator")
+    finalize_cmd = env.get("AI_ORCHESTRATOR_FINALIZE_CMD", "").strip()
     timeout_raw = env.get("AI_ORCHESTRATOR_TIMEOUT_SECONDS")
     try:
         timeout_seconds = float(timeout_raw) if timeout_raw else None
@@ -234,9 +256,24 @@ def load_config(env: Optional[Mapping[str, str]] = None) -> Config:
     raw_project_paths = env.get("AI_PM_PROJECT_PATHS")
     if raw_project_paths:
         project_paths = _load_string_mapping(raw_project_paths, "AI_PM_PROJECT_PATHS")
+    allowed_push_remotes: dict = {}
+    raw_allowed_push_remotes = env.get("AI_ORCHESTRATOR_ALLOWED_PUSH_REMOTES")
+    if raw_allowed_push_remotes:
+        allowed_push_remotes = _load_string_mapping(
+            raw_allowed_push_remotes, "AI_ORCHESTRATOR_ALLOWED_PUSH_REMOTES"
+        )
+    finalize_paths: dict = {}
+    raw_finalize_paths = env.get("AI_ORCHESTRATOR_FINALIZE_PATHS")
+    if raw_finalize_paths:
+        finalize_paths = _load_string_mapping(
+            raw_finalize_paths, "AI_ORCHESTRATOR_FINALIZE_PATHS", list_values=True
+        )
 
     orchestrator = OrchestratorConfig(
         command=_split_command(orchestrator_cmd),
+        finalize_command=_split_command(finalize_cmd) if finalize_cmd else None,
+        allowed_push_remotes=allowed_push_remotes,
+        finalize_paths=finalize_paths,
         timeout_seconds=timeout_seconds,
         project_paths=project_paths,
         projects_root=(
@@ -314,6 +351,7 @@ def load_config(env: Optional[Mapping[str, str]] = None) -> Config:
         providers=providers,
         poll_interval_seconds=poll_interval_seconds,
         holder=_non_empty(env, "AI_PM_HOLDER", "project-manager"),
+        inbox_enabled=_boolean_setting(env, "AI_PM_ENABLE_INBOX"),
         providers_for_project=providers_for_project,
         card_project_keys=card_project_keys,
         provider_state_path=_absolute_path_setting(

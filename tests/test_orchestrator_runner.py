@@ -82,6 +82,47 @@ def make_run_fn(tmp_path, registry, subprocess_run=None, run_id_fn=None, **kwarg
     ), spec_dir, outbox_dir
 
 
+def test_run_fn_controller_finalizes_repo_tail_without_spending_agent_tick(tmp_path):
+    registry = ProviderRegistry()
+    registry.mark_available("claude")
+    calls = []
+
+    def fake_subprocess_run(command):
+        calls.append(command)
+        return completed(json.dumps({
+            "status": "completed", "done": True, "committed": True,
+            "clean": True, "pushed": True, "commit_hash": "abc123",
+        }))
+
+    project = ProjectRecord(
+        name="Demo",
+        orchestrator_ready_task="Finalize the repository",
+        dod=[
+            DoDItem(text="implementation complete", checked=True),
+            DoDItem(text="create orchestrator-approved commit"),
+            DoDItem(text="po commitu ověřit git status"),
+            DoDItem(text="push and verify remote commit"),
+        ],
+        checkpoint={"completed_dod_indices": [0]},
+    )
+    run_fn, _, _ = make_run_fn(
+        tmp_path, registry, subprocess_run=fake_subprocess_run,
+        finalize_command=["controller-finalize"],
+        finalize_paths={"Demo": ["tracked.py"]},
+        allowed_push_remotes={"Demo": "https://example.invalid/repo.git"},
+    )
+
+    result = run_fn(project, "claude")
+
+    assert result["status"] == "done"
+    assert result["checkpoint"]["completed_dod_indices"] == [0, 1, 2, 3]
+    assert len(calls) == 1
+    assert calls[0][:3] == ["controller-finalize", "--project", str(tmp_path / "demo-checkout")]
+    assert "--push" in calls[0]
+    assert calls[0][calls[0].index("--path") + 1] == "tracked.py"
+    assert calls[0][calls[0].index("--allowed-remote") + 1] == "https://example.invalid/repo.git"
+
+
 def test_audit_run_fn_uses_supported_autonomous_cli_and_reads_internal_audit(tmp_path):
     registry = ProviderRegistry()
     registry.mark_available("claude")

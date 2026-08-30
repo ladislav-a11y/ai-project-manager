@@ -120,7 +120,7 @@ def test_run_tick_promotes_completed_implementation_before_audit():
     assert project_from_card(client.get_card(project.trello_card_id), id_to_name).status == ProjectStatus.DONE
 
 
-def test_run_tick_loads_real_projects_and_processes_inbox_then_runs():
+def test_run_tick_loads_real_projects_and_processes_inbox_only_when_explicitly_enabled():
     client = InMemoryTrelloClient()
     _, name_to_id = build_list_maps(client)
     existing = ProjectRecord(
@@ -145,7 +145,13 @@ def test_run_tick_loads_real_projects_and_processes_inbox_then_runs():
         calls.append(project.name)
         return {"status": "in_progress", "last_output": "worked on it"}
 
-    outcome = run_tick(client, registry, run_fn, default_providers=["claude"])
+    outcome = run_tick(
+        client,
+        registry,
+        run_fn,
+        default_providers=["claude"],
+        process_inbox_enabled=True,
+    )
 
     assert outcome.ran is True
     assert calls == ["Dashboard"]
@@ -156,6 +162,38 @@ def test_run_tick_loads_real_projects_and_processes_inbox_then_runs():
     receipts = client.list_cards(name_to_id["Done"])
     assert len(receipts) == 1
     assert receipts[0]["name"].startswith("Zpracováno")
+
+
+def test_run_tick_ignores_inbox_by_default():
+    client = InMemoryTrelloClient()
+    _, name_to_id = build_list_maps(client)
+    existing = ProjectRecord(
+        name="Dashboard",
+        priority=2,
+        status=ProjectStatus.READY,
+        main_task="React dashboard for orchestrator status",
+    )
+    sync_project_to_trello(client, existing)
+    source = client.create_card(
+        name_to_id["Inbox"],
+        "Dashboard spinner bug",
+        desc="The orchestrator dashboard spinner never stops, this is a bug",
+    )
+
+    registry = ProviderRegistry()
+    registry.mark_available("claude")
+    calls = []
+
+    def run_fn(project, provider):
+        calls.append(project.name)
+        return {"status": "in_progress"}
+
+    outcome = run_tick(client, registry, run_fn, default_providers=["claude"])
+
+    assert outcome.ran is True
+    assert calls == ["Dashboard"]
+    assert [card["id"] for card in client.list_cards(name_to_id["Inbox"])] == [source["id"]]
+    assert client.list_cards(name_to_id["Done"]) == []
 
 
 def test_run_loop_once_runs_a_single_tick_and_never_sleeps():
