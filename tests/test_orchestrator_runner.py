@@ -13,6 +13,7 @@ from ai_project_manager.orchestrator_runner import (
     ProjectPathError,
     build_audit_run_fn,
     build_run_fn,
+    _finalization_needs_refresh,
     map_provider_to_agent,
     parse_spec_markdown,
     resolve_project_path,
@@ -121,6 +122,18 @@ def test_run_fn_controller_finalizes_repo_tail_without_spending_agent_tick(tmp_p
     assert "--push" in calls[0]
     assert calls[0][calls[0].index("--path") + 1] == "tracked.py"
     assert calls[0][calls[0].index("--allowed-remote") + 1] == "https://example.invalid/repo.git"
+
+
+def test_finalization_refresh_is_needed_when_card_proof_has_old_head(tmp_path):
+    project = ProjectRecord(
+        name="Demo",
+        checkpoint={"finalization": {"commit_hash": "old-head"}},
+    )
+
+    def fake_git(_command):
+        return completed("new-head\n")
+
+    assert _finalization_needs_refresh(project, str(tmp_path / "demo-checkout"), fake_git) is True
 
 
 def test_audit_run_fn_uses_supported_autonomous_cli_and_reads_internal_audit(tmp_path):

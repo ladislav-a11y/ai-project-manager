@@ -501,6 +501,16 @@ def _finalization_indices(project: ProjectRecord) -> Optional[list[int]]:
     return [index for index, _ in pending]
 
 
+def _finalization_needs_refresh(project: ProjectRecord, project_path: str, run_git: RunCommand) -> bool:
+    """Detect a newer local HEAD than the card's stored finalization proof."""
+    finalization = (project.checkpoint or {}).get("finalization")
+    recorded_head = finalization.get("commit_hash") if isinstance(finalization, dict) else None
+    if not recorded_head:
+        return False
+    current_head = get_git_head(project_path, run_git=run_git)
+    return bool(current_head and current_head != recorded_head)
+
+
 def _controller_finalize(
     project: ProjectRecord,
     project_path: str,
@@ -624,11 +634,16 @@ def build_run_fn(
 
         run_id = run_id_fn()
         finalization_indices = _finalization_indices(project)
-        if finalize_command and finalization_indices is not None:
+        finalization_refresh = (
+            finalize_command
+            and finalization_indices is None
+            and _finalization_needs_refresh(project, project_path, git_cmd)
+        )
+        if finalize_command and (finalization_indices is not None or finalization_refresh):
             return _controller_finalize(
                 project, project_path, task, run_id, finalize_command,
                 finalize_paths, allowed_push_remotes, subprocess_run,
-                finalization_indices,
+                finalization_indices or [],
             )
 
         initial_head = get_git_head(project_path, run_git=git_cmd)
