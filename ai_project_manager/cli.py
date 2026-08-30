@@ -122,6 +122,7 @@ def main(
 
     load_provider_state(config.provider_state_path, provider_registry)
 
+    validate_repository_paths = run_fn is None
     if run_fn is None:
         run_fn = build_run_fn(
             provider_registry,
@@ -160,7 +161,9 @@ def main(
         default_providers=config.providers,
         inbox_list_name=config.trello.inbox_list_name,
         provider_state_path=config.provider_state_path,
-        project_paths=config.orchestrator.project_paths,
+        project_paths=(
+            config.orchestrator.project_paths if validate_repository_paths else None
+        ),
         card_project_keys=config.card_project_keys,
         recovery_max_attempts=config.recovery_max_attempts,
         audit_run_fn=audit_run_fn,

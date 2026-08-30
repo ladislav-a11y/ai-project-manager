@@ -238,8 +238,7 @@ def priority_from_labels(labels: list[dict]) -> int:
 
 
 def project_key_from_labels(labels: list[dict]) -> Optional[str]:
-    """The card's stable project identity: the first label on the card
-    that is not a P0-P5 priority label.
+    """Return the card's one unambiguous project-identity label.
 
     This is deliberately a plain Trello label rather than anything parsed
     from the card's title - a title is free-form status prose that a work
@@ -249,11 +248,19 @@ def project_key_from_labels(labels: list[dict]) -> Optional[str]:
     which is what makes it durable enough to resolve a local checkout by
     (see orchestrator_runner.resolve_project_path).
     """
-    for label in labels or []:
-        name = (label.get("name") or "").strip()
-        if name and not PRIORITY_LABEL_RE.match(name):
-            return name
-    return None
+    identities = {
+        (label.get("name") or "").strip()
+        for label in labels or []
+        if (label.get("name") or "").strip()
+        and not PRIORITY_LABEL_RE.match((label.get("name") or "").strip())
+    }
+    if len(identities) > 1:
+        # Preserve fail-closed loading: returning no usable identity lets the
+        # pre-dispatch validator persist an actionable Trello reason and Slack
+        # notice. Raising here would abort the whole board read before the
+        # offending card could be updated.
+        return None
+    return next(iter(identities), None)
 
 
 def priority_from_card(card: dict) -> int:

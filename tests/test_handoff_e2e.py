@@ -16,11 +16,24 @@ from datetime import timedelta, datetime, timezone
 
 from ai_project_manager.daemon import run_tick
 from ai_project_manager.lock import ProjectLockManager
-from ai_project_manager.models import ProjectRecord, ProjectStatus
+from ai_project_manager.models import ProjectRecord as _ProjectRecord, ProjectStatus
 from ai_project_manager.orchestrator_runner import build_run_fn, parse_spec_markdown
 from ai_project_manager.providers import ProviderRegistry, ProviderState
 from ai_project_manager.trello_client import InMemoryTrelloClient
 from ai_project_manager.trello_sync import build_list_maps, project_from_card, sync_project_to_trello
+
+
+def ProjectRecord(*args, **kwargs):
+    """Build repository-backed fixtures with an explicit identity label."""
+    if "project_key" not in kwargs and kwargs.get("name"):
+        kwargs["project_key"] = kwargs["name"]
+    return _ProjectRecord(*args, **kwargs)
+
+
+def _checkout(tmp_path, name):
+    path = tmp_path / name
+    path.mkdir(exist_ok=True)
+    return str(path)
 
 
 def _args_to_dict(argv):
@@ -88,7 +101,7 @@ def test_project_manager_hands_off_to_orchestrator_and_syncs_result_back(tmp_pat
     run_fn = build_run_fn(
         registry,
         command=["ai-orchestrator"],
-        project_paths={"Dashboard": str(tmp_path / "dashboard-checkout")},
+        project_paths={"Dashboard": _checkout(tmp_path, "dashboard-checkout")},
         spec_dir=str(tmp_path / "specs"),
         outbox_dir=str(outbox_dir),
         subprocess_run=subprocess_run,
@@ -141,7 +154,7 @@ def test_project_manager_resumes_from_checkpoint_after_provider_limit_via_real_c
     run_fn = build_run_fn(
         registry,
         command=["ai-orchestrator"],
-        project_paths={"Dashboard": str(tmp_path / "dashboard-checkout")},
+        project_paths={"Dashboard": _checkout(tmp_path, "dashboard-checkout")},
         spec_dir=str(tmp_path / "specs"),
         outbox_dir=str(outbox_dir),
         subprocess_run=subprocess_run,
@@ -180,6 +193,7 @@ def test_full_visible_trello_dod_checklist_survives_to_completion(tmp_path):
         ready_list_id,
         "P4 - Full DoD",
         desc=f"CIL: overit checklist.\n\nDEFINITION OF DONE:\n{dod_lines}",
+        labels=["P4", "P4 - Full DoD"],
     )
 
     id_to_name, _ = build_list_maps(client)
@@ -205,7 +219,7 @@ def test_full_visible_trello_dod_checklist_survives_to_completion(tmp_path):
     run_fn = build_run_fn(
         registry,
         command=["ai-orchestrator"],
-        project_paths={"P4 - Full DoD": str(tmp_path / "checkout")},
+        project_paths={"P4 - Full DoD": _checkout(tmp_path, "checkout")},
         spec_dir=str(tmp_path / "specs"),
         outbox_dir=str(outbox_dir),
         subprocess_run=subprocess_run,
@@ -272,6 +286,7 @@ def test_incomplete_dod_never_closes_the_card(tmp_path):
         ready_list_id,
         "P4 - Partial DoD",
         desc=f"CIL: overit checklist.\n\nDEFINITION OF DONE:\n{dod_lines}",
+        labels=["P4", "P4 - Partial DoD"],
     )
 
     registry = ProviderRegistry()
@@ -294,7 +309,7 @@ def test_incomplete_dod_never_closes_the_card(tmp_path):
     run_fn = build_run_fn(
         registry,
         command=["ai-orchestrator"],
-        project_paths={"P4 - Partial DoD": str(tmp_path / "checkout")},
+        project_paths={"P4 - Partial DoD": _checkout(tmp_path, "checkout")},
         spec_dir=str(tmp_path / "specs"),
         outbox_dir=str(outbox_dir),
         subprocess_run=subprocess_run,
@@ -343,7 +358,7 @@ def test_project_manager_records_provider_limit_from_real_orchestrator_exit(tmp_
     run_fn = build_run_fn(
         registry,
         command=["ai-orchestrator"],
-        project_paths={"Dashboard": str(tmp_path / "dashboard-checkout")},
+        project_paths={"Dashboard": _checkout(tmp_path, "dashboard-checkout")},
         spec_dir=str(tmp_path / "specs"),
         outbox_dir=str(tmp_path / "outbox"),
         subprocess_run=subprocess_run,

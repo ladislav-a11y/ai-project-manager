@@ -23,7 +23,9 @@ from .inbox import process_inbox
 from .lock import ProjectLockManager
 from .providers import ProviderRegistry, ProviderState
 from .provider_state import save_provider_state
-from .orchestrator_runner import _phrase_in, _project_identity, _PRIORITY_PREFIX_RE
+from .orchestrator_runner import (
+    _PRIORITY_PREFIX_RE, ProjectPathError, resolve_project_path,
+)
 from .recovery import DEFAULT_MAX_ATTEMPTS, default_backoff, scan_for_recovery
 from .runner import (
     DEFAULT_HOLDER,
@@ -292,7 +294,7 @@ def _bootstrap_project_keys(
     project_paths: Optional[dict] = None,
     card_project_keys: Optional[dict] = None,
 ) -> None:
-    """Assign missing stable project_key labels to existing cards.
+    """Assign missing identities only from an explicit card migration map.
 
     Root cause of the real production failure: ``project_key_from_labels``
     can only ever read a label that is already on the card, and the real
@@ -303,8 +305,8 @@ def _bootstrap_project_keys(
     notifikaci" contains no trace of "AI Project Manager" anywhere in its
     title or task text, so there is no signal left to infer identity from.
 
-    Resolution order, most trustworthy first:
-      1. ``card_project_keys`` (``AI_PM_CARD_PROJECT_KEYS``) - an explicit,
+    The sole migration source is ``card_project_keys``
+    (``AI_PM_CARD_PROJECT_KEYS``): an explicit,
          one-time migration mapping keyed by either this exact Trello
          card's immutable ID, or (since an operator preparing this map
          from the board UI/a task description only ever sees the card's
@@ -318,12 +320,7 @@ def _bootstrap_project_keys(
          fabricate a bogus label or point a card at the wrong repo. Once
          applied the card's ``project_key`` label is what persists the
          identity from then on - a later title edit can never undo it.
-      2. a content-phrase match against the configured stable identities
-         (kept for cards whose task text does happen to name a project) -
-         applied only when exactly one identity matches, never guessed
-         when zero or more than one do.
-      3. an exact-title ``project_paths`` override that happens to map to
-         exactly one stable identity's path (legacy/back-compat).
+    No identity is inferred from content, title phrases, paths, or slugs.
     """
     project_paths = project_paths or {}
     card_project_keys = card_project_keys or {}
@@ -345,41 +342,6 @@ def _bootstrap_project_keys(
         if override and override in stable_keys:
             project.project_key = override
             sync_project_to_trello(client, project)
-            continue
-
-        def first_paragraph(text: str) -> str:
-            return text.split("\n\n", 1)[0].strip() if text else ""
-
-        primary_haystack = _project_identity(" ".join(
-            part for part in (
-                project.name,
-                first_paragraph(project.main_task),
-                first_paragraph(project.orchestrator_ready_task),
-            )
-            if part
-        ))
-        matches = [
-            key for key in stable_keys
-            if _phrase_in(primary_haystack, _project_identity(key))
-        ]
-
-        if len(matches) > 1:
-            continue
-
-        if not matches and project.name in project_paths:
-            pinned_path = project_paths[project.name]
-            path_matches = [
-                key for key in stable_keys
-                if project_paths[key] == pinned_path
-            ]
-            if len(path_matches) == 1:
-                matches = path_matches
-
-        if len(matches) != 1:
-            continue
-
-        project.project_key = matches[0]
-        sync_project_to_trello(client, project)
 
 
 def load_projects_and_inbox(
@@ -424,6 +386,32 @@ def load_projects_and_inbox(
                 known_card_ids.add(project.trello_card_id)
 
     return projects
+
+
+def _fail_closed_invalid_project_identities(client, projects: list, project_paths: dict) -> None:
+    """Block unsafe work before runner selection can call the dispatcher."""
+    for project in projects:
+        if project.status not in {
+            ProjectStatus.READY, ProjectStatus.IN_PROGRESS, ProjectStatus.TESTING
+        }:
+            continue
+        try:
+            repo_path = resolve_project_path(project, project_paths=project_paths)
+            if not Path(repo_path).is_dir():
+                raise ProjectPathError(
+                    f"configured repository path does not exist or is not a directory: {repo_path}"
+                )
+        except ProjectPathError as exc:
+            reason = f"project identity validation failed before dispatch: {exc}"
+            project.stop_reason = reason
+            project.blocked_by = reason
+            project.transition_to(ProjectStatus.BLOCKED)
+            sync_project_to_trello(client, project)
+            notify(
+                f"[AI Project Manager] Dispatch odmítnut: {project.name}{_card_url_suffix(project)}\n"
+                f"Důvod: {reason}\nKrok: přidejte právě jeden známý projektový štítek "
+                "a opravte jeho AI_PM_PROJECT_PATHS cestu."
+            )
 
 
 def run_tick(
@@ -477,6 +465,12 @@ def run_tick(
             project_paths=project_paths,
             card_project_keys=card_project_keys,
         )
+        # ``run_tick`` is also a generic scheduler primitive used with
+        # non-repository run functions. The production CLI supplies the
+        # explicit allowlist; only that dispatch mode owns repository
+        # identity validation.
+        if project_paths is not None:
+            _fail_closed_invalid_project_identities(client, projects, project_paths)
 
         contract_issues = maintain_board_contract(client)
         for issue in contract_issues:

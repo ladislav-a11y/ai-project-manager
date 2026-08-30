@@ -1,5 +1,6 @@
 import json
 import sys
+from pathlib import Path
 
 import pytest
 
@@ -215,6 +216,7 @@ def test_main_once_resolves_project_path_via_real_wiring_without_exact_title_ove
     )
 
     station_checkout = str(tmp_path / "station-agent-checkout")
+    Path(station_checkout).mkdir()
     monkeypatch.setenv(
         "AI_PM_PROJECT_PATHS",
         json.dumps({"Station Agent": station_checkout}),
@@ -228,6 +230,7 @@ def test_main_once_resolves_project_path_via_real_wiring_without_exact_title_ove
         priority=0,
         status=ProjectStatus.READY,
         orchestrator_ready_task="Revize MD/JSON",
+        project_key="Station Agent",
     )
     client = InMemoryTrelloClient()
     created = sync_project_to_trello(client, project)
@@ -295,6 +298,7 @@ def test_main_once_resolves_project_path_via_stable_label_identity_without_title
     )
 
     checkout = str(tmp_path / expected_checkout_name)
+    Path(checkout).mkdir()
     # Keyed by each project's stable label identity only - deliberately
     # never containing this card's exact current title - mirroring the
     # real scripts/run-ai-project-manager.ps1 production config.
@@ -370,6 +374,7 @@ def test_main_once_migrates_and_resolves_real_production_card_without_exact_titl
     )
 
     checkout = str(tmp_path / "ai-project-manager-checkout")
+    Path(checkout).mkdir()
     # Keyed only by the 3 stable project identities - deliberately no key
     # matching this card's exact current title anywhere.
     monkeypatch.setenv(
@@ -451,6 +456,7 @@ def test_main_once_migrates_real_production_card_via_title_keyed_config_matching
     )
 
     checkout = str(tmp_path / "ai-project-manager-checkout")
+    Path(checkout).mkdir()
     monkeypatch.setenv(
         "AI_PM_PROJECT_PATHS",
         json.dumps(

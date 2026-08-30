@@ -680,9 +680,7 @@ def test_run_tick_logs_wait_when_provider_is_limited(caplog):
     assert "retry_after" in messages.lower()
 
 
-def test_bootstrap_project_key_from_primary_goal_ignores_context_mentions():
-    """Legacy production shape: only P5 label, generic title, AI Project
-    Manager named in the goal, Station Agent mentioned later only as context."""
+def test_bootstrap_project_key_never_infers_identity_from_card_content():
     client = InMemoryTrelloClient(
         list_names=(
             "INBOX / Nápady",
@@ -719,13 +717,10 @@ def test_bootstrap_project_key_from_primary_goal_ignores_context_mentions():
     )
 
     migrated = next(p for p in projects if p.trello_card_id == card["id"])
-    assert migrated.project_key == "AI Project Manager"
+    assert migrated.project_key is None
 
     reloaded = client.get_card(card["id"])
-    assert {label["name"] for label in reloaded["labels"]} == {
-        "P5",
-        "AI Project Manager",
-    }
+    assert {label["name"] for label in reloaded["labels"]} == {"P5"}
 
 
 def test_bootstrap_project_key_does_not_guess_on_zero_or_ambiguous_match():
@@ -760,9 +755,7 @@ def test_bootstrap_project_key_does_not_guess_on_zero_or_ambiguous_match():
     assert {label["name"] for label in client.get_card(ambiguous["id"])["labels"]} == {"P5"}
 
 
-def test_bootstrap_project_key_from_exact_title_path_mapping():
-    """A legacy exact-title override can safely seed the durable project
-    identity when its path maps to exactly one stable project key."""
+def test_bootstrap_project_key_never_infers_identity_from_exact_title_path():
     client = InMemoryTrelloClient()
     _, name_to_id = build_list_maps(client)
 
@@ -783,11 +776,8 @@ def test_bootstrap_project_key_from_exact_title_path_mapping():
     projects = load_projects_and_inbox(client, project_paths=project_paths)
     migrated = next(p for p in projects if p.trello_card_id == card["id"])
 
-    assert migrated.project_key == "AI Orchestrator"
-    assert {label["name"] for label in client.get_card(card["id"])["labels"]} == {
-        "P5",
-        "AI Orchestrator",
-    }
+    assert migrated.project_key is None
+    assert {label["name"] for label in client.get_card(card["id"])["labels"]} == {"P5"}
 
 
 def test_bootstrap_project_key_migrates_real_production_card_via_card_id_override():

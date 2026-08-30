@@ -19,11 +19,23 @@ import subprocess
 
 from ai_project_manager.daemon import run_tick
 from ai_project_manager.lock import ProjectLockManager
-from ai_project_manager.models import ProjectRecord, ProjectStatus
+from ai_project_manager.models import ProjectRecord as _ProjectRecord, ProjectStatus
 from ai_project_manager.orchestrator_runner import build_run_fn, parse_spec_markdown
 from ai_project_manager.providers import ProviderRegistry
 from ai_project_manager.trello_client import InMemoryTrelloClient
 from ai_project_manager.trello_sync import build_list_maps, project_from_card, sync_project_to_trello
+
+
+def ProjectRecord(*args, **kwargs):
+    if "project_key" not in kwargs and kwargs.get("name"):
+        kwargs["project_key"] = kwargs["name"]
+    return _ProjectRecord(*args, **kwargs)
+
+
+def _checkout(tmp_path, name):
+    path = tmp_path / name
+    path.mkdir(exist_ok=True)
+    return str(path)
 
 
 def _args_to_dict(argv):
@@ -89,7 +101,7 @@ def test_blocked_card_is_reviewed_repaired_requeued_and_work_continues_same_tick
     run_fn = build_run_fn(
         registry,
         command=["ai-orchestrator"],
-        project_paths={"Dashboard": str(tmp_path / "dashboard-checkout")},
+        project_paths={"Dashboard": _checkout(tmp_path, "dashboard-checkout")},
         spec_dir=str(tmp_path / "specs"),
         outbox_dir=str(outbox_dir),
         subprocess_run=subprocess_run,
@@ -144,7 +156,7 @@ def test_blocked_card_needing_a_human_is_never_dispatched_to_the_real_orchestrat
     run_fn = build_run_fn(
         registry,
         command=["ai-orchestrator"],
-        project_paths={"Dashboard": str(tmp_path / "dashboard-checkout")},
+        project_paths={"Dashboard": _checkout(tmp_path, "dashboard-checkout")},
         spec_dir=str(tmp_path / "specs"),
         outbox_dir=str(outbox_dir),
         subprocess_run=subprocess_run,

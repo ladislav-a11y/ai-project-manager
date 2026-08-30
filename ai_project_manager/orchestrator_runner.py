@@ -16,9 +16,10 @@ back after the process exits.
 Several extra pieces make that contract work correctly and without any
 hardcoded single project or path:
 
-- ``project_paths``/``projects_root`` map a Trello-backed
-  ``ProjectRecord`` onto the local checkout ai-orchestrator should
-  operate on (see ``resolve_project_path``).
+- ``project_paths`` is the explicit identity-to-checkout allowlist used
+  to map a Trello-backed ``ProjectRecord`` safely (see
+  ``resolve_project_path``). The legacy ``projects_root`` setting is
+  accepted for configuration compatibility but never used to infer a path.
 - ``spec_dir`` holds one stable, per-project Markdown spec file (named
   after the project's slug, overwritten every run) carrying the goal and
   a real ``- [ ] ...`` Definition of Done checklist ai-orchestrator can
@@ -84,6 +85,7 @@ ReadOutboxFn = Callable[[str, str, str], dict]
 
 _DEFAULT_LIMIT_BACKOFF = timedelta(minutes=30)
 _DEFAULT_SPEC_DIR = "specs"
+_RUNTIME_CONTRACT_PATH = Path(__file__).resolve().parents[2] / "AI_PROJECT_RUNTIME.md"
 _DEFAULT_OUTBOX_DIR = "outbox"
 
 # Project Manager's own provider registry/locking/Trello state always
@@ -145,15 +147,13 @@ def _strip_priority_prefix(name: str) -> str:
 
 
 def _project_identity(name: str) -> str:
-    """The stable part of a card title used for path resolution: the
-    priority prefix stripped, whitespace collapsed, case-folded.
+    """Normalize an explicit project identity without interpreting it.
 
-    Deliberately not the full descriptive title - a card's wording is
-    routinely edited (status notes appended, typos fixed, priority
-    changed) while the underlying project stays the same, so matching
-    must survive that instead of requiring the exact current title."""
-    stripped = _strip_priority_prefix(name)
-    return re.sub(r"\s+", " ", stripped).strip().casefold()
+    Priority-looking text is deliberately preserved: allowlist keys are
+    identities, not card titles, and stripping a ``P0``-``P5`` prefix could
+    make an unrelated title-shaped key collide with a real identity.
+    """
+    return re.sub(r"\s+", " ", name).strip().casefold()
 
 
 def _phrase_in(haystack: str, needle: str) -> bool:
@@ -181,72 +181,34 @@ def resolve_project_path(
     """Map a Trello-backed ``ProjectRecord`` onto the local checkout
     ai-orchestrator's ``--project`` argument should point at.
 
-    Resolution order (no single hardcoded path):
-      1. an explicit per-project override in ``project_paths``, keyed by
-         the card's exact, current ``project.name`` (e.g. from
-         ``AI_PM_PROJECT_PATHS``) - preserved verbatim so a one-off card
-         can always be pinned regardless of the rules below;
-      2. ``project.project_key`` - a plain Trello label on the card (see
-         ``trello_sync.project_key_from_labels``), looked up verbatim
-         (case/whitespace-folded) as a ``project_paths`` key. This is the
-         card's *stable* identity: unlike the card's title, a label is not
-         free-form prose an author keeps rewriting, so this is the only
-         mechanism here that does not depend in any way on what the title
-         happens to say - a card titled "Izolace testovacich Slack
-         notifikaci" with the "AI Project Manager" label still resolves
-         correctly even though that phrase never appears in its title;
-      3. (legacy/fallback, title-based) a ``project_paths`` key whose
-         priority-stripped, case-folded form occurs as a whole phrase
-         inside the card's own priority-stripped title - this only works
-         when the title happens to mention the project's identity phrase,
-         which is exactly the limitation step 2 exists to remove. When
-         more than one key of the longest matching length points at
-         different paths, resolution refuses to guess and raises instead;
-      4. ``<projects_root>/<slug(identity)>`` when a shared root is
-         configured (e.g. from ``AI_PM_PROJECTS_ROOT``).
-
-    A project matching none of these raises loudly rather than silently
-    guessing a path.
+    The card must carry one stable ``project_key`` label. That identity is
+    matched against the explicit ``project_paths`` allowlist after only
+    case/whitespace normalization. Card titles, priorities, descriptions,
+    slugs, and ``projects_root`` are deliberately never used as repository
+    signals. Missing, unknown, or conflicting mappings fail closed.
     """
     project_paths = project_paths or {}
+    if not project.project_key:
+        raise ProjectPathError(
+            f"card {project.name!r} has no project identity label; P0-P5 is priority only"
+        )
 
-    if project.name in project_paths:
-        return project_paths[project.name]
-
-    if project.project_key:
-        key_identity = _project_identity(project.project_key)
-        for key, path in project_paths.items():
-            if _project_identity(key) == key_identity:
-                return path
-
-    identity = _project_identity(project.name)
-    if identity:
-        matches = []
-        for key, path in project_paths.items():
-            norm_key = _project_identity(key)
-            if norm_key and _phrase_in(identity, norm_key):
-                matches.append((len(norm_key), key, path))
-        if matches:
-            longest = max(length for length, _key, _path in matches)
-            best = [m for m in matches if m[0] == longest]
-            distinct_paths = {path for _length, _key, path in best}
-            if len(distinct_paths) > 1:
-                keys = ", ".join(repr(key) for _length, key, _path in best)
-                raise ProjectPathError(
-                    f"project {project.name!r} matches multiple equally-specific "
-                    f"AI_PM_PROJECT_PATHS entries pointing at different repositories "
-                    f"({keys}); make one entry more specific or add an exact "
-                    "AI_PM_PROJECT_PATHS override for this card's current title"
-                )
-            return best[0][2]
-
-    if projects_root:
-        return str(Path(projects_root) / _slugify(identity or project.name))
-
-    raise ProjectPathError(
-        f"cannot resolve local path for project {project.name!r}: "
-        "configure AI_PM_PROJECT_PATHS (per-project) or AI_PM_PROJECTS_ROOT (shared base dir)"
-    )
+    identity = _project_identity(project.project_key)
+    matches = [
+        path for key, path in project_paths.items()
+        if _project_identity(key) == identity
+    ]
+    if not matches:
+        raise ProjectPathError(
+            f"unknown project identity {project.project_key!r} on card {project.name!r}; "
+            "configure an exact AI_PM_PROJECT_PATHS identity mapping"
+        )
+    distinct = {str(Path(path).resolve()) for path in matches}
+    if len(distinct) != 1:
+        raise ProjectPathError(
+            f"ambiguous project identity {project.project_key!r}: configured paths disagree"
+        )
+    return matches[0]
 
 
 def spec_file_path(
@@ -347,7 +309,12 @@ def _render_spec_markdown(task: OrchestratorTask, run_id: str) -> str:
     readable checklist - travels in a fenced HTML comment, the same
     embedded-JSON-block pattern trello_sync.py uses for its data block."""
     goal = _goal_without_checklist_markers(task.task.strip())
-    lines = [f"# {task.project_name}", "", "## Goal", "", goal, "", "## Definition of Done", ""]
+    runtime_contract = _RUNTIME_CONTRACT_PATH.read_text(encoding="utf-8").strip()
+    lines = [
+        f"# {task.project_name}", "", "## Goal", "", goal, "",
+        "## Runtime Contract", "", runtime_contract, "",
+        "## Definition of Done", "",
+    ]
     completed_indices = {
         index for index in (task.checkpoint or {}).get("completed_dod_indices", [])
         if isinstance(index, int) and not isinstance(index, bool) and index >= 0
@@ -553,6 +520,13 @@ def build_run_fn(
         except ProjectPathError as exc:
             raise OrchestratorProcessError(str(exc)) from exc
 
+        checkout = Path(project_path)
+        if not checkout.is_dir():
+            raise OrchestratorProcessError(
+                f"configured repository path for {project.project_key!r} does not exist "
+                f"or is not a directory: {project_path}"
+            )
+
         initial_head = get_git_head(project_path, run_git=git_cmd)
         run_id = run_id_fn()
         # The card title is mutable (including its P0-P5 prefix).  Key the
@@ -735,6 +709,13 @@ def build_audit_run_fn(
             )
         except ProjectPathError as exc:
             raise OrchestratorProcessError(str(exc)) from exc
+
+        checkout = Path(project_path)
+        if not checkout.is_dir():
+            raise OrchestratorProcessError(
+                f"configured repository path for {project.project_key!r} does not exist "
+                f"or is not a directory: {project_path}"
+            )
 
         initial_head = get_git_head(project_path, run_git=git_cmd)
         run_id = run_id_fn()

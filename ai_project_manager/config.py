@@ -63,14 +63,12 @@ class OrchestratorConfig:
     ``--spec`` and ``--agent`` are appended per call (see
     ``orchestrator_runner.build_run_fn``).
 
-    ``project_paths``/``projects_root`` map a project name onto its local
-    checkout for ``--project`` - never a single hardcoded path.
-    ``project_paths`` keys may be a card's exact current title (pinned
-    override) or, more durably, the card's stable ``project_key`` label
-    (see ``trello_sync.project_key_from_labels``) - independent of the
-    card's title entirely - or, as a legacy fallback, its stable identity
-    phrase with any ``P0``-``P5`` prefix and surrounding descriptive
-    wording ignored - see ``orchestrator_runner.resolve_project_path``.
+    ``project_paths`` is the explicit project-identity-to-checkout
+    allowlist for ``--project``. Keys must match the card's stable
+    ``project_key`` label (see ``trello_sync.project_key_from_labels``);
+    titles, priority prefixes, descriptions, and slugs are never path
+    signals. ``projects_root`` remains parseable for configuration
+    compatibility but is not a repository-resolution fallback.
     ``spec_dir``
     holds the stable per-project spec file passed as ``--spec``, and
     ``outbox_dir`` is where the result JSON is read back from after a run.

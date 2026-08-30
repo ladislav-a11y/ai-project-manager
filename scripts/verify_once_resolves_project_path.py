@@ -89,6 +89,9 @@ def run_one(
     project_paths: dict = None,
     expected_checkout: str = None,
 ) -> str:
+    Path(station_checkout).mkdir(parents=True, exist_ok=True)
+    for checkout in (project_paths or {}).values():
+        Path(checkout).mkdir(parents=True, exist_ok=True)
     outbox_dir = workdir / "outbox"
     stub = workdir / "fake_orchestrator.py"
     stub.write_text(STUB_SOURCE, encoding="utf-8")
@@ -129,7 +132,7 @@ def run_one(
         priority=0,
         status=ProjectStatus.READY,
         orchestrator_ready_task="Revize MD/JSON",
-        project_key=project_key,
+        project_key=project_key or "Station Agent",
     )
     client = InMemoryTrelloClient()
     created = sync_project_to_trello(client, project)

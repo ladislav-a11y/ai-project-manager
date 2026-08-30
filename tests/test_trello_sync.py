@@ -50,6 +50,12 @@ def test_project_key_from_labels_ignores_priority_labels():
     assert project_key_from_labels(None) is None
 
 
+def test_project_key_from_labels_rejects_ambiguous_identity():
+    assert project_key_from_labels([
+        {"name": "AI Project Manager"}, {"name": "AI Orchestrator"}, {"name": "P5"}
+    ]) is None
+
+
 def test_project_key_round_trips_through_sync_independent_of_title():
     """The project_key label - the card's stable identity - must survive
     a sync and be recoverable regardless of what the card's title says,

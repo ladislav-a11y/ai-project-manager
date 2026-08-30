@@ -4,7 +4,7 @@ import subprocess
 
 import pytest
 
-from ai_project_manager.models import DoDItem, ProjectRecord, ProjectStatus
+from ai_project_manager.models import DoDItem, ProjectRecord as _ProjectRecord, ProjectStatus
 from ai_project_manager.orchestrator_handoff import InvalidTaskError
 from ai_project_manager.orchestrator_runner import (
     DEFAULT_PROVIDER_AGENT_MAP,
@@ -19,6 +19,19 @@ from ai_project_manager.orchestrator_runner import (
     spec_file_path,
 )
 from ai_project_manager.providers import ProviderRegistry, ProviderState
+
+
+def ProjectRecord(*args, **kwargs):
+    """Build test records with the explicit identity used by Demo fixtures."""
+    if kwargs.get("name") == "Demo" and "project_key" not in kwargs:
+        kwargs["project_key"] = "Demo"
+    return _ProjectRecord(*args, **kwargs)
+
+
+@pytest.fixture(autouse=True)
+def _existing_demo_checkout(tmp_path):
+    """The production dispatcher now requires its allowlisted path to exist."""
+    (tmp_path / "demo-checkout").mkdir()
 
 
 def completed(stdout="", stderr="", returncode=0):
@@ -164,15 +177,15 @@ def test_audit_run_fn_reads_internal_audit_rejection_with_concrete_reason(tmp_pa
 # ---- resolving a project's local path (item 1) ------------------------
 
 def test_resolve_project_path_uses_explicit_per_project_override():
-    project = ProjectRecord(name="Demo")
+    project = ProjectRecord(name="Demo", project_key="Demo")
     path = resolve_project_path(project, project_paths={"Demo": "/checkouts/demo"})
     assert path == "/checkouts/demo"
 
 
-def test_resolve_project_path_falls_back_to_slugified_shared_root():
+def test_resolve_project_path_does_not_fall_back_to_slugified_shared_root():
     project = ProjectRecord(name="My Cool Project")
-    path = resolve_project_path(project, projects_root="/work")
-    assert path.replace("\\", "/") == "/work/my-cool-project"
+    with pytest.raises(ProjectPathError, match="no project identity label"):
+        resolve_project_path(project, projects_root="/work")
 
 
 def test_resolve_project_path_raises_without_any_mapping_configured():
@@ -181,72 +194,58 @@ def test_resolve_project_path_raises_without_any_mapping_configured():
         resolve_project_path(project)
 
 
+def test_only_p5_without_project_label_fails_closed():
+    project = ProjectRecord(name="P5 - generic task", priority=5, project_key=None)
+    with pytest.raises(ProjectPathError, match="P0-P5 is priority only"):
+        resolve_project_path(
+            project,
+            project_paths={"AI Project Manager": r"D:\orchestrator\ai-project-manager"},
+            projects_root=r"D:\orchestrator",
+        )
+
+
 @pytest.mark.parametrize(
-    "card_title",
+    "identity,expected",
     [
-        "P5 - Station Agent (čeká)",
-        "P4 — Station Agent checkpoint (čeká po PM/Orchestrator auditu)",
-        "P4 — Station Agent: DX Cluster OK stav, ale kandidáti se ztrácejí",
-        "P0: Station Agent - revize MD/JSON",
-        "P2 Station Agent",
+        ("AI Project Manager", r"D:\orchestrator\ai-project-manager"),
+        ("AI Orchestrator", r"D:\orchestrator\ai-orchestrator"),
+        ("Station Agent", r"D:\orchestrator\station-agent"),
     ],
 )
-def test_resolve_project_path_matches_identity_across_priority_and_wording_changes(card_title):
-    """A single ``AI_PM_PROJECT_PATHS`` entry keyed by the project's stable
-    identity ("Station Agent") must resolve every card whose title carries
-    a changing P0-P5 prefix and/or changing descriptive suffix - without
-    ever requiring the exact current card title to be added."""
-    project = ProjectRecord(name=card_title)
-    path = resolve_project_path(project, project_paths={"Station Agent": "/checkouts/station-agent"})
+def test_project_identity_maps_only_to_its_allowlisted_repo(identity, expected):
+    paths = {
+        "AI Project Manager": r"D:\orchestrator\ai-project-manager",
+        "AI Orchestrator": r"D:\orchestrator\ai-orchestrator",
+        "Station Agent": r"D:\orchestrator\station-agent",
+    }
+    project = ProjectRecord(name="P5 - generic task", priority=5, project_key=identity)
+    assert resolve_project_path(project, project_paths=paths) == expected
+
+
+def test_resolve_project_path_never_uses_title_override():
+    project = ProjectRecord(
+        name="P5 - Station Agent", project_key="Station Agent"
+    )
+    path = resolve_project_path(
+        project,
+        project_paths={
+            "Station Agent": "/checkouts/station-agent",
+            "P5 - Station Agent": "/checkouts/title-override",
+        },
+    )
     assert path == "/checkouts/station-agent"
 
 
-def test_resolve_project_path_still_honors_exact_title_override():
-    project = ProjectRecord(name="P5 - Station Agent (čeká)")
-    path = resolve_project_path(
-        project,
-        project_paths={
-            "Station Agent": "/checkouts/station-agent",
-            "P5 - Station Agent (čeká)": "/checkouts/station-agent-special",
-        },
-    )
-    assert path == "/checkouts/station-agent-special"
-
-
-def test_resolve_project_path_prefers_the_longer_more_specific_identity_match():
-    project = ProjectRecord(name="P4 — Station Agent checkpoint (čeká po PM/Orchestrator auditu)")
-    path = resolve_project_path(
-        project,
-        project_paths={
-            "Station Agent": "/checkouts/station-agent",
-            "Station Agent checkpoint": "/checkouts/station-agent-checkpoint",
-        },
-    )
-    assert path == "/checkouts/station-agent-checkpoint"
-
-
-def test_resolve_project_path_does_not_match_a_substring_inside_another_word():
-    project = ProjectRecord(name="P1 - Agentura pro digitalizaci")
-    with pytest.raises(ProjectPathError):
-        resolve_project_path(project, project_paths={"Agent": "/checkouts/station-agent"})
-
-
-def test_resolve_project_path_raises_on_ambiguous_equally_specific_matches():
-    project = ProjectRecord(name="P3 - Foo Bar")
-    with pytest.raises(ProjectPathError):
+def test_resolve_project_path_rejects_conflicting_normalized_identity_mappings():
+    project = ProjectRecord(name="P3 - Foo", project_key="Foo")
+    with pytest.raises(ProjectPathError, match="configured paths disagree"):
         resolve_project_path(
             project,
             project_paths={
                 "Foo": "/checkouts/foo-repo",
-                "Bar": "/checkouts/bar-repo",
+                " foo ": "/checkouts/other-repo",
             },
         )
-
-
-def test_resolve_project_path_strips_priority_prefix_before_slugifying_shared_root():
-    project = ProjectRecord(name="P2 - My Cool Project")
-    path = resolve_project_path(project, projects_root="/work")
-    assert path.replace("\\", "/") == "/work/my-cool-project"
 
 
 _STABLE_IDENTITY_PROJECT_PATHS = {
@@ -297,15 +296,13 @@ def test_resolve_project_path_label_identity_wins_over_a_misleading_title_phrase
     assert path == "/checkouts/station-agent"
 
 
-def test_resolve_project_path_without_project_key_falls_back_to_title_phrase_matching():
-    """Cards created before the project_key label existed keep working via
-    the legacy title-phrase fallback."""
-    project = ProjectRecord(name="P5 - Station Agent (čeká)", priority=5)
-    path = resolve_project_path(project, project_paths=_STABLE_IDENTITY_PROJECT_PATHS)
-    assert path == "/checkouts/station-agent"
+def test_resolve_project_path_without_project_key_never_uses_title_phrase():
+    project = ProjectRecord(name="P5 - Station Agent", priority=5)
+    with pytest.raises(ProjectPathError, match="no project identity label"):
+        resolve_project_path(project, project_paths=_STABLE_IDENTITY_PROJECT_PATHS)
 
 
-def test_resolve_project_path_exact_title_override_still_wins_over_project_key():
+def test_resolve_project_path_project_key_wins_over_exact_title_entry():
     project = ProjectRecord(
         name="P5 - Izolace testovacich Slack notifikaci",
         priority=5,
@@ -318,7 +315,7 @@ def test_resolve_project_path_exact_title_override_still_wins_over_project_key()
             "P5 - Izolace testovacich Slack notifikaci": "/checkouts/special-override",
         },
     )
-    assert path == "/checkouts/special-override"
+    assert path == "/checkouts/ai-project-manager"
 
 
 def test_resolve_project_path_distinguishes_similarly_prefixed_projects():
@@ -327,8 +324,14 @@ def test_resolve_project_path_distinguishes_similarly_prefixed_projects():
         "AI Project Manager": "/checkouts/ai-project-manager",
         "ai-orchestrator": "/checkouts/ai-orchestrator",
     }
-    pm_project = ProjectRecord(name="P1 - Audit a stabilizace AI Project Manager")
-    orch_project = ProjectRecord(name="P1 - Audit a stabilizace ai-orchestrator")
+    pm_project = ProjectRecord(
+        name="P1 - Audit a stabilizace AI Project Manager",
+        project_key="AI Project Manager",
+    )
+    orch_project = ProjectRecord(
+        name="P1 - Audit a stabilizace ai-orchestrator",
+        project_key="ai-orchestrator",
+    )
     assert resolve_project_path(pm_project, project_paths=project_paths) == "/checkouts/ai-project-manager"
     assert resolve_project_path(orch_project, project_paths=project_paths) == "/checkouts/ai-orchestrator"
 
@@ -1136,11 +1139,13 @@ def test_p5_false_completion_regression_audit_rejects_dirty_unchanged_head_empty
     With fail-closed validation, the audit MUST reject this run and refuse
     transition to Hotovo.
     """
+    (tmp_path / "ai-orchestrator").mkdir()
     registry = ProviderRegistry()
     registry.mark_available("claude")
     project = ProjectRecord(
         name="P5 — AO: cleanup, commit a záloha po Hermes integraci",
         status=ProjectStatus.TESTING,
+        project_key="AI Orchestrator",
         main_task="AO: cleanup, commit a záloha po Hermes integraci",
         dod=[DoDItem(text="AO: cleanup, commit a záloha po Hermes integraci", checked=False)],
         checkpoint={"completed_dod_indices": [0]},
@@ -1179,7 +1184,7 @@ def test_p5_false_completion_regression_audit_rejects_dirty_unchanged_head_empty
     audit_run_fn = build_audit_run_fn(
         registry,
         command=["ai-orchestrator"],
-        project_paths={project.name: str(tmp_path / "ai-orchestrator")},
+        project_paths={"AI Orchestrator": str(tmp_path / "ai-orchestrator")},
         spec_dir=str(tmp_path / "specs"),
         outbox_dir=str(tmp_path / "outbox"),
         subprocess_run=fake_subprocess_run,
@@ -1201,6 +1206,7 @@ def test_p5_false_completion_regression_run_once_audit_never_moves_to_done(tmp_p
     """End-to-end regression: run_once_audit with failing DoD git verification
     leaves the card in IN_PROGRESS (Pracuje se) and never moves it to Hotovo (DONE).
     """
+    (tmp_path / "ai-orchestrator").mkdir()
     from ai_project_manager.runner import run_once_audit
     from ai_project_manager.trello_client import InMemoryTrelloClient
     from ai_project_manager.trello_sync import build_list_maps, project_from_card, sync_project_to_trello
@@ -1209,6 +1215,7 @@ def test_p5_false_completion_regression_run_once_audit_never_moves_to_done(tmp_p
         name="P5 — AO: cleanup, commit a záloha po Hermes integraci",
         priority=5,
         status=ProjectStatus.TESTING,
+        project_key="AI Orchestrator",
         main_task="AO: cleanup, commit a záloha po Hermes integraci",
         dod=[DoDItem(text="AO: cleanup, commit a záloha po Hermes integraci", checked=False)],
     )
@@ -1252,7 +1259,7 @@ def test_p5_false_completion_regression_run_once_audit_never_moves_to_done(tmp_p
     audit_run_fn = build_audit_run_fn(
         registry,
         command=["ai-orchestrator"],
-        project_paths={project.name: str(tmp_path / "ai-orchestrator")},
+        project_paths={"AI Orchestrator": str(tmp_path / "ai-orchestrator")},
         spec_dir=str(tmp_path / "specs"),
         outbox_dir=str(tmp_path / "outbox"),
         subprocess_run=fake_subprocess_run,
@@ -1277,4 +1284,3 @@ def test_p5_false_completion_regression_run_once_audit_never_moves_to_done(tmp_p
     assert reloaded.status == ProjectStatus.IN_PROGRESS
     assert reloaded.status != ProjectStatus.DONE
     assert reloaded.dod[0].checked is False
-
