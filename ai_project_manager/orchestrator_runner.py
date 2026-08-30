@@ -909,6 +909,24 @@ def build_audit_run_fn(
         audit_protocol_error = bool(last_iteration.get("audit_protocol_error")) if isinstance(last_iteration, dict) else False
         evidence = payload.get("last_output") or (last_iteration.get("test_output") if isinstance(last_iteration, dict) else None) or payload.get("evidence")
 
+        # A Testování pass audits the already-finalized implementation. A
+        # controller-owned commit is therefore evidence from the preceding
+        # PM phase, not a second commit that must be created during audit.
+        finalization = (project.checkpoint or {}).get("finalization")
+        controller_finalization_verified = (
+            isinstance(finalization, dict)
+            and finalization.get("status") == "completed"
+            and finalization.get("done") is True
+            and finalization.get("committed") is True
+            and finalization.get("clean") is True
+            and finalization.get("pushed") is True
+            and finalization.get("commit_hash")
+            and finalization.get("remote_commit") == finalization.get("commit_hash")
+        )
+        if controller_finalization_verified:
+            controller_evidence = json.dumps(finalization, ensure_ascii=False, separators=(",", ":"))
+            evidence = "\n".join(part for part in (evidence, controller_evidence) if part)
+
         # Perform fail-closed validation of all DoD items against repository state and evidence
         report = validate_project_dod(
             project,
@@ -916,6 +934,7 @@ def build_audit_run_fn(
             initial_head=initial_head,
             evidence=evidence,
             run_git=git_cmd,
+            expected_new_commit=not controller_finalization_verified,
         )
 
         if audit_performed and not audit_protocol_error and not rejected_indices and payload.get("status") == "completed":

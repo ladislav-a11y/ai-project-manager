@@ -255,6 +255,7 @@ def validate_project_dod(
     evidence: Optional[str] = None,
     run_git: RunCommand = default_run_command,
     target_indices: Optional[Sequence[int]] = None,
+    expected_new_commit: bool = True,
 ) -> DoDValidationReport:
     if isinstance(project_or_dod, ProjectRecord):
         dod_items = project_or_dod.dod
@@ -277,6 +278,7 @@ def validate_project_dod(
             initial_head=initial_head,
             evidence=evidence,
             run_git=run_git,
+            expected_new_commit=expected_new_commit,
         )
         results.append(res)
 

@@ -276,6 +276,26 @@ def test_genuine_new_commit_dod_passes_when_head_changed():
     assert res.reasons == []
 
 
+def test_existing_controller_commit_evidence_does_not_require_second_commit():
+    head = "9a8b7c6d5e4f3a2b1c0d9e8f7a6b5c4d3e2f1a0b"
+    run_git = fake_git({"rev-parse": head, "status": "", "diff": "", "remote": "origin"})
+    project = ProjectRecord(
+        name="P5 — APM finalizace",
+        dod=[DoDItem(text="vytvořit jeden konzistentní orchestrátorem schválený commit")],
+    )
+
+    report = validate_project_dod(
+        project,
+        repo_path="/fake/repo",
+        initial_head=head,
+        evidence='{"status":"completed","commit_hash":"%s","pushed":true,"tests_passed":true}' % head,
+        run_git=run_git,
+        expected_new_commit=False,
+    )
+
+    assert report.is_valid is True
+
+
 def test_full_p5_audit_passes_with_regression_test_evidence():
     # Card with full P5 checklist from current prompt:
     dod_texts = [
@@ -307,5 +327,4 @@ def test_full_p5_audit_passes_with_regression_test_evidence():
     assert report.is_valid is True
     assert report.rejected_indices == []
     assert report.verified_indices == list(range(len(dod_texts)))
-
 
