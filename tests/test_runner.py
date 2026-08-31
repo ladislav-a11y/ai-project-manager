@@ -274,7 +274,7 @@ def test_generic_blocked_result_gets_actionable_remaining_step():
         name="Demo",
         priority=3,
         status=ProjectStatus.READY,
-        dod=[DoDItem(text="hotovo", checked=True), DoDItem(text="spustit plne testy")],
+            dod=[DoDItem(text="hotovo", checked=True), DoDItem(text="doplnit konfiguraci")],
     )
     client = make_client_with_project(project)
     registry = ProviderRegistry()
@@ -289,7 +289,7 @@ def test_generic_blocked_result_gets_actionable_remaining_step():
     )
 
     assert project.status == ProjectStatus.BLOCKED
-    assert "spustit plne testy" in project.stop_reason
+    assert "doplnit konfiguraci" in project.stop_reason
     assert project.stop_reason != "blocked"
 
 

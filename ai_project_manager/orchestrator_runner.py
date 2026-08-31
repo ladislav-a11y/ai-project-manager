@@ -511,19 +511,34 @@ def _finalization_needs_refresh(project: ProjectRecord, project_path: str, run_g
     return bool(current_head and current_head != recorded_head)
 
 
-def _controller_finalization_is_verified(finalization: object, current_head: Optional[str]) -> bool:
+def _controller_finalization_is_verified(
+    finalization: object,
+    current_head: Optional[str],
+    previous_head: Optional[str] = None,
+) -> bool:
     """Accept a controller proof for a commit already present at audit time."""
-    return (
+    proof_is_current = (
         isinstance(finalization, dict)
         and finalization.get("status") == "completed"
         and finalization.get("done") is True
         and isinstance(finalization.get("committed"), bool)
         and finalization.get("clean") is True
+        and finalization.get("tests_passed") is True
         and finalization.get("pushed") is True
         and bool(current_head)
         and finalization.get("commit_hash") == current_head
         and finalization.get("remote_commit") == current_head
     )
+    if not proof_is_current:
+        return False
+    # At the controller boundary we know both sides of the finalizer call.
+    # A claim that it created a commit is only evidence when HEAD actually
+    # advanced.  Audit-time validation omits previous_head because it consumes
+    # an already-persisted proof and must not demand a second commit.
+    if previous_head:
+        head_changed = current_head != previous_head
+        return head_changed is (finalization.get("committed") is True)
+    return True
 
 
 def _controller_finalize(
@@ -536,6 +551,7 @@ def _controller_finalize(
     allowed_push_remotes: Optional[dict],
     subprocess_run: SubprocessFn,
     indices: list[int],
+    run_git: RunCommand,
 ) -> dict:
     paths = _identity_setting(finalize_paths, project.project_key) or []
     allowed_remote = _identity_setting(allowed_push_remotes, project.project_key)
@@ -549,6 +565,12 @@ def _controller_finalize(
         full_command.extend(["--path", path])
     if allowed_remote:
         full_command.extend(["--allowed-remote", allowed_remote])
+    previous_head = get_git_head(project_path, run_git=run_git)
+    if not previous_head:
+        return {
+            "status": "blocked",
+            "stop_reason": "controller finalization cannot verify repository HEAD before execution",
+        }
     try:
         completed = subprocess_run(full_command)
     except Exception as exc:  # noqa: BLE001 - finalization is a governed boundary
@@ -562,12 +584,17 @@ def _controller_finalize(
             "status": "blocked",
             "error": (completed.stderr or completed.stdout or "invalid finalizer output").strip(),
         }
-    if not isinstance(payload, dict) or payload.get("status") != "completed" or payload.get("done") is not True:
+    if not _controller_finalization_is_verified(
+        payload,
+        get_git_head(project_path, run_git=run_git),
+        previous_head=previous_head,
+    ):
         reason = payload.get("error", "controller finalization did not complete") if isinstance(payload, dict) else "invalid finalizer result"
-        return {"status": "blocked", "stop_reason": str(reason), "finalization": payload}
-    if any(_finalization_kind(project.dod[index].text) == "push" for index in indices) and payload.get("pushed") is not True:
         return {
-            "status": "blocked", "stop_reason": "controller finalization did not provide verified push evidence",
+            "status": "blocked",
+            "stop_reason": (
+                f"controller finalization did not provide a complete verified proof: {reason}"
+            ),
             "finalization": payload,
         }
     checkpoint = dict(project.checkpoint or {})
@@ -658,7 +685,7 @@ def build_run_fn(
             return _controller_finalize(
                 project, project_path, task, run_id, finalize_command,
                 finalize_paths, allowed_push_remotes, subprocess_run,
-                finalization_indices or [],
+                finalization_indices or [], git_cmd,
             )
 
         initial_head = get_git_head(project_path, run_git=git_cmd)
@@ -678,7 +705,8 @@ def build_run_fn(
             "--spec", str(spec_path),
             "--agent", agent_name,
             "--run-id", run_id,
-            
+            "--implementation-only",
+            "--no-commit",
         ]
 
         try:
@@ -982,10 +1010,17 @@ def build_audit_run_fn(
         if audit_performed and rejected_indices:
             all_rejected = sorted(set(list(rejected_indices) + report.rejected_indices))
             detail = report.rejection_summary or (last_iteration.get("note") if isinstance(last_iteration, dict) else None) or payload.get("stop_reason") or "ai-orchestrator audit rejected the implementation"
+            audit_evidence = "\n".join(
+                part for part in (
+                    evidence,
+                    last_iteration.get("note") if isinstance(last_iteration, dict) else None,
+                    payload.get("last_output"),
+                ) if part
+            )
             return {
                 "verdict": AUDIT_VERDICT_REJECTED,
                 "reason": f"ai-orchestrator audit rejected DoD index(es) {all_rejected}: {detail}",
-                "evidence": last_iteration.get("test_output") if isinstance(last_iteration, dict) else evidence,
+                "evidence": audit_evidence,
                 "reject_target": "in_progress",
                 "usage": payload.get("usage"),
             }

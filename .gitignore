@@ -4,6 +4,7 @@ __pycache__/
 *.egg-info/
 .pytest_cache/
 .pytest-basetemp-*/
+.pytest-tmp-*/
 *.bak
 *.bak-*
 runner_before_*.py

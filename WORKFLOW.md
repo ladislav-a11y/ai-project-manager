@@ -51,3 +51,19 @@ nesmí volat AI.
 Každý přechod musí být zpětně čitelný z Trella: viditelné DoD, poslední výstup,
 důvod čekání nebo odmítnutí, checkpoint a auditní evidence. Lokální soubory,
 historické logy ani tvrzení agenta samy o sobě nejsou důkazem dokončení.
+
+## Hermes kvalifikační pravidla
+
+Hermes je pouze experimentální provider a smí být spuštěn výhradně přes Nous
+free LLM: `provider=nous` a model s explicitní příponou `:free` (aktuálně
+`upstage/solar-pro4:free`). Jakýkoli jiný provider nebo model je porušení
+contractu, nikoli fallback.
+
+Před každým Hermes během musí orchestrator nastavit a zalogovat absolutní
+`TERMINAL_CWD` pro izolovaný scratch/worktree. Samotné `--in`, pracovní
+adresář procesu ani textová odpověď Hermese nejsou důkazem provedené práce.
+Handoff je úspěšný teprve po ověření postcondition orchestrátorem: exit code,
+provider/model z usage, povolený rozsah změn a skutečný filesystem/Git diff.
+Pokud Hermes pouze popisuje postup, vrátí „success“ bez postcondition nebo
+selže na pracovním adresáři, výsledek je `rejected`/`blocked` a nesmí se
+započítat do DoD.

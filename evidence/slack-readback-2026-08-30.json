@@ -1,0 +1,23 @@
+{
+  "captured_on": "2026-08-30",
+  "workspace": "Kocandrle",
+  "channel": "#ai-status",
+  "query": "\"fresh-shell production Slack probe\"",
+  "message_text": "AI Project Manager: fresh-shell production Slack probe",
+  "readback": "Slack search returned three matching messages, including today's messages at 8:36 PM and 8:37 PM.",
+  "messages": [
+    {
+      "displayed_time": "Aug 28th at 6:39 PM",
+      "url": "https://kocandrle.slack.com/archives/C0BRZ6N7J3Y/p1787935193708239"
+    },
+    {
+      "displayed_time": "Today at 8:36 PM",
+      "url": "https://kocandrle.slack.com/archives/C0BRZ6N7J3Y/p1788114962377729"
+    },
+    {
+      "displayed_time": "Today at 8:37 PM",
+      "url": "https://kocandrle.slack.com/archives/C0BRZ6N7J3Y/p1788115042566069"
+    }
+  ],
+  "method": "read-only Slack search in the authenticated workspace; no message was sent or changed"
+}

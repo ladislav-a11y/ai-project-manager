@@ -75,6 +75,54 @@ def get_git_diff(repo_path: Optional[str], run_git: RunCommand = default_run_com
         return False, str(exc)
 
 
+def get_git_diff_check(repo_path: Optional[str], run_git: RunCommand = default_run_command) -> tuple[bool, str]:
+    """Run the exact whitespace/error check required by the runtime contract."""
+    if not repo_path:
+        return False, "repo path not specified"
+    try:
+        res = run_git(("git", "-C", str(repo_path), "diff", "--check"))
+        return res.returncode == 0, res.stderr.strip() or res.stdout.strip()
+    except Exception as exc:
+        return False, str(exc)
+
+
+def get_git_remote_heads(repo_path: Optional[str], run_git: RunCommand = default_run_command) -> tuple[bool, str]:
+    """Verify that the configured origin exposes real remote branch state."""
+    if not repo_path:
+        return False, "repo path not specified"
+    try:
+        res = run_git(("git", "-C", str(repo_path), "ls-remote", "--heads", "origin"))
+        output = res.stderr.strip() or res.stdout.strip()
+        return res.returncode == 0 and bool(res.stdout.strip()), output
+    except Exception as exc:
+        return False, str(exc)
+
+
+def get_git_branch(repo_path: Optional[str], run_git: RunCommand = default_run_command) -> Optional[str]:
+    if not repo_path:
+        return None
+    try:
+        res = run_git(("git", "-C", str(repo_path), "branch", "--show-current"))
+        return res.stdout.strip() if res.returncode == 0 and res.stdout.strip() else None
+    except Exception as exc:
+        logger.debug("get_git_branch failed on %s: %s", repo_path, exc)
+        return None
+
+
+def get_git_remote_branch_head(
+    repo_path: Optional[str], branch: Optional[str], run_git: RunCommand = default_run_command
+) -> tuple[bool, str]:
+    """Read the exact origin branch hash used by the current checkout."""
+    if not repo_path or not branch:
+        return False, "current branch not specified"
+    try:
+        res = run_git(("git", "-C", str(repo_path), "ls-remote", "origin", f"refs/heads/{branch}"))
+        output = res.stderr.strip() or res.stdout.strip()
+        return res.returncode == 0 and bool(res.stdout.strip()), output
+    except Exception as exc:
+        return False, str(exc)
+
+
 def get_git_remotes(repo_path: Optional[str], run_git: RunCommand = default_run_command) -> tuple[bool, str]:
     if not repo_path:
         return False, "repo path not specified"
@@ -134,6 +182,20 @@ _VALIDATION_META_RE = re.compile(
     r"\b(?:požadavek\s+na\s+.*(?:nesmí|musí|selh[a-z]*))\b"
     r")"
 )
+_ORCHESTRATOR_AUDIT_EVIDENCE_RE = re.compile(
+    r"(?i)\b(?:accepted\s*/\s*rejected|ai[- ]orchestrator\s+audit|"
+    r"independent\s+audit)\b"
+)
+_AUDIT_GIT_STATE_RE = re.compile(
+    r"(?i)\b(?:HEAD|status|diff|remote|push)\b"
+)
+_VERIFICATION_SEQUENCE = (
+    "syntax",
+    "targeted tests",
+    "git --no-pager diff",
+    "git --no-pager diff --check",
+    "complete tests",
+)
 
 
 def validate_dod_item(
@@ -151,7 +213,79 @@ def validate_dod_item(
     matched_category = False
 
     evidence_str = (evidence or "").strip()
-    is_meta_or_validation = bool(_VALIDATION_META_RE.search(text))
+    # An explicit orchestrator audit item describes evidence semantics; it is
+    # not a request for the audited repository to create a commit/push.
+    is_meta_or_validation = bool(
+        _VALIDATION_META_RE.search(text)
+        or _ORCHESTRATOR_AUDIT_EVIDENCE_RE.search(text)
+    )
+
+    # Audit wording suppresses the *new-commit* and direct push-action
+    # heuristics, but it must not suppress the underlying read-only Git
+    # checks. This keeps "verify existing state" both no-commit and
+    # evidence-backed against the real checkout.
+    if _ORCHESTRATOR_AUDIT_EVIDENCE_RE.search(text) and _AUDIT_GIT_STATE_RE.search(text):
+        matched_category = True
+        current_head = get_git_head(repo_path, run_git=run_git)
+        details["git_head"] = current_head
+        if not current_head:
+            reasons.append("git HEAD repozitáře nelze ověřit")
+        status_ok, status_out = get_git_status(repo_path, run_git=run_git)
+        details["git_status_ok"] = status_ok
+        details["git_status"] = status_out
+        if not status_ok:
+            reasons.append(f"ověření git status selhalo: {status_out}")
+        diff_ok, diff_out = get_git_diff(repo_path, run_git=run_git)
+        details["git_diff_ok"] = diff_ok
+        if not diff_ok:
+            reasons.append(f"ověření git diff selhalo: {diff_out}")
+        remotes_ok, remotes_out = get_git_remotes(repo_path, run_git=run_git)
+        details["git_remotes_ok"] = remotes_ok
+        details["git_remotes"] = remotes_out
+        if not remotes_ok:
+            reasons.append(f"ověření git remote -v selhalo: {remotes_out}")
+        elif not remotes_out:
+            reasons.append("git remote -v je prázdný: nelze ověřit remote stav")
+        diff_check_ok, diff_check_out = get_git_diff_check(repo_path, run_git=run_git)
+        details["git_diff_check_ok"] = diff_check_ok
+        details["git_diff_check"] = diff_check_out
+        if not diff_check_ok:
+            reasons.append(f"ověření git diff --check selhalo: {diff_check_out}")
+        remote_heads_ok, remote_heads_out = get_git_remote_heads(repo_path, run_git=run_git)
+        details["git_remote_heads_ok"] = remote_heads_ok
+        details["git_remote_heads"] = remote_heads_out
+        if not remote_heads_ok:
+            reasons.append(f"ověření remote HEAD/branchí selhalo: {remote_heads_out}")
+        branch = get_git_branch(repo_path, run_git=run_git)
+        branch_ok, branch_out = get_git_remote_branch_head(repo_path, branch, run_git=run_git)
+        details["git_branch"] = branch
+        details["git_remote_branch_head_ok"] = branch_ok
+        details["git_remote_branch_head"] = branch_out
+        if not branch_ok:
+            reasons.append(f"ověření konkrétní vzdálené větve selhalo: {branch_out}")
+        elif current_head and not re.search(rf"(?m)^{re.escape(current_head)}\s+refs/heads/{re.escape(branch)}$", branch_out):
+            reasons.append(
+                f"lokální HEAD {current_head} se neshoduje s origin/{branch}: {branch_out}"
+            )
+
+    if (
+        _ORCHESTRATOR_AUDIT_EVIDENCE_RE.search(text)
+        and "AI_PROJECT_RUNTIME.md" in text
+        and repo_path
+    ):
+        runtime_path = Path(repo_path).resolve().parent / "AI_PROJECT_RUNTIME.md"
+        try:
+            runtime_text = runtime_path.read_text(encoding="utf-8")
+        except (OSError, UnicodeError) as exc:
+            runtime_text = ""
+            reasons.append(f"kanonický runtime contract nelze načíst: {exc}")
+        positions = [runtime_text.casefold().find(step.casefold()) for step in _VERIFICATION_SEQUENCE]
+        details["verification_sequence"] = list(_VERIFICATION_SEQUENCE)
+        details["verification_sequence_positions"] = positions
+        if any(position < 0 for position in positions) or positions != sorted(positions):
+            reasons.append(
+                "kanonický runtime contract neobsahuje ověřovací kroky v požadovaném pořadí"
+            )
 
     # 1. Clean/dirty tree check (only for direct runtime actions on the audited repo)
     if _CLEANUP_KEYWORD_RE.search(text) and not is_meta_or_validation:
@@ -280,6 +414,14 @@ def validate_project_dod(
             run_git=run_git,
             expected_new_commit=expected_new_commit,
         )
+        if _ORCHESTRATOR_AUDIT_EVIDENCE_RE.search(text) and evidence:
+            indexed = re.search(rf"(?m)^\s*{idx}:(OK|REJECT)\b", evidence)
+            if indexed is not None and indexed.group(1) != "OK":
+                res.reasons.append("audit evidence for this exact DoD index is rejected")
+                res.valid = False
+            elif indexed is None and re.search(r"(?m)^\s*\d+:(?:OK|REJECT)\b", evidence):
+                res.reasons.append("chybí per-index audit evidence pro tento DoD bod")
+                res.valid = False
         results.append(res)
 
     verified_indices = [r.index for r in results if r.valid]

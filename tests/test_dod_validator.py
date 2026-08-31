@@ -3,7 +3,11 @@ import pytest
 
 from ai_project_manager.dod_validator import (
     get_git_diff,
+    get_git_diff_check,
     get_git_head,
+    get_git_remote_heads,
+    get_git_branch,
+    get_git_remote_branch_head,
     get_git_remotes,
     get_git_status,
     validate_dod_item,
@@ -296,6 +300,24 @@ def test_existing_controller_commit_evidence_does_not_require_second_commit():
     assert report.is_valid is True
 
 
+def test_existing_state_audit_checks_git_without_requiring_new_commit():
+    head = "9a8b7c6d5e4f3a2b1c0d9e8f7a6b5c4d3e2f1a0b"
+    run_git = fake_git({"rev-parse": head, "status": "M file.py", "diff": "diff", "remote": "origin", "ls-remote": f"{head} refs/heads/main", "branch": "main"})
+    res = validate_dod_item(
+        0,
+        "accepted / rejected: ai-orchestrator audit musí ověřit HEAD/status/diff/remote/push proti realitě; nový commit není podmínkou",
+        repo_path="/fake/repo",
+        initial_head=head,
+        evidence="0:OK read-only Git evidence ověřena; nový commit není podmínkou; 607 passed",
+        run_git=run_git,
+        expected_new_commit=True,
+    )
+    assert res.valid is True, res.reasons
+    assert res.details["git_head"] == head
+    assert res.details["git_status"] == "M file.py"
+    assert res.details["git_remote_branch_head_ok"] is True
+
+
 def test_full_p5_audit_passes_with_regression_test_evidence():
     # Card with full P5 checklist from current prompt:
     dod_texts = [
@@ -327,4 +349,3 @@ def test_full_p5_audit_passes_with_regression_test_evidence():
     assert report.is_valid is True
     assert report.rejected_indices == []
     assert report.verified_indices == list(range(len(dod_texts)))
-

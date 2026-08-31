@@ -29,8 +29,11 @@ from typing import Optional
 from .models import DoDItem, GitHubRef, GoogleDriveRef, ProjectRecord, ProjectStatus
 from .card_contract import (
     CURRENT_SCHEMA_VERSION,
+    DOD_ROUTING_POLICY,
     GOVERNANCE_POLICY,
     CardContractError,
+    dispatch_contract_issues,
+    dod_contract_issues,
     migrate_and_validate,
     repair_incomplete_contract,
     unknown_fields,
@@ -226,6 +229,9 @@ STATUS_TO_LIST_CANDIDATES = {
     ProjectStatus.DONE: ("Hotovo", "Done"),
     ProjectStatus.ERROR: ("Čeká na AI", "Error"),
 }
+MAX_TRELLO_DESC_CHARS = 14000
+MAX_TRELLO_FEEDBACK_CHARS = 3500
+MAX_TRELLO_LAST_OUTPUT_CHARS = 2500
 TITLE_PRIORITY_RE = re.compile(r"^\s*P([0-5])(?:\s|[-—–:])", re.IGNORECASE)
 
 
@@ -345,6 +351,56 @@ def _card_url_key(url: str) -> str:
 def _render_data_block(data: dict) -> str:
     body = json.dumps(data, indent=2, ensure_ascii=False, sort_keys=True)
     return f"{BLOCK_START}\n{_escape_block_terminator(body)}\n{BLOCK_END}"
+
+
+def _bound_contract_history(data: dict) -> dict:
+    """Keep Trello writes below the API description limit.
+
+    Audit notes can contain a full provider report and test output. Preserve
+    the newest actionable feedback, but never let diagnostic history make the
+    lifecycle update itself fail at the Trello API boundary.
+    """
+    bounded = dict(data)
+    feedback = bounded.get("open_feedback")
+    if isinstance(feedback, list):
+        entries = [str(item) for item in feedback if item]
+        if entries:
+            combined = "\n\n".join(entries)
+            if len(combined) > MAX_TRELLO_FEEDBACK_CHARS:
+                combined = (
+                    "[starší auditní historie zkrácena; zachován nejnovější důvod]\n"
+                    + combined[-MAX_TRELLO_FEEDBACK_CHARS:]
+                )
+            bounded["open_feedback"] = [combined]
+    last_output = bounded.get("last_output")
+    if isinstance(last_output, str) and len(last_output) > MAX_TRELLO_LAST_OUTPUT_CHARS:
+        bounded["last_output"] = (
+            "[starší výstup zkrácen]\n" + last_output[-MAX_TRELLO_LAST_OUTPUT_CHARS:]
+        )
+    # The fixed per-field bounds above are not enough when a card also carries
+    # a large goal and checkpoint. Trim only diagnostic/task prose until the
+    # complete machine block is safely below Trello's limit.
+    prose_fields = ("open_feedback", "last_output", "main_task", "orchestrator_ready_task")
+    while len(_render_data_block(bounded)) > MAX_TRELLO_DESC_CHARS:
+        changed = False
+        for field in prose_fields:
+            value = bounded.get(field)
+            if isinstance(value, list) and value:
+                text = str(value[-1])
+                if len(text) > 600:
+                    bounded[field] = [text[: max(600, len(text) - 1000)] + " [zkráceno]" ]
+                    changed = True
+                    break
+            elif isinstance(value, str) and len(value) > 600:
+                bounded[field] = value[: max(600, len(value) - 1000)] + " [zkráceno]"
+                changed = True
+                break
+        if not changed:
+            # This should only be reachable for an unusually large structured
+            # checkpoint/DoD. Keep the contract valid and fail closed rather
+            # than sending an API payload that Trello will reject.
+            break
+    return bounded
 
 
 def _replace_data_block(desc: str, data: dict) -> str:
@@ -503,6 +559,20 @@ def project_from_card(card: dict, list_id_to_name: dict[str, str]) -> ProjectRec
     stored_dod = _merge_dod_items(data.get("dod"))
     dod = stored_dod if stored_dod is not None else _build_dod(notes, data)
 
+    # DoD routing is part of the Trello contract, not an agent preference.
+    # The physical workflow location is authoritative, so reject a card
+    # before it can be selected from Ready/In Progress (or incorrectly sent
+    # through the audit path) when its text assigns controller-only checks to
+    # an implementation agent.
+    if status in {ProjectStatus.READY, ProjectStatus.IN_PROGRESS, ProjectStatus.TESTING}:
+        routing_issues = (
+            dispatch_contract_issues(dod)
+            if status == ProjectStatus.IN_PROGRESS
+            else dod_contract_issues(dod)
+        )
+        if routing_issues:
+            raise CardContractError("unsafe DoD routing: " + "; ".join(routing_issues))
+
     # Fold valid orchestrator checkpoint indices into the exact DoD list. A
     # stale index from an older checklist is ignored and normalized away on
     # the next write, so it cannot falsely imply completion.
@@ -582,6 +652,7 @@ def card_updates_from_project(project: ProjectRecord, list_name_to_id: dict[str,
     data.update({
         "schema_version": CURRENT_SCHEMA_VERSION,
         "governance": GOVERNANCE_POLICY,
+        "dod_routing_policy": DOD_ROUTING_POLICY,
         "card_identity": (
             {"card_id": project.trello_card_id, "card_url": project.trello_card_url}
             if project.trello_card_id and project.trello_card_url else None
@@ -608,6 +679,14 @@ def card_updates_from_project(project: ProjectRecord, list_name_to_id: dict[str,
         "google_drive_ref": project.google_drive_ref.to_dict() if project.google_drive_ref else None,
         "provider": project.provider,
     })
+    if project.status in {ProjectStatus.READY, ProjectStatus.IN_PROGRESS, ProjectStatus.TESTING}:
+        routing_issues = (
+            dispatch_contract_issues(project.dod)
+            if project.status == ProjectStatus.IN_PROGRESS
+            else dod_contract_issues(project.dod)
+        )
+        if routing_issues:
+            raise CardContractError("refusing lifecycle write with unsafe DoD routing: " + "; ".join(routing_issues))
     visible_notes = notes.strip()
     if not visible_notes and project.status == ProjectStatus.DONE:
         visible_notes = _completed_visible_notes(project)
@@ -618,6 +697,7 @@ def card_updates_from_project(project: ProjectRecord, list_name_to_id: dict[str,
     elif project.status in {ProjectStatus.PAUSED, ProjectStatus.BLOCKED, ProjectStatus.ERROR}:
         visible_notes = _waiting_visible_notes(project)
 
+    data = _bound_contract_history(data)
     desc_parts = [visible_notes] if visible_notes else []
     desc_parts.append(_render_data_block(data))
     desc = "\n\n".join(desc_parts)
@@ -708,6 +788,20 @@ def maintain_board_contract(client) -> list[str]:
                         "repairing incomplete Card Contract for card %s (%r): %s",
                         card.get("id"), card.get("name"), ", ".join(repaired_fields),
                     )
+                # A card already in Ready with all implementation work done
+                # and an outstanding audit belongs in Testování. Normalize
+                # that state before scheduling can ever move it to Pracuje se;
+                # this is local routing only and spends no provider tokens.
+                implementation_items = [item for item in project.dod if item.phase == "implementation"]
+                audit_items = [item for item in project.dod if item.phase == "audit"]
+                if (
+                    project.status == ProjectStatus.READY
+                    and implementation_items
+                    and all(item.checked for item in implementation_items)
+                    and any(not item.checked for item in audit_items)
+                ):
+                    project.transition_to(ProjectStatus.TESTING)
+                    project.stop_reason = "implementation DoD complete; awaiting ai-orchestrator audit"
                 if project.status == ProjectStatus.IN_PROGRESS:
                     active_projects.append(project)
                 identity = raw.get("card_identity")
@@ -715,6 +809,15 @@ def maintain_board_contract(client) -> list[str]:
                 needs_write = any((
                     raw.get("schema_version") != CURRENT_SCHEMA_VERSION,
                     raw.get("governance") != GOVERNANCE_POLICY,
+                    # Migrate the versioned routing contract on cards that
+                    # can still be scheduled. Historical Hotovo cards are
+                    # terminal and may contain legacy/oversized descriptions;
+                    # rewriting them adds no safety and can exceed Trello's
+                    # description limit.
+                    (
+                        project.status in {ProjectStatus.READY, ProjectStatus.IN_PROGRESS, ProjectStatus.TESTING}
+                        and raw.get("dod_routing_policy") != DOD_ROUTING_POLICY
+                    ),
                     not identity,
                     raw.get("lifecycle_status") != project.status.value,
                     priority_label_name(project.priority) not in label_names,
@@ -749,7 +852,12 @@ def maintain_board_contract(client) -> list[str]:
         for project in active_projects[1:]:
             project.transition_to(ProjectStatus.READY)
             project.extra_data["workflow_deferred"] = f"single_active_card:{keeper.trello_card_id}"
-            sync_project_to_trello(client, project)
+            try:
+                sync_project_to_trello(client, project)
+            except CardContractError as exc:
+                message = f"card {project.trello_card_id} ({project.name!r}): {exc}"
+                logger.error("cannot defer active card safely %s", message)
+                issues.append(message)
 
     # sync_project_to_trello sorts touched lists; untouched lists still need
     # deterministic order, but sort_list_cards itself performs no writes when

@@ -93,8 +93,14 @@ def test_run_fn_controller_finalizes_repo_tail_without_spending_agent_tick(tmp_p
         calls.append(command)
         return completed(json.dumps({
             "status": "completed", "done": True, "committed": True,
-            "clean": True, "pushed": True, "commit_hash": "abc123",
+            "clean": True, "tests_passed": True, "pushed": True,
+            "commit_hash": "abc123", "remote_commit": "abc123",
         }))
+
+    heads = iter(("before123", "abc123"))
+
+    def fake_git(_command):
+        return completed(next(heads) + "\n")
 
     project = ProjectRecord(
         name="Demo",
@@ -112,6 +118,7 @@ def test_run_fn_controller_finalizes_repo_tail_without_spending_agent_tick(tmp_p
         finalize_command=["controller-finalize"],
         finalize_paths={"Demo": ["tracked.py"]},
         allowed_push_remotes={"Demo": "https://example.invalid/repo.git"},
+        run_git=fake_git,
     )
 
     result = run_fn(project, "claude")
@@ -144,12 +151,90 @@ def test_controller_finalization_accepts_clean_refresh_without_second_commit():
         "done": True,
         "committed": False,
         "clean": True,
+        "tests_passed": True,
         "pushed": True,
         "commit_hash": head,
         "remote_commit": head,
     }
 
     assert _controller_finalization_is_verified(finalization, head) is True
+
+
+@pytest.mark.parametrize(
+    "missing_or_false",
+    ["tests_passed", "clean", "pushed", "remote_commit"],
+)
+def test_controller_finalization_rejects_incomplete_proof(missing_or_false):
+    head = "9a8b7c6d5e4f3a2b1c0d9e8f7a6b5c4d3e2f1a0b"
+    finalization = {
+        "status": "completed",
+        "done": True,
+        "committed": False,
+        "clean": True,
+        "tests_passed": True,
+        "pushed": True,
+        "commit_hash": head,
+        "remote_commit": head,
+    }
+    if missing_or_false == "remote_commit":
+        finalization.pop(missing_or_false)
+    else:
+        finalization[missing_or_false] = False
+
+    assert _controller_finalization_is_verified(finalization, head) is False
+
+
+def test_controller_finalization_rejects_proof_for_different_actual_head():
+    proof_head = "9a8b7c6d5e4f3a2b1c0d9e8f7a6b5c4d3e2f1a0b"
+    finalization = {
+        "status": "completed",
+        "done": True,
+        "committed": True,
+        "clean": True,
+        "tests_passed": True,
+        "pushed": True,
+        "commit_hash": proof_head,
+        "remote_commit": proof_head,
+    }
+
+    assert _controller_finalization_is_verified(finalization, "different-actual-head") is False
+
+
+def test_controller_finalization_rejects_new_commit_claim_without_head_change():
+    head = "9a8b7c6d5e4f3a2b1c0d9e8f7a6b5c4d3e2f1a0b"
+    finalization = {
+        "status": "completed",
+        "done": True,
+        "committed": True,
+        "clean": True,
+        "tests_passed": True,
+        "pushed": True,
+        "commit_hash": head,
+        "remote_commit": head,
+    }
+
+    assert _controller_finalization_is_verified(
+        finalization, head, previous_head=head
+    ) is False
+
+
+def test_controller_finalization_rejects_noop_claim_when_head_changed():
+    old_head = "1" * 40
+    new_head = "2" * 40
+    finalization = {
+        "status": "completed",
+        "done": True,
+        "committed": False,
+        "clean": True,
+        "tests_passed": True,
+        "pushed": True,
+        "commit_hash": new_head,
+        "remote_commit": new_head,
+    }
+
+    assert _controller_finalization_is_verified(
+        finalization, new_head, previous_head=old_head
+    ) is False
 
 
 def test_audit_run_fn_uses_supported_autonomous_cli_and_reads_internal_audit(tmp_path):

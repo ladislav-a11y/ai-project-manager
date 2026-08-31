@@ -7,6 +7,7 @@ from ai_project_manager.trello_sync import (
     _parse_data_block,
     _render_data_block,
     build_list_maps,
+    card_updates_from_project,
     fetch_all_projects,
     maintain_board_contract,
     priority_from_labels,
@@ -28,6 +29,18 @@ from ai_project_manager.card_contract import (
 def test_priority_from_labels_reads_p_label():
     assert priority_from_labels([{"name": "P3"}]) == 3
     assert priority_from_labels([{"name": "bug"}, {"name": "P5"}]) == 5
+
+
+def test_card_update_bounds_untrusted_audit_history_before_trello_write():
+    client = InMemoryTrelloClient(("Připraveno", "Pracuje se", "Testování", "Hotovo"))
+    card = client.create_card("list-2", "P5 — audit", labels=["P5", "APM"])
+    project = project_from_card(card, {"list-2": "Pracuje se"})
+    project.open_feedback = ["starý audit\n" * 5000]
+
+    updates = card_updates_from_project(project, {"Pracuje se": "list-2"})
+
+    assert len(updates["desc"]) <= 14000
+    assert "starší auditní historie zkrácena" in updates["desc"]
     assert priority_from_labels([{"name": "bug"}]) == 0
     assert priority_from_labels([]) == 0
 
@@ -300,6 +313,45 @@ def test_conflicting_governance_is_rejected_without_write():
 
     assert len(issues) == 1
     assert client.get_card(card["id"]) == before
+
+
+def test_lifecycle_write_rejects_controller_verification_as_implementation_work():
+    client = InMemoryTrelloClient()
+    project = ProjectRecord(
+        name="P5 — unsafe verification routing",
+        status=ProjectStatus.READY,
+        dod=[DoDItem(
+            text=(
+                "ai-orchestrator musí provést syntaxe -> cílené testy -> "
+                "git --no-pager diff -> git --no-pager diff --check -> plný test suite"
+            )
+        )],
+    )
+
+    with pytest.raises(CardContractError, match="unsafe DoD routing"):
+        sync_project_to_trello(client, project)
+
+    assert client.list_cards(client.get_list_id_by_name("Ready")) == []
+
+
+def test_maintenance_routes_completed_implementation_with_pending_audit_to_testing():
+    client = InMemoryTrelloClient()
+    project = ProjectRecord(
+        name="P5 — completed implementation",
+        status=ProjectStatus.READY,
+        dod=[
+            DoDItem(text="implementation", checked=True),
+            DoDItem(text="independent audit accepts evidence", phase="audit"),
+        ],
+    )
+    created = sync_project_to_trello(client, project)
+
+    assert maintain_board_contract(client) == []
+
+    id_to_name, _ = build_list_maps(client)
+    reloaded = project_from_card(client.get_card(created["id"]), id_to_name)
+    assert reloaded.status == ProjectStatus.TESTING
+    assert reloaded.stop_reason == "implementation DoD complete; awaiting ai-orchestrator audit"
 
 
 def test_maintenance_migrates_identity_governance_and_order_idempotently():
