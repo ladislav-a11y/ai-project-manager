@@ -56,8 +56,9 @@ def test_runner_seeds_card_project_key_migration_for_the_known_real_production_c
 def test_runner_configures_explicit_provider_model_catalog() -> None:
     source = (SCRIPTS / "run-ai-project-manager.ps1").read_text(encoding="utf-8")
 
-    assert "$env:AI_PM_PROVIDERS = 'claude,antigravity,codex'" in source
+    assert "$env:AI_PM_PROVIDERS = 'hermes,antigravity,claude,codex'" in source
     assert "$env:AI_PM_PROVIDER_MODELS" in source
+    assert "'hermes' = @('upstage/solar-pro4:free')" in source
     assert "'codex' = @('gpt-5.6-luna')" in source
     assert "'claude' = @('claude-opus-4-1', 'claude-sonnet-4')" in source
     assert "'antigravity' = @('gemini-2.5-pro')" in source

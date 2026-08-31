@@ -421,6 +421,67 @@ def test_lifecycle_write_rejects_controller_verification_as_implementation_work(
     assert client.list_cards(client.get_list_id_by_name("Ready")) == []
 
 
+def test_maintenance_migrates_legacy_inbox_audit_text_and_priority_metadata():
+    client = InMemoryTrelloClient()
+    ready = client.get_list_id_by_name("Ready")
+    legacy = {
+        "schema_version": CURRENT_SCHEMA_VERSION,
+        "checkpoint": {},
+        "dod": [
+            {"checked": False, "phase": "implementation", "text": "implementace"},
+            {
+                "checked": False,
+                "phase": "implementation",
+                "text": trello_sync._LEGACY_INBOX_LIVE_TEXT,
+            },
+            {
+                "checked": False,
+                "phase": "audit",
+                "text": trello_sync._LEGACY_INBOX_AUDIT_TEXT,
+            },
+        ],
+        "open_feedback": [],
+        "governance": GOVERNANCE_POLICY,
+        "dod_routing_policy": trello_sync.DOD_ROUTING_POLICY,
+        "main_task": "V band-opening notifikace zobrazovat jednu notifikaci.",
+        "inbox_preparation": {
+            "scope": "band-opening notifikace",
+            "task_priority": 0,
+            "priority_reason": "explicitní Trello priorita",
+            "dod": [
+                {"checked": False, "phase": "implementation", "text": "implementace"},
+                {
+                    "checked": False,
+                    "phase": "implementation",
+                    "text": trello_sync._LEGACY_INBOX_LIVE_TEXT,
+                },
+                {
+                    "checked": False,
+                    "phase": "audit",
+                    "text": trello_sync._LEGACY_INBOX_AUDIT_TEXT,
+                },
+            ],
+        },
+    }
+    card = client.create_card(
+        ready,
+        "P3 — legacy prepared card",
+        desc=f"<!-- PM-DATA\n{json.dumps(legacy)}\n-->",
+        labels=["P3", "Station Agent"],
+    )
+
+    assert maintain_board_contract(client) == []
+
+    raw = _parse_data_block(client.get_card(card["id"])["desc"])
+    assert raw["dod"][1]["text"] == trello_sync._CURRENT_INBOX_LIVE_TEXT
+    assert raw["dod"][1]["phase"] == "audit"
+    assert raw["inbox_preparation"]["dod"][1]["text"] == trello_sync._CURRENT_INBOX_LIVE_TEXT
+    assert raw["inbox_preparation"]["dod"][1]["phase"] == "audit"
+    assert raw["dod"][2]["text"] == trello_sync._CURRENT_INBOX_AUDIT_TEXT
+    assert raw["inbox_preparation"]["dod"][2]["text"] == trello_sync._CURRENT_INBOX_AUDIT_TEXT
+    assert raw["inbox_preparation"]["task_priority"] == 3
+
+
 def test_maintenance_routes_completed_implementation_with_pending_audit_to_testing():
     client = InMemoryTrelloClient()
     project = ProjectRecord(

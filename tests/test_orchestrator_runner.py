@@ -622,6 +622,72 @@ def test_run_fn_invokes_real_cli_with_project_goal_spec_and_agent(tmp_path):
     assert result["status"] == "in_progress"
 
 
+def test_production_run_fn_dispatches_auto_for_same_tick_provider_failover(tmp_path):
+    seen = {}
+    registry = ProviderRegistry()
+    for name in ("hermes", "antigravity", "claude", "codex"):
+        registry.mark_available(name)
+
+    def fake_subprocess_run(command):
+        seen["command"] = command
+        write_outbox_result(
+            tmp_path / "outbox", "Demo",
+            {"status": "in_progress", "checkpoint": {}, "provider_sequence": ["hermes"]},
+            run_id="fixed-run-id",
+        )
+        return completed()
+
+    project = ProjectRecord(
+        name="Demo", status=ProjectStatus.READY,
+        orchestrator_ready_task="Implement feature X",
+    )
+    run_fn, _, _ = make_run_fn(
+        tmp_path, registry, subprocess_run=fake_subprocess_run,
+        use_provider_failover=True,
+    )
+
+    run_fn(project, "hermes")
+
+    assert seen["command"][seen["command"].index("--agent") + 1] == "auto"
+    assert "--model" not in seen["command"]
+
+
+def test_production_failover_temporarily_gates_failed_hermes(tmp_path):
+    registry = ProviderRegistry()
+    for name in ("hermes", "antigravity", "claude", "codex"):
+        registry.mark_available(name)
+
+    def fake_subprocess_run(command):
+        write_outbox_result(
+            tmp_path / "outbox", "Demo",
+            {
+                "status": "in_progress",
+                "checkpoint": {"completed_dod_indices": []},
+                "active_provider": "codex",
+                "provider_sequence": ["hermes", "antigravity", "claude-code", "codex"],
+                "stop_reason": "pokračování přes codex",
+            },
+            run_id="fixed-run-id",
+        )
+        return completed()
+
+    project = ProjectRecord(
+        name="Demo", status=ProjectStatus.READY,
+        orchestrator_ready_task="Implement feature X",
+    )
+    run_fn, _, _ = make_run_fn(
+        tmp_path, registry, subprocess_run=fake_subprocess_run,
+        use_provider_failover=True,
+    )
+
+    run_fn(project, "hermes")
+
+    status = registry.get_status("hermes")
+    assert status.state == ProviderState.ERROR
+    assert status.retry_after is not None
+    assert "failover" in status.last_error
+
+
 def test_run_fn_preserves_model_identity_from_orchestrator_receipt(tmp_path):
     registry = ProviderRegistry()
     registry.mark_available("codex")

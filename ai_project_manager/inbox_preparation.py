@@ -118,19 +118,58 @@ def derive_priority(card: Mapping, text: str, default_priority: int = 2) -> tupl
         return explicit, "explicitní Trello priorita"
 
     lowered = text.casefold()
-    pm_repair = (
-        any(term in lowered for term in ("ai-project-manager", "project manager", "orchestrator", "scheduler", "trello contract"))
-        and any(term in lowered for term in ("oprav", "bug", "chyba", "nefung", "regres", "fix", "přetrvává"))
+    standalone_bug = bool(re.search(r"\bbug\b", lowered))
+    mentions_pm = any(
+        term in lowered
+        for term in (
+            "ai-project-manager",
+            "project manager",
+            "orchestrator",
+            "scheduler",
+            "trello contract",
+        )
+    ) or bool(re.search(r"\bpm\b", lowered))
+    pm_repair = mentions_pm and (
+        any(
+            term in lowered
+            for term in (
+                "oprav",
+                "chyba",
+                "nefung",
+                "regres",
+                "fix",
+                "přetrvává",
+                "úprav",
+            )
+        )
+        or standalone_bug
     )
     if pm_repair:
         return 5, "oprava vlastního PM/orchestrátoru nebo jeho workflow"
     if any(term in lowered for term in ("bezpeč", "security", "ztrát", "data loss", "produkč", "blokuj")):
         return 5, "bezpečnostní, produkční nebo blokující dopad"
-    if any(term in lowered for term in ("live", "chyba", "bug", "nefung", "přetrvává", "regres", "error")):
+    if any(term in lowered for term in ("live", "chyba", "nefung", "přetrvává", "regres", "error")) or standalone_bug:
         return 4, "potvrzený bug nebo regrese z live používání"
     if any(term in lowered for term in ("oprav", "fix", "urgent", "krit")):
         return 4, "opravný nebo naléhavý požadavek"
-    if any(term in lowered for term in ("rozšíř", "implement", "přidat", "funkc")):
+    if any(
+        term in lowered
+        for term in (
+            "rozšíř",
+            "implement",
+            "přidat",
+            "funkc",
+            "zobraz",
+            "vypoč",
+            "výpoč",
+            "dopln",
+            "zachov",
+            "umožn",
+            "vrát",
+            "přepoč",
+            "notifik",
+        )
+    ):
         return 3, "realizovatelná změna funkcionality"
     if any(term in lowered for term in ("budouc", "nápad", "research", "rešerš")):
         return 1, "budoucí nebo rešeršní práce"
@@ -252,8 +291,11 @@ def build_dod(tasks: tuple[PreparedTask, ...]) -> tuple[DoDItem, ...]:
     scopes = ", ".join(task.scope for task in tasks)
     return (
         DoDItem(text=f"Implementovat připravené části Inbox požadavku: {scopes}.", phase="implementation"),
-        DoDItem(text="Ai-orchestrator spustí cílené regresní testy a uvede konkrétní výsledek; nový commit není pro tento auditní bod vyžadován.", phase="audit"),
-        DoDItem(text="Ověřit relevantní chování v živém prostředí a zapsat konkrétní důkaz.", phase="implementation"),
+        DoDItem(text="Nezávislý audit ai-orchestratoru provede cílené regresní testy a uvede konkrétní výsledek; nový commit není pro tento auditní bod vyžadován.", phase="audit"),
+        # Live/test verification is controller-owned evidence.  Keeping it
+        # out of the implementation phase prevents Hermes (or any other
+        # worker) from receiving a task it is not allowed to complete.
+        DoDItem(text="Nezávislý audit ai-orchestratoru ověří relevantní chování v živém prostředí a zapíše konkrétní důkaz; nový commit není pro tento auditní bod vyžadován.", phase="audit"),
         DoDItem(text="Nezávislý audit ai-orchestrator vydá accepted / rejected verdikt.", phase="audit"),
     )
 
@@ -271,14 +313,29 @@ def prepare_inbox_card(
     project_key, human_reason = resolve_project_key(card, text, project_paths, card_project_keys)
     priority, priority_reason = priority_override or derive_priority(card, text, default_priority)
     raw_tasks = split_tasks(source_name, text, project_key)
-    tasks = tuple(
-        replace(
-            task,
-            priority=derive_priority(card, task.task, default_priority)[0],
-            priority_reason=derive_priority(card, task.task, default_priority)[1],
+    # A source card's explicit P-label expresses the urgency of the Inbox
+    # request as a whole. Once it is split into independent workstreams,
+    # each child must be ranked from its own content; otherwise one inherited
+    # P0 label makes every materially different task look identical. Keep
+    # the source priority as the fallback only when a child has no stronger
+    # contextual signal.
+    child_card = dict(card)
+    child_card["labels"] = [
+        label for label in (card.get("labels", []) or [])
+        if str(label.get("name") if isinstance(label, dict) else label).strip().casefold()
+        not in {f"p{index}" for index in range(6)}
+    ]
+    prepared_tasks: list[PreparedTask] = []
+    for task in raw_tasks:
+        child_priority, child_reason = derive_priority(
+            child_card,
+            f"{task.scope}: {task.task}",
+            priority,
         )
-        for task in raw_tasks
-    )
+        prepared_tasks.append(
+            replace(task, priority=child_priority, priority_reason=child_reason)
+        )
+    tasks = tuple(prepared_tasks)
     return InboxPreparation(
         source_name=source_name,
         normalized_text=text,

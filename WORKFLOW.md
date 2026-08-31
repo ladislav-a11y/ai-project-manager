@@ -77,9 +77,31 @@ karty; strojový blok `PM-DATA` se nesmí považovat za nové zadání. Chyběj�
 nejasná nebo víceznačná projektová identita je fail-closed a karta zůstává v
 Inboxu s konkrétním požadavkem na člověka.
 
-Přednost mají opravy PM/orchestrátoru a potvrzené live regrese; priorita je
-součástí názvu i Card Contractu. Intake musí být idempotentní podle neměnného
-ID zdrojové karty a nesmí vytvořit duplicitní pracovní kartu.
+Přednost mají opravy PM/orchestrátoru (`P5`), bezpečnostní, produkční nebo
+blokující dopady (`P5`), potvrzené live regrese (`P4`), běžné opravné požadavky
+(`P4`), realizovatelné změny funkcionality (`P3`) a teprve potom běžná,
+budoucí nebo rešeršní práce (`P2` až `P0`). Výsledná priorita se posuzuje pro
+každý rozdělený podúkol zvlášť podle jeho obsahu; zděděné `P0` nesmí všechny
+podúkoly sloučit do stejné priority. Stejná priorita je přípustná jen tehdy,
+když mají úkoly skutečně stejnou naléhavost. Rozsah `P5` až `P0` je pro tuto
+rubu dostatečný a nemá se svévolně rozšiřovat. Priorita je součástí názvu i
+Card Contractu. Intake musí být idempotentní podle neměnného ID zdrojové karty
+a nesmí vytvořit duplicitní pracovní kartu.
+
+Při načtení starší připravené karty PM nejdříve provede bezpečnou in-memory
+migraci známého PM-DATA: opraví historický auditní text na explicitní
+nezávislý audit ai-orchestratoru a srovná `inbox_preparation.task_priority` s
+prioritním štítkem. Teprve potom se karta validuje a synchronizuje běžnou PM
+cestou. Neznámé, konfliktní nebo poškozené hodnoty se neopravují odhadem a
+zůstávají fail-closed. Ruční konektorový limit 2048 znaků není důvod ke
+zkracování kontraktu; PM používá interní synchronizaci s bounded PM-DATA.
+
+Starší připravené Inbox karty, které mají obecný bod „Ověřit relevantní
+chování v živém prostředí...“ ve fázi `implementation`, se při této migraci
+automaticky přeřadí do fáze `audit`. Zůstávají ve `Připraveno` a zachovají si
+svůj konkrétní pracovní rozsah; není nutné je vracet do Inboxu ani znovu
+rozdělovat. Nově připravená karta má mít právě jeden implementační výsledek,
+zatímco testování, live evidence a verdikt patří do auditní fáze.
 
 Stav `ERROR` je čekací stav, který nejdříve projde recovery passem. Známá
 providerová/protokolová chyba se smí automaticky vrátit do `Připraveno` se
@@ -91,19 +113,58 @@ zachovaným checkpointem; neznámá nebo opakovaná chyba vyžaduje člověka.
 Každý přechod musí být zpětně čitelný z Trella: viditelné DoD, poslední výstup,
 důvod čekání nebo odmítnutí, checkpoint a auditní evidence. Lokální soubory,
 historické logy ani tvrzení agenta samy o sobě nejsou důkazem dokončení.
+Výsledky kvalifikačních smoke testů, live testů a volby modelu uložené na
+ověřených kartách v `Hotovo` jsou závazným vývojovým podkladem pro navazující
+implementaci a diagnostiku; nesmějí však zpětně měnit terminální stav ani
+nahradit aktuální auditní důkaz.
 
 ## Hermes kvalifikační pravidla
 
-Hermes je pouze experimentální provider a smí být spuštěn výhradně přes Nous
-free LLM: `provider=nous` a model s explicitní příponou `:free` (aktuálně
-`upstage/solar-pro4:free`). Jakýkoli jiný provider nebo model je porušení
-contractu, nikoli fallback.
+Hermes je podporovaný provider s předností v aktuálním PM pořadí
+`hermes → antigravity → claude → codex`. Musí být spuštěn výhradně přes Nous
+free LLM a model se nesmí odvozovat z výchozí konfigurace CLI: orchestrator i
+PM musí explicitně vynutit `provider=nous` a přesný model
+`upstage/solar-pro4:free`. Jakýkoli jiný provider nebo model je porušení
+contractu. Nefunkční Hermes může spustit běžný failover na dalšího providera,
+ale Hermes sám nesmí použít placený model ani jiný fallback.
 
 Před každým Hermes během musí orchestrator nastavit a zalogovat absolutní
 `TERMINAL_CWD` pro izolovaný scratch/worktree. Samotné `--in`, pracovní
 adresář procesu ani textová odpověď Hermese nejsou důkazem provedené práce.
+Nous stream, který skončí `Response truncated...` nebo opakovaným pádem
+uprostřed tool-call, je provider failure: PM jej nesmí přepsat na chybějící
+metadata ani opakovat celý běh bez změny; orchestrator musí přejít na dalšího
+providera a zachovat důvod v diagnostice.
+Produkční PM adapter nesmí přebírat uživatelskou desktopovou konfiguraci:
+spouští izolovaný headless běh v `--safe-mode`, pouze s nástroji `file,terminal`
+a s limitem `HERMES_MAX_ITERATIONS=20`. Desktopový Hermes se
+nesmí používat souběžně s PM, protože jeho gateway/session zámky mohou CLI běh
+zablokovat až do timeoutu; při aktivní desktopové relaci je nutné ji nejprve
+ukončit, případně použít běžný provider failover. Tato izolace nemění povinný
+provider/model: stále platí výhradně `nous` + `upstage/solar-pro4:free`.
+Headless PM handoff má navíc tvrdý timeout nejvýše 180 sekund; delší hodnota
+z desktopové nebo lokální konfigurace se nesmí převzít. Po jeho překročení se
+Hermes označí jako selhaný provider a PM smí pokračovat failoverem.
+Při aktivním Hermesu se dávka omezuje na jeden konkrétní DoD bod a krátké
+ověření; celé testovací sady a široké dávky patří až do orchestratorového
+auditu nebo do provideru po failoveru.
+
+Inbox planning/intake je samostatná fáze před worker dispatch. Běžný PM
+intake používá deterministickou lokální přípravu bez AI tokenů. Pokud bude
+zapojen AI planner pro dlouhý Inbox vstup, smí vybrat pouze prvního dostupného
+providera z pořadí `antigravity → claude → codex`; `hermes` je v této fázi
+explicitně zakázán. Hermes se smí použít až na již rozdělené, prioritou
+opatřené a atomické pracovní kartě.
 Handoff je úspěšný teprve po ověření postcondition orchestrátorem: exit code,
 provider/model z usage, povolený rozsah změn a skutečný filesystem/Git diff.
+Přesun karty jiným providerem Hermese neodstraňuje z pořadí: při dalším ticku
+se smí znovu účastnit po úspěšné dostupnostní revalidaci, ale PM nesmí jeho
+stav `ERROR` nebo `LIMITED` slepě přepsat na `AVAILABLE`. V Card Contractu a
+Slacku se rozlišuje `selected_provider` (provider vybraný PM) od
+`actual_provider` a `actual_model` potvrzených outboxem; při interním failoveru
+se musí zobrazit celá `provider_sequence`.
 Pokud Hermes pouze popisuje postup, vrátí „success“ bez postcondition nebo
 selže na pracovním adresáři, výsledek je `rejected`/`blocked` a nesmí se
-započítat do DoD.
+započítat do DoD. Staré diagnostické hlášení o chybějícím `provider`/`model`
+v usage po pádu před dokončením turnu je protokolová chyba k automatickému
+recovery a nesmí samo o sobě kartu převést do trvalého `human_required`.

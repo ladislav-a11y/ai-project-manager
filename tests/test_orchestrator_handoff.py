@@ -280,6 +280,19 @@ def test_build_orchestrator_task_carries_trello_feedback_on_rework():
     assert "Previous attempt changed the adapter" in task.task
 
 
+def test_build_orchestrator_task_does_not_repeat_identical_prepared_task_and_next_step():
+    project = ProjectRecord(
+        name="Demo",
+        orchestrator_ready_task="Implement the current slice",
+        next_step="Implement the current slice",
+        extra_data={"returned_from_testing": True},
+    )
+
+    task = build_orchestrator_task(project)
+
+    assert task.task.count("Implement the current slice") == 1
+
+
 def test_build_orchestrator_task_carries_no_cross_card_learning_memory():
     """Regression: the goal text handed to a fresh run must come only from
     the card's own current contract (task, DoD, feedback, checkpoint) -

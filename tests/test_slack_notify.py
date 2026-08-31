@@ -1,8 +1,40 @@
 from ai_project_manager import slack_notify
+from datetime import datetime, timezone
 
 
 class FakeResponse:
     status_code = 200
+
+
+def test_status_messages_are_timestamped_clear_and_provider_block_is_standalone():
+    now = datetime(2026, 8, 31, 16, 30, tzinfo=timezone.utc)
+
+    status = slack_notify.status_message(
+        "PM zahajuje práci",
+        project="Demo",
+        provider="hermes | model: solar",
+        provider_reason="první dostupný v pořadí hermes, codex",
+        now=now,
+    )
+    blocked = slack_notify.provider_blocked_message(
+        "hermes", "2026-08-31T17:00:00+00:00", reason="quota", now=now
+    )
+
+    assert status.startswith("[AI status] 2026-08-31T16:30+00:00")
+    assert "PM zahajuje práci" in status
+    assert "projekt: Demo" in status
+    assert "provider: hermes | model: solar" in status
+    assert "proč: první dostupný" in status
+    assert "Provider blokován" in blocked
+    assert "blokován do: 2026-08-31T17:00:00+00:00" in blocked
+    assert "důvod: quota" in blocked
+
+
+def test_usage_suffix_reports_unknown_tokens_when_receipt_is_missing():
+    assert slack_notify.usage_suffix({}) == (
+        " | usage: input=n/a, output=n/a, thinking=n/a, total=n/a, "
+        "cost_usd=n/a, source=n/a"
+    )
 
 
 def test_usage_suffix_renders_only_bounded_total_receipt():
@@ -35,6 +67,21 @@ def test_result_model_prefers_actual_receipt_and_supports_usage_model():
         {"usage": {"total": {"model": "claude-opus-4-1"}}}, "configured"
     ) == "claude-opus-4-1"
     assert slack_notify.result_model({}, "configured") == "configured"
+
+
+def test_provider_route_detail_makes_internal_failover_visible():
+    assert slack_notify.provider_route_detail({
+        "provider_sequence": ["hermes", "codex"],
+        "active_provider": "codex",
+    }) == "provider path: hermes -> codex | failover: ano"
+    assert slack_notify.provider_route_detail({
+        "provider_sequence": ["codex"],
+        "active_provider": "codex",
+    }) == "provider path: codex | failover: ne"
+    assert slack_notify.provider_route_detail(
+        {"provider_sequence": ["codex"], "active_provider": "codex"},
+        selected_provider="hermes",
+    ) == "provider path: hermes -> codex | failover: ano"
 
 
 def test_webhook_url_alone_does_not_enable_real_notifications(monkeypatch, caplog):

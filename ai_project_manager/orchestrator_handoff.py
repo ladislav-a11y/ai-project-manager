@@ -112,17 +112,40 @@ def _goal_text(project: ProjectRecord) -> str:
     and next step, so a project is never handed off with an empty goal
     just because nobody filled in ``orchestrator_ready_task`` yet."""
     parts = []
+    seen_components: set[str] = set()
+
+    def add_component(value: str) -> bool:
+        """Add one card component once, ignoring formatting-only repeats."""
+        clean = value.strip()
+        key = re.sub(r"\s+", " ", clean).casefold()
+        if not clean or key in seen_components:
+            return False
+        seen_components.add(key)
+        parts.append(clean)
+        return True
+
     has_prepared_task = bool(project.orchestrator_ready_task and project.orchestrator_ready_task.strip())
     if has_prepared_task:
-        parts.append(project.orchestrator_ready_task.strip())
+        add_component(project.orchestrator_ready_task)
     elif project.main_task and project.main_task.strip():
-        parts.append(project.main_task.strip())
+        add_component(project.main_task)
     open_feedback = [f.strip() for f in project.open_feedback if f and f.strip()]
     has_continuity = project.returned_from_testing or bool(project.last_output and project.last_output.strip())
     if open_feedback and (not has_prepared_task or has_continuity):
-        parts.append("Open feedback/bugs:\n" + "\n".join(f"- {item}" for item in open_feedback))
+        unique_feedback = []
+        feedback_keys = set(seen_components)
+        for item in open_feedback:
+            key = re.sub(r"\s+", " ", item).casefold()
+            if key not in feedback_keys:
+                feedback_keys.add(key)
+                unique_feedback.append(item)
+        if unique_feedback:
+            add_component("Open feedback/bugs:\n" + "\n".join(f"- {item}" for item in unique_feedback))
     if project.next_step and project.next_step.strip() and (not has_prepared_task or has_continuity):
-        parts.append(f"Next step: {project.next_step.strip()}")
+        next_step = project.next_step.strip()
+        next_key = re.sub(r"\s+", " ", next_step).casefold()
+        if next_key not in seen_components:
+            add_component(f"Next step: {next_step}")
     if project.last_output and project.last_output.strip():
         # This is durable continuity from Trello, not a second source of
         # truth. Keep it bounded so a long prior result cannot inflate every

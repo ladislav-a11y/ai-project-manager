@@ -27,6 +27,7 @@ from datetime import datetime, timezone
 from typing import Optional
 
 from .models import DoDItem, GitHubRef, GoogleDriveRef, ProjectRecord, ProjectStatus
+from .inbox_preparation import derive_priority
 from .trello_client import MAX_TRELLO_DESC_CHARS
 from .card_contract import (
     CURRENT_SCHEMA_VERSION,
@@ -235,6 +236,24 @@ MAX_TRELLO_LAST_OUTPUT_CHARS = 2500
 TITLE_PRIORITY_RE = re.compile(r"^\s*P([0-5])(?:\s|[-—–:])", re.IGNORECASE)
 TITLE_PRIORITY_PREFIX_RE = re.compile(r"^\s*P[0-5]\s*(?:[-—–:]\s*)?", re.IGNORECASE)
 
+_LEGACY_INBOX_AUDIT_TEXT = (
+    "Ai-orchestrator spustí cílené regresní testy a uvede konkrétní výsledek; "
+    "nový commit není pro tento auditní bod vyžadován."
+)
+_CURRENT_INBOX_AUDIT_TEXT = (
+    "Nezávislý audit ai-orchestratoru provede cílené regresní testy a uvede "
+    "konkrétní výsledek; nový commit není pro tento auditní bod vyžadován."
+)
+_LEGACY_INBOX_LIVE_TEXT = "Ověřit relevantní chování v živém prostředí a zapsat konkrétní důkaz."
+_CURRENT_INBOX_LIVE_TEXT = (
+    "Nezávislý audit ai-orchestratoru ověří relevantní chování v živém prostředí "
+    "a zapíše konkrétní důkaz; nový commit není pro tento auditní bod vyžadován."
+)
+_LEGACY_INBOX_WORKER_SUFFIX = (
+    " Zachovat chování mimo tento rozsah; dokončení doložit testem a relevantním live důkazem."
+)
+_CONTRACT_MIGRATION_MARKER = "_pm_contract_migration_required"
+
 
 def priority_from_labels(labels: list[dict]) -> int:
     for label in labels or []:
@@ -339,6 +358,75 @@ def _raw_contract_data(desc: str) -> dict:
 def _parse_contract_data(desc: str) -> dict:
     """Strict PM read path: malformed/version-incompatible data is never reset."""
     return migrate_and_validate(_raw_contract_data(desc))
+
+
+def _migrate_legacy_prepared_card(data: dict, card: dict, priority: int) -> bool:
+    """Upgrade known PM-generated Inbox metadata before routing validation.
+
+    A previous PM version emitted an audit-phase sentence that was
+    controller-owned in meaning but lacked the explicit independent-audit
+    marker required by the current Card Contract. Existing cards are repaired
+    in memory first and persisted through the normal PM sync path.
+    """
+    changed = False
+    for container in (
+        data.get("dod"),
+        (data.get("inbox_preparation") or {}).get("dod"),
+    ):
+        if not isinstance(container, list):
+            continue
+        for item in container:
+            if not isinstance(item, dict):
+                continue
+            if item.get("text") == _LEGACY_INBOX_AUDIT_TEXT:
+                item["text"] = _CURRENT_INBOX_AUDIT_TEXT
+                item["phase"] = "audit"
+                changed = True
+            elif (
+                item.get("text") == _LEGACY_INBOX_LIVE_TEXT
+                and item.get("phase") == "implementation"
+            ):
+                # Old intake made the worker responsible for live evidence.
+                # That is controller-owned audit work and could deadlock a
+                # Hermes run even when the implementation itself was done.
+                item["text"] = _CURRENT_INBOX_LIVE_TEXT
+                item["phase"] = "audit"
+                changed = True
+
+    # Old split cards also embedded the audit/test obligation in the worker
+    # handoff. Remove only this exact PM-generated suffix; never rewrite
+    # user-authored task text by inference.
+    worker_task = data.get("orchestrator_ready_task")
+    if isinstance(worker_task, str) and worker_task.endswith(_LEGACY_INBOX_WORKER_SUFFIX):
+        data["orchestrator_ready_task"] = worker_task[: -len(_LEGACY_INBOX_WORKER_SUFFIX)].rstrip()
+        changed = True
+
+    preparation = data.get("inbox_preparation")
+    if isinstance(preparation, dict):
+        # A priority label is authoritative after intake. Keep structured child
+        # metadata aligned with it, and refresh its reason only when the same
+        # contextual rubric confirms that priority.
+        child_card = dict(card)
+        child_card["labels"] = [
+            label for label in (card.get("labels", []) or [])
+            if str(label.get("name") if isinstance(label, dict) else label).strip().casefold()
+            not in {f"p{index}" for index in range(6)}
+        ]
+        derived_priority, derived_reason = derive_priority(
+            child_card,
+            f"{preparation.get('scope', '')}: {data.get('main_task', '')}",
+            priority,
+        )
+        if preparation.get("task_priority") != priority:
+            preparation["task_priority"] = priority
+            changed = True
+        if derived_priority == priority and preparation.get("priority_reason") != derived_reason:
+            preparation["priority_reason"] = derived_reason
+            changed = True
+
+    if changed:
+        data[_CONTRACT_MIGRATION_MARKER] = True
+    return changed
 
 
 def _validate_card_identity(data: dict, card: dict) -> None:
@@ -573,6 +661,7 @@ def project_from_card(card: dict, list_id_to_name: dict[str, str]) -> ProjectRec
         data["main_task"] = notes
         data["orchestrator_ready_task"] = notes
     priority = priority_from_card(card)
+    _migrate_legacy_prepared_card(data, card, priority)
     status = status_from_list(card.get("list_id"), list_id_to_name)
 
     # Some boards intentionally use one physical list (notably Czech
@@ -712,6 +801,9 @@ def card_updates_from_project(project: ProjectRecord, list_name_to_id: dict[str,
     machine-readable block (e.g. a human-friendly summary).
     """
     data = dict(project.extra_data)
+    # This transient marker tells maintenance that the read path repaired a
+    # legacy card, but it must never become part of the durable contract.
+    data.pop(_CONTRACT_MIGRATION_MARKER, None)
     # Fresh live Trello readback is evidence for the audit prompt only. It is
     # intentionally transient: persisting it would duplicate board metadata
     # inside PM-DATA and can push an already large contract over Trello's limit.
@@ -909,6 +1001,7 @@ def maintain_board_contract(client) -> list[str]:
                     # physical list is Ready/In Progress/Done, but the raw
                     # card still has the old value - persist the clearing.
                     bool(raw.get("blocked_by")) and not project.blocked_by,
+                    bool(project.extra_data.get(_CONTRACT_MIGRATION_MARKER)),
                 ))
                 if needs_write:
                     sync_project_to_trello(client, project)

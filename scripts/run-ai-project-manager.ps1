@@ -81,8 +81,13 @@ try {
     # was prepared in Připraveno. The intake remains fail-closed on project
     # identity and never touches the personal Inbox.
     $env:AI_PM_ENABLE_INBOX = '1'
-    $env:AI_PM_PROVIDERS = 'claude,antigravity,codex'
+    # Ordered failover policy: Hermes is preferred when available, but is
+    # hard-wired in ai-orchestrator to the Nous free model only.  The PM
+    # provider names intentionally remain stable; ``hermes`` maps to the
+    # production Hermes agent, while ``claude`` maps to claude-code.
+    $env:AI_PM_PROVIDERS = 'hermes,antigravity,claude,codex'
     $env:AI_PM_PROVIDER_MODELS = (@{
+        'hermes' = @('upstage/solar-pro4:free')
         'claude' = @('claude-opus-4-1', 'claude-sonnet-4')
         'antigravity' = @('gemini-2.5-pro')
         # The ChatGPT-account Codex CLI rejects the generic gpt-5.6 alias;

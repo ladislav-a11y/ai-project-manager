@@ -293,8 +293,9 @@ def load_config(env: Optional[Mapping[str, str]] = None) -> Config:
     )
 
     # ``auto`` delegates concrete provider choice to ai-orchestrator, whose
-    # failover agent owns the ordered claude-code -> antigravity -> codex
-    # sequence.  Selecting ``claude`` here would pass an explicit
+    # failover policy is supplied by the launcher as
+    # hermes -> antigravity -> claude -> codex. Selecting ``claude`` here
+    # would pass an explicit
     # ``--agent claude-code`` and intentionally disable that failover.
     providers = [p.strip() for p in env.get("AI_PM_PROVIDERS", "auto").split(",") if p.strip()]
     if not providers:

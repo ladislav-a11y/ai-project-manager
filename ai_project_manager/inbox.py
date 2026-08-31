@@ -515,7 +515,7 @@ def process_inbox(
                     orchestrator_ready_task=(
                         f"Implementovat tento samostatný rozsah v projektu "
                         f"{preparation.project_key or prepared_task.title}: {prepared_task.task} "
-                        "Zachovat chování mimo tento rozsah; dokončení doložit testem a relevantním live důkazem."
+                        "Zachovat chování mimo tento rozsah."
                     ),
                     dod=list(build_dod((prepared_task,))),
                     project_key=preparation.project_key,

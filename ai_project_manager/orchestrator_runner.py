@@ -86,6 +86,7 @@ SubprocessFn = Callable[[list], "subprocess.CompletedProcess"]
 ReadOutboxFn = Callable[[str, str, str], dict]
 
 _DEFAULT_LIMIT_BACKOFF = timedelta(minutes=30)
+_PROVIDER_FAILURE_BACKOFF = timedelta(minutes=30)
 _DEFAULT_SPEC_DIR = "specs"
 _RUNTIME_CONTRACT_PATH = Path(__file__).resolve().parents[2] / "AI_PROJECT_RUNTIME.md"
 _DEFAULT_OUTBOX_DIR = "outbox"
@@ -676,6 +677,7 @@ def build_run_fn(
     finalize_command: Optional[list] = None,
     finalize_paths: Optional[dict] = None,
     allowed_push_remotes: Optional[dict] = None,
+    use_provider_failover: bool = False,
 ):
     """Build a ``run_fn(project, provider) -> dict`` that dispatches to the
     real ai-orchestrator ``--project``/``--goal``/``--spec``/``--agent``/
@@ -705,8 +707,14 @@ def build_run_fn(
         subprocess_run = functools.partial(_default_subprocess_run, timeout=timeout_seconds)
 
     def run_fn(project: ProjectRecord, provider: str) -> dict:
-        agent_name = map_provider_to_agent(provider, provider_agent_map)
-        selected_model = provider_registry.selected_model(provider)
+        # The PM scheduler selects the first currently available provider for
+        # visibility and priority. Production dispatch must still let
+        # ai-orchestrator try the complete ordered chain in the same tick;
+        # otherwise a Hermes stream failure only becomes an error and the next
+        # tick starts from Hermes again. Tests and explicit callers retain the
+        # old single-agent behavior unless they opt in.
+        agent_name = "auto" if use_provider_failover else map_provider_to_agent(provider, provider_agent_map)
+        selected_model = None if use_provider_failover else provider_registry.selected_model(provider)
         task = build_orchestrator_task(project, definition_of_done=definition_of_done, provider=agent_name)
 
         try:
@@ -862,6 +870,27 @@ def build_run_fn(
             )
         if "stop_reason" not in result and result["status"] != "done":
             result["stop_reason"] = payload.get("error") or str(orchestrator_status)
+        provider_sequence = result.get("provider_sequence")
+        active_provider = result.get("active_provider")
+        # A production auto run may start with Hermes and finish through a
+        # later provider. Persist the failed head as a temporary ERROR so the
+        # next PM tick does not repeat the same expensive failure immediately;
+        # this is a recheck backoff, not a permanent removal of Hermes.
+        if (
+            use_provider_failover
+            and provider == "hermes"
+            and isinstance(provider_sequence, list)
+            and "hermes" in provider_sequence
+            and len(provider_sequence) > 1
+            and active_provider != "hermes"
+        ):
+            provider_registry.mark_error(
+                "hermes",
+                "Hermes selhal; failover na dalšího providera: "
+                + str(result.get("stop_reason") or "provider failover"),
+                retry_after=_PROVIDER_FAILURE_BACKOFF,
+                checkpoint=result.get("checkpoint", project.checkpoint),
+            )
         return result
 
     return run_fn
@@ -909,6 +938,7 @@ def build_audit_run_fn(
     run_id_fn: Callable[[], str] = _default_run_id,
     provider_agent_map: Optional[dict] = None,
     run_git: Optional[RunCommand] = None,
+    use_provider_failover: bool = False,
 ):
     """Build an ``audit_run_fn(project, provider) -> dict`` that dispatches
     a Testování card to ai-orchestrator's audit-only mode and reads back
@@ -937,8 +967,8 @@ def build_audit_run_fn(
         subprocess_run = functools.partial(_default_subprocess_run, timeout=timeout_seconds)
 
     def audit_run_fn(project: ProjectRecord, provider: str) -> dict:
-        agent_name = map_provider_to_agent(provider, provider_agent_map)
-        selected_model = provider_registry.selected_model(provider)
+        agent_name = "auto" if use_provider_failover else map_provider_to_agent(provider, provider_agent_map)
+        selected_model = None if use_provider_failover else provider_registry.selected_model(provider)
         task = build_audit_task(project, provider=agent_name)
 
         try:

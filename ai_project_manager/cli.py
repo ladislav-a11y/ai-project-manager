@@ -141,6 +141,7 @@ def main(
             finalize_command=config.orchestrator.finalize_command,
             finalize_paths=config.orchestrator.finalize_paths,
             allowed_push_remotes=config.orchestrator.allowed_push_remotes,
+            use_provider_failover=True,
         )
 
     if audit_run_fn is None:
@@ -152,6 +153,7 @@ def main(
             spec_dir=config.orchestrator.spec_dir,
             outbox_dir=config.orchestrator.outbox_dir,
             timeout_seconds=config.orchestrator.timeout_seconds,
+            use_provider_failover=True,
         )
 
     logger.info(

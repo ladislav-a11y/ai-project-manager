@@ -183,8 +183,8 @@ _VALIDATION_META_RE = re.compile(
     r")"
 )
 _ORCHESTRATOR_AUDIT_EVIDENCE_RE = re.compile(
-    r"(?i)\b(?:accepted\s*/\s*rejected|ai[- ]orchestrator\s+audit|"
-    r"independent\s+audit)\b"
+    r"(?i)\b(?:accepted\s*/\s*rejected|ai[- ]orchestrator\w*\s+audit|"
+    r"independent\s+audit|nez(?:a|á)visl\w*\s+audit)\b"
 )
 _AUDIT_GIT_STATE_RE = re.compile(
     r"(?i)\b(?:HEAD|status|diff|remote|push)\b"

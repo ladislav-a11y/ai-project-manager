@@ -1,10 +1,53 @@
 import os
 import requests
 import logging
+from datetime import datetime
 
 logger = logging.getLogger("ai_project_manager")
 
 _ENABLED_VALUES = {"1", "true", "yes", "on"}
+
+
+def status_message(
+    action: str,
+    *,
+    project: str | None = None,
+    provider: str | None = None,
+    provider_reason: str | None = None,
+    detail: str | None = None,
+    now: datetime | None = None,
+) -> str:
+    """Build one compact, consistently timestamped operational status."""
+    timestamp = (now or datetime.now().astimezone()).isoformat(timespec="minutes")
+    parts = [f"[AI status] {timestamp}", action]
+    if project:
+        parts.append(f"projekt: {project}")
+    if provider:
+        parts.append(f"provider: {provider}")
+    if provider_reason:
+        parts.append(f"proč: {provider_reason}")
+    if detail:
+        parts.append(detail)
+    return " | ".join(parts)
+
+
+def provider_blocked_message(
+    provider: str,
+    retry_after: str,
+    *,
+    reason: str | None = None,
+    now: datetime | None = None,
+) -> str:
+    """Render provider backoff as a standalone AI-status message."""
+    detail = f"blokován do: {retry_after}"
+    if reason:
+        detail += f" | důvod: {reason}"
+    return status_message(
+        "Provider blokován",
+        provider=provider,
+        detail=detail,
+        now=now,
+    )
 
 
 def _notifications_enabled() -> bool:
@@ -20,11 +63,11 @@ def usage_suffix(result: dict | None) -> str:
     provider output in Slack.
     """
     if not isinstance(result, dict):
-        return ""
+        result = {}
     usage = result.get("usage")
     total = usage.get("total") if isinstance(usage, dict) else None
     if not isinstance(total, dict):
-        return ""
+        total = {}
 
     def value(name: str) -> str:
         raw = total.get(name)
@@ -36,6 +79,43 @@ def usage_suffix(result: dict | None) -> str:
         f"thinking={value('thinking_tokens')}, total={value('total_tokens')}, "
         f"cost_usd={value('cost_usd')}, source={value('source')}"
     )
+
+
+def provider_route_detail(
+    result: dict | None,
+    *,
+    selected_provider: str | None = None,
+) -> str:
+    """Render the provider route so failover is visible in Slack.
+
+    The selected provider and the provider that finished a run are not always
+    the same: ai-orchestrator may fail over internally.  A final Slack status
+    must expose that route without including prompts or raw provider output.
+    """
+    if not isinstance(result, dict):
+        return "provider path: n/a | failover: n/a"
+    sequence = result.get("provider_sequence")
+    if not isinstance(sequence, list):
+        sequence = []
+    names = [name.strip() for name in sequence if isinstance(name, str) and name.strip()]
+    selected_text = (
+        str(selected_provider).strip()
+        if isinstance(selected_provider, str) and selected_provider.strip()
+        else None
+    )
+    active = result.get("active_provider")
+    active_text = str(active).strip() if isinstance(active, str) and active.strip() else None
+    if selected_text and selected_text not in names:
+        names.insert(0, selected_text)
+    if not names and active_text:
+        names = [active_text]
+    if not names:
+        return "provider path: n/a | failover: n/a"
+    failed_over = len(names) > 1
+    detail = f"provider path: {' -> '.join(names)} | failover: {'ano' if failed_over else 'ne'}"
+    if active_text and active_text != names[-1]:
+        detail += f" | aktivní provider: {active_text}"
+    return detail
 
 
 def result_model(result: dict | None, fallback: str | None = None) -> str | None:

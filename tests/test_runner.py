@@ -408,8 +408,10 @@ def test_run_once_notifies_slack_start_and_done_when_explicitly_enabled(monkeypa
 
     assert outcome.ran is True
     assert len(calls) == 2
-    assert "Zahajuji" in calls[0] and "Demo" in calls[0]
-    assert "Průběžný stav" in calls[1] and "audit" in calls[1].lower()
+    assert "PM zahajuje práci" in calls[0] and "Demo" in calls[0]
+    assert "proč: první dostupný" in calls[0]
+    assert "Průběžný stav: PM ukončil tick" in calls[1] and "audit" in calls[1].lower()
+    assert "total=n/a" in calls[1]
 
 
 def test_run_once_audit_is_the_only_path_to_hotovo():

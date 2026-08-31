@@ -10,7 +10,12 @@ from ai_project_manager.inbox import (
     looks_like_feedback,
     process_inbox,
 )
-from ai_project_manager.inbox_preparation import prepare_inbox_card, prioritize_inbox_cards
+from ai_project_manager.inbox_preparation import (
+    derive_priority,
+    prepare_inbox_card,
+    prioritize_inbox_cards,
+)
+from ai_project_manager.card_contract import dod_contract_issues
 from ai_project_manager.models import ProjectRecord, ProjectStatus
 from ai_project_manager.trello_client import InMemoryTrelloClient
 from ai_project_manager.trello_sync import build_list_maps, fetch_all_projects, sync_project_to_trello
@@ -29,6 +34,21 @@ def test_batch_prioritization_puts_pm_repairs_before_new_features():
     assert "oprava vlastního PM" in priorities["pm-bug"][1]
 
 
+def test_priority_rubric_handles_pm_abbreviation_and_functional_display_change():
+    assert derive_priority(
+        {"labels": [{"name": "AI Project Manager"}]},
+        "Úprava zpráv PM do Slacku",
+    )[0] == 5
+    assert derive_priority(
+        {"labels": [{"name": "Station Agent"}]},
+        "band-opening: zobrazovat pouze jednu notifikaci",
+    )[0] == 3
+    assert derive_priority(
+        {"labels": [{"name": "Station Agent"}]},
+        "propagation: uvést debug info a průběžně vypočítat score",
+    )[0] == 3
+
+
 def test_preparation_splits_station_agent_card_and_assigns_each_scope_priority():
     card = {
         "id": "station-source",
@@ -42,8 +62,12 @@ def test_preparation_splits_station_agent_card_and_assigns_each_scope_priority()
     assert prepared.project_key == "Station Agent"
     assert len(prepared.tasks) == 3
     assert any(task.scope == "auto tune a hold" and task.priority == 4 for task in prepared.tasks)
+    assert len({task.priority for task in prepared.tasks}) > 1
     assert all(item.phase in {"implementation", "audit"} for item in prepared.dod)
+    assert sum(item.phase == "implementation" for item in prepared.dod) == 1
+    assert sum(item.phase == "audit" for item in prepared.dod) == 3
     assert any(item.phase == "audit" for item in prepared.dod)
+    assert dod_contract_issues(prepared.dod) == []
 
 
 def test_preparation_ignores_stale_pm_data_and_uses_visible_request():
@@ -86,7 +110,7 @@ def test_process_inbox_moves_contract_only_card_to_ready_with_priority_title():
 
     assert len(changed) == 1
     prepared_card = client.get_card(source["id"])
-    assert prepared_card["name"] == "P0 — Úprava zpráv PM do slacku"
+    assert prepared_card["name"] == "P5 — Úprava zpráv PM do slacku"
     assert prepared_card["list_id"] == name_to_id["New"]
     assert "propagation scoring" not in prepared_card["desc"]
 

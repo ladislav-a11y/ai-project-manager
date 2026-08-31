@@ -73,6 +73,21 @@ def test_post_completion_policy_does_not_require_dirty_checkout_commit():
     assert res.valid is True
 
 
+def test_czech_independent_live_audit_does_not_require_new_commit():
+    run_git = fake_git({"rev-parse": "4f9c001"})
+    res = validate_dod_item(
+        0,
+        "Nezávislý audit ai-orchestratoru ověří relevantní chování v živém prostředí; "
+        "nový commit není pro tento auditní bod vyžadován.",
+        repo_path="/fake/repo",
+        initial_head="4f9c001",
+        evidence="1 passed; live evidence recorded; audit accepted",
+        run_git=run_git,
+        expected_new_commit=True,
+    )
+    assert res.valid is True
+
+
 def test_dod_commit_validation_passes_when_head_changed():
     run_git = fake_git({"rev-parse": "9a8b7c6"})
     res = validate_dod_item(
