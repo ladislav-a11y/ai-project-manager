@@ -11,8 +11,9 @@ bezprostředně zapisují.
    rozhodnutí; provider-limit se po termínu vrací do původní fáze.
 3. `Pracuje se` — agent provádí implementaci a postupně plní DoD.
 4. `Připraveno` — nový úkol smí být vybrán až po vyřešení předchozího řetězce.
-5. `Hotovo` — pouze po úspěšných testech, přijetí nezávislým auditem a úplném
-   viditelném DoD.
+5. `Hotovo` — pouze po úspěšných testech, přijetí nezávislým auditem, úplném
+   viditelném DoD a ověřené terminální finalizaci repozitáře, pokud běh změnil
+   Git checkout.
 
 ## Povinné přechody
 
@@ -26,6 +27,13 @@ bezprostředně zapisují.
   s konkrétní zpětnou vazbou.
 - `Testování → Čeká na AI`: pouze provider-limit; návratová fáze zůstává
   `Testování`.
+
+Terminální finalizace je vlastněna controllerem, nikdy agentem: před `Hotovo`
+musí být pro dirty checkout doložen test, explicitní rozsah commitu, čistý
+pracovní strom a záloha/ověřený remote HEAD. Pokud finalizátor nebo jeho
+allowlist není k dispozici, audit kartu nepřijme a vrátí ji do `Pracuje se`;
+PM nesmí použít globální `git add -A` jako náhradní řešení. Čistý checkout bez
+změn nevyžaduje prázdný commit.
 
 Implementační agent nikdy sám neuzavírá kartu do `Hotovo`. Neúplné nebo
 neověřené DoD se nesmí označit jako hotové. Karta vrácená z auditu se nesmí

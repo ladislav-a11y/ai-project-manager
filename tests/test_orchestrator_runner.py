@@ -15,6 +15,7 @@ from ai_project_manager.orchestrator_runner import (
     build_run_fn,
     _controller_finalization_is_verified,
     _finalization_needs_refresh,
+    _terminal_finalization_issue,
     map_provider_to_agent,
     parse_spec_markdown,
     resolve_project_path,
@@ -97,7 +98,7 @@ def test_run_fn_controller_finalizes_repo_tail_without_spending_agent_tick(tmp_p
             "commit_hash": "abc123", "remote_commit": "abc123",
         }))
 
-    heads = iter(("before123", "abc123"))
+    heads = iter(("before123", "before123", "abc123"))
 
     def fake_git(_command):
         return completed(next(heads) + "\n")
@@ -235,6 +236,32 @@ def test_controller_finalization_rejects_noop_claim_when_head_changed():
     assert _controller_finalization_is_verified(
         finalization, new_head, previous_head=old_head
     ) is False
+
+
+def test_terminal_gate_rejects_dirty_checkout_without_controller_proof(tmp_path):
+    def fake_git(command):
+        if "status" in command:
+            return completed(" M source.py\n")
+        return completed("head\n")
+
+    issue = _terminal_finalization_issue(
+        None, "head", str(tmp_path / "demo-checkout"), fake_git
+    )
+
+    assert issue is not None
+    assert "controller finalizace" in issue
+    assert "dirty" in issue
+
+
+def test_terminal_gate_allows_clean_checkout_without_noop_commit(tmp_path):
+    def fake_git(command):
+        if "status" in command:
+            return completed("")
+        return completed("head\n")
+
+    assert _terminal_finalization_issue(
+        None, "head", str(tmp_path / "demo-checkout"), fake_git
+    ) is None
 
 
 def test_audit_run_fn_uses_supported_autonomous_cli_and_reads_internal_audit(tmp_path):

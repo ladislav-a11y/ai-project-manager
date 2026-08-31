@@ -60,6 +60,7 @@ from .dod_validator import (
     RunCommand,
     default_run_command,
     get_git_head,
+    get_git_status,
     validate_project_dod,
 )
 from .models import ProjectRecord
@@ -541,6 +542,34 @@ def _controller_finalization_is_verified(
     return True
 
 
+def _terminal_finalization_issue(
+    finalization: object,
+    current_head: Optional[str],
+    project_path: str,
+    run_git: RunCommand,
+) -> Optional[str]:
+    """Reject a dirty checkout that has no controller finalization proof.
+
+    ``Testování -> Hotovo`` is a terminal lifecycle transition.  A successful
+    provider/audit response is not enough when the checkout still contains
+    changes: without this guard a card can become ``Hotovo`` while its work is
+    neither committed nor covered by the controller's backup/remote proof.
+    Clean checkouts (for example a research-only card) do not need a no-op
+    commit, but an unreadable Git status is fail-closed.
+    """
+    if _controller_finalization_is_verified(finalization, current_head):
+        return None
+    status_ok, status = get_git_status(project_path, run_git=run_git)
+    if not status_ok:
+        return f"terminální finalizace nelze ověřit: git status selhal ({status})"
+    if status.strip():
+        return (
+            "terminální controller finalizace je povinná před Hotovo: "
+            "repozitář je dirty a chybí ověřený commit/backup/remote důkaz"
+        )
+    return None
+
+
 def _controller_finalize(
     project: ProjectRecord,
     project_path: str,
@@ -675,20 +704,23 @@ def build_run_fn(
             )
 
         run_id = run_id_fn()
-        finalization_indices = _finalization_indices(project)
-        finalization_refresh = (
-            finalize_command
-            and finalization_indices is None
-            and _finalization_needs_refresh(project, project_path, git_cmd)
+        initial_head = get_git_head(project_path, run_git=git_cmd)
+        existing_finalization = (project.checkpoint or {}).get("finalization")
+        finalization_verified = _controller_finalization_is_verified(
+            existing_finalization, initial_head
         )
-        if finalize_command and (finalization_indices is not None or finalization_refresh):
+        finalization_indices = _finalization_indices(project)
+        # Once a project enters Testování, finalization is a terminal gate for
+        # every card, not merely for cards whose DoD happened to mention the
+        # word "commit".  The finalizer still receives only configured
+        # explicit paths and therefore fails closed on an unscoped dirty tree.
+        if finalize_command and not finalization_verified:
             return _controller_finalize(
                 project, project_path, task, run_id, finalize_command,
                 finalize_paths, allowed_push_remotes, subprocess_run,
                 finalization_indices or [], git_cmd,
             )
 
-        initial_head = get_git_head(project_path, run_git=git_cmd)
         # The card title is mutable (including its P0-P5 prefix).  Key the
         # reusable spec/checkpoint path by the persisted project identity so a
         # reprioritization or title edit cannot silently start a fresh run.
@@ -1035,6 +1067,18 @@ def build_audit_run_fn(
             return {
                 "verdict": AUDIT_VERDICT_REJECTED,
                 "reason": f"ai-orchestrator audit rejected DoD index(es) {report.rejected_indices}: {report.rejection_summary}",
+                "evidence": evidence,
+                "reject_target": "in_progress",
+                "usage": payload.get("usage"),
+            }
+
+        terminal_issue = _terminal_finalization_issue(
+            finalization, initial_head, project_path, git_cmd
+        )
+        if verdict == AUDIT_VERDICT_ACCEPTED and terminal_issue:
+            return {
+                "verdict": AUDIT_VERDICT_REJECTED,
+                "reason": terminal_issue,
                 "evidence": evidence,
                 "reject_target": "in_progress",
                 "usage": payload.get("usage"),
