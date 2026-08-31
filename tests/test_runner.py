@@ -510,6 +510,50 @@ def test_run_once_audit_rejected_with_explicit_reject_target_ready():
     assert reloaded.status == ProjectStatus.READY
 
 
+def test_run_once_audit_rejected_audit_only_stays_in_testing_and_persists_readback():
+    project = ProjectRecord(
+        name="Demo",
+        priority=3,
+        status=ProjectStatus.TESTING,
+        main_task="Implement and verify the feature",
+        dod=[
+            DoDItem(text="implementation", checked=True),
+            DoDItem(text="independent audit", phase="audit"),
+        ],
+    )
+    client = make_client_with_project(project)
+    registry = ProviderRegistry()
+    registry.mark_available("claude")
+    seen = {}
+
+    def audit_run(project, _provider):
+        seen["readback"] = project.extra_data["live_trello_readback"]
+        return {
+            "verdict": "rejected",
+            "reason": "fresh live readback was not accepted",
+            "evidence": "auditor checked the current card and requested another audit pass",
+            "reject_target": "testing",
+        }
+
+    outcome = run_once_audit(
+        client,
+        [project],
+        registry,
+        audit_run,
+        default_providers=["claude"],
+    )
+
+    assert outcome.ran is True
+    assert project.status == ProjectStatus.TESTING
+    assert project.returned_from_testing is False
+    assert seen["readback"]["status"] == "ok"
+    assert seen["readback"]["card_id"] == project.trello_card_id
+    assert seen["readback"]["list_name"] == "Testing"
+    assert seen["readback"]["dod"][1]["phase"] == "audit"
+    assert "fresh live readback was not accepted" in project.stop_reason
+    assert "live_trello_readback" in project.extra_data
+
+
 def test_run_once_audit_moves_provider_limit_to_waiting_phase():
     project = ProjectRecord(
         name="Demo",
@@ -543,6 +587,35 @@ def test_run_once_audit_moves_provider_limit_to_waiting_phase():
     reloaded = project_from_card(client.get_card(project.trello_card_id), id_to_name)
     assert reloaded.status == ProjectStatus.PAUSED
     assert reloaded.extra_data["resume_status"] == ProjectStatus.TESTING.value
+
+
+def test_run_once_audit_marks_provider_error_and_preserves_testing_on_missing_verdict():
+    project = ProjectRecord(
+        name="Audit provider error",
+        priority=3,
+        status=ProjectStatus.TESTING,
+        checkpoint={"completed_dod_indices": [0]},
+        dod=[DoDItem(text="implementation", checked=True)],
+    )
+    client = make_client_with_project(project)
+    registry = ProviderRegistry()
+    registry.mark_available("antigravity")
+
+    outcome = run_once_audit(
+        client,
+        [project],
+        registry,
+        lambda _project, _provider: (_ for _ in ()).throw(
+            RuntimeError("agy nemůže otevřít installation_id")
+        ),
+        default_providers=["antigravity", "codex"],
+    )
+
+    assert outcome.ran is True
+    assert project.status == ProjectStatus.TESTING
+    assert "installation_id" in project.stop_reason
+    assert registry.get_status("antigravity").state == "ERROR"
+    assert registry.get_status("antigravity").retry_after is not None
 
 
 def test_run_once_audit_returns_incomplete_testing_card_to_work_without_ai_call():

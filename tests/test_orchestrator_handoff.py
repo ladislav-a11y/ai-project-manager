@@ -30,7 +30,7 @@ def test_rejected_audit_verdict_requires_a_concrete_reason():
         apply_audit_verdict(project, "rejected", reason=None, evidence="ran the suite, X failed")
 
 
-def test_rejected_audit_verdict_records_concrete_feedback_and_returns_to_in_progress():
+def test_rejected_implementation_is_reopened_for_actual_rework():
     project = ProjectRecord(
         name="Demo",
         status=ProjectStatus.TESTING,
@@ -42,6 +42,7 @@ def test_rejected_audit_verdict_records_concrete_feedback_and_returns_to_in_prog
         "rejected",
         reason="the export still times out on large accounts",
         evidence="ran the export against a 10k-row fixture, it timed out after 30s",
+        rejected_indices=[0],
     )
 
     assert project.status == ProjectStatus.IN_PROGRESS
@@ -51,8 +52,33 @@ def test_rejected_audit_verdict_records_concrete_feedback_and_returns_to_in_prog
         "the export still times out on large accounts\n"
         "Evidence: ran the export against a 10k-row fixture, it timed out after 30s"
     ]
-    # A rejection never itself checks/unchecks a Definition-of-Done item.
-    assert project.dod[0].checked is True
+    assert project.dod[0].checked is False
+    assert project.checkpoint["completed_dod_indices"] == []
+
+
+def test_rejected_audit_only_item_does_not_reopen_implementation():
+    project = ProjectRecord(
+        name="Demo",
+        status=ProjectStatus.TESTING,
+        dod=[
+            DoDItem(text="implementation", checked=True),
+            DoDItem(text="independent audit", checked=True, phase="audit"),
+        ],
+        checkpoint={"completed_dod_indices": [0, 1]},
+    )
+
+    apply_audit_verdict(
+        project,
+        "rejected",
+        reason="live evidence is stale",
+        evidence="audit needs a fresh readback",
+        reject_target=ProjectStatus.TESTING,
+        rejected_indices=[1],
+    )
+
+    assert project.status == ProjectStatus.TESTING
+    assert [item.checked for item in project.dod] == [True, True]
+    assert project.checkpoint["completed_dod_indices"] == [0, 1]
 
 
 def test_rejected_audit_verdict_can_target_ready_for_a_fresh_attempt():
@@ -73,6 +99,29 @@ def test_rejected_audit_verdict_can_target_ready_for_a_fresh_attempt():
     assert project.status == ProjectStatus.READY
     # Only the default IN_PROGRESS target marks the card as corrective rework.
     assert project.returned_from_testing is False
+
+
+def test_rejected_audit_verdict_can_remain_in_testing_for_audit_only_dod():
+    project = ProjectRecord(
+        name="Demo",
+        status=ProjectStatus.TESTING,
+        dod=[
+            DoDItem(text="implementation", checked=True),
+            DoDItem(text="independent audit", phase="audit"),
+        ],
+    )
+
+    apply_audit_verdict(
+        project,
+        "rejected",
+        reason="live board evidence is missing",
+        evidence="the audit could not verify the current Trello card",
+        reject_target=ProjectStatus.TESTING,
+    )
+
+    assert project.status == ProjectStatus.TESTING
+    assert project.returned_from_testing is False
+    assert "live board evidence is missing" in project.stop_reason
 
 
 def test_apply_audit_verdict_rejects_invalid_reject_target():
@@ -413,6 +462,29 @@ def test_audit_handoff_receives_audit_dod_only_in_audit_mode():
     assert task.definition_of_done == ["implement feature", "independent audit accepts evidence"]
     assert task.checkpoint["completed_dod_indices"] == [0, 1]
     assert project.dod[1].checked is False
+
+
+def test_audit_handoff_includes_fresh_trello_readback_evidence():
+    project = ProjectRecord(
+        name="Demo",
+        status=ProjectStatus.TESTING,
+        main_task="Implement feature",
+        dod=[DoDItem(text="implement feature", checked=True)],
+        extra_data={
+            "live_trello_readback": {
+                "status": "ok",
+                "card_id": "card-123",
+                "list_name": "Testování",
+                "last_activity_at": "2026-08-31T12:00:00+00:00",
+            }
+        },
+    )
+
+    task = build_audit_task(project)
+
+    assert "Fresh live Trello readback" in task.task
+    assert "card-123" in task.task
+    assert "Testování" in task.task
 
 
 def test_apply_dod_progress_marks_reported_indices_checked():

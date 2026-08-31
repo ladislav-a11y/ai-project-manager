@@ -305,6 +305,7 @@ def test_terminal_gate_allows_clean_checkout_without_noop_commit(tmp_path):
 def test_audit_run_fn_uses_supported_autonomous_cli_and_reads_internal_audit(tmp_path):
     registry = ProviderRegistry()
     registry.mark_available("claude")
+    registry.configure_models("claude", ["claude-opus-4-1"])
     project = ProjectRecord(
         name="Demo",
         status=ProjectStatus.TESTING,
@@ -321,6 +322,8 @@ def test_audit_run_fn_uses_supported_autonomous_cli_and_reads_internal_audit(tmp
             "Demo",
             {
                 "status": "completed",
+                "active_provider": "anthropic",
+                "active_model": "claude-opus-4-1",
                 "last_output": "tests and independent audit passed",
                 "iterations": [{
                     "audit_performed": True,
@@ -345,8 +348,11 @@ def test_audit_run_fn_uses_supported_autonomous_cli_and_reads_internal_audit(tmp
 
     assert result["verdict"] == "accepted"
     assert "--mode" not in seen["command"]
+    assert seen["command"][seen["command"].index("--model") + 1] == "claude-opus-4-1"
     assert seen["command"][seen["command"].index("--max-iterations") + 1] == "1"
     assert seen["command"][-1] == "--no-commit"
+    assert result["active_provider"] == "anthropic"
+    assert result["active_model"] == "claude-opus-4-1"
 
 
 def test_audit_run_fn_reads_internal_audit_rejection_with_concrete_reason(tmp_path):
@@ -392,6 +398,7 @@ def test_audit_run_fn_reads_internal_audit_rejection_with_concrete_reason(tmp_pa
     assert "0" in result["reason"]
     assert "export still times out on large accounts" in result["reason"]
     assert result["reject_target"] == "in_progress"
+    assert result["rejected_indices"] == [0]
 
 
 # ---- resolving a project's local path (item 1) ------------------------
@@ -562,6 +569,7 @@ def test_run_fn_invokes_real_cli_with_project_goal_spec_and_agent(tmp_path):
     seen = {}
     registry = ProviderRegistry()
     registry.mark_available("claude")
+    registry.configure_models("claude", ["claude-opus-4-1"])
 
     def fake_subprocess_run(command):
         seen["command"] = command
@@ -592,6 +600,7 @@ def test_run_fn_invokes_real_cli_with_project_goal_spec_and_agent(tmp_path):
     # provider "claude" is Project Manager's own name; the ai-orchestrator
     # CLI expects its agent identifier, "claude-code" (item 5).
     assert command[command.index("--agent") + 1] == "claude-code"
+    assert command[command.index("--model") + 1] == "claude-opus-4-1"
     assert command[command.index("--run-id") + 1] == "fixed-run-id"
 
     spec_path = command[command.index("--spec") + 1]
@@ -611,6 +620,33 @@ def test_run_fn_invokes_real_cli_with_project_goal_spec_and_agent(tmp_path):
     assert result["last_output"] == "did work"
     assert result["next_step"] == "next"
     assert result["status"] == "in_progress"
+
+
+def test_run_fn_preserves_model_identity_from_orchestrator_receipt(tmp_path):
+    registry = ProviderRegistry()
+    registry.mark_available("codex")
+    registry.configure_models("codex", ["gpt-5.6"])
+
+    def fake_subprocess_run(command):
+        write_outbox_result(
+            tmp_path / "outbox",
+            "Demo",
+            {
+                "status": "in_progress",
+                "active_provider": "openai",
+                "active_model": "gpt-5.6-codex",
+            },
+            run_id="fixed-run-id",
+        )
+        return completed()
+
+    project = ProjectRecord(name="Demo", orchestrator_ready_task="Implement feature X")
+    run_fn, _, _ = make_run_fn(tmp_path, registry, subprocess_run=fake_subprocess_run)
+
+    result = run_fn(project, "codex")
+
+    assert result["active_provider"] == "openai"
+    assert result["active_model"] == "gpt-5.6-codex"
 
 
 def test_parse_spec_markdown_does_not_double_count_dod_items_embedded_in_goal_text(tmp_path):

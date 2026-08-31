@@ -74,7 +74,8 @@ from .orchestrator_handoff import (
 from .providers import ProviderRegistry, detect_limit
 
 # command (argv, already including --project/--goal/--spec/--agent/
-# --run-id) -> a subprocess.CompletedProcess-like object with
+# --model/--run-id when a model is configured) -> a
+# subprocess.CompletedProcess-like object with
 # .returncode, .stdout, .stderr. Injectable so tests never spawn a real
 # process and callers can point at any ai-orchestrator invocation shape.
 SubprocessFn = Callable[[list], "subprocess.CompletedProcess"]
@@ -705,6 +706,7 @@ def build_run_fn(
 
     def run_fn(project: ProjectRecord, provider: str) -> dict:
         agent_name = map_provider_to_agent(provider, provider_agent_map)
+        selected_model = provider_registry.selected_model(provider)
         task = build_orchestrator_task(project, definition_of_done=definition_of_done, provider=agent_name)
 
         try:
@@ -755,6 +757,10 @@ def build_run_fn(
             "--goal", task.task,
             "--spec", str(spec_path),
             "--agent", agent_name,
+        ]
+        if selected_model:
+            full_command += ["--model", selected_model]
+        full_command += [
             "--run-id", run_id,
             "--implementation-only",
             "--no-commit",
@@ -829,6 +835,8 @@ def build_run_fn(
             "next_step",
             "stop_reason",
             "active_provider",
+            "active_model",
+            "model",
             "provider_sequence",
             "usage",
         ):
@@ -869,6 +877,23 @@ class AuditVerdictMissingError(OrchestratorProcessError):
     signal, so a missing verdict is a hard error rather than a silent
     default.
     """
+
+
+def _audit_reject_target(project: ProjectRecord, rejected_indices: list[int]) -> str:
+    """Route a rejected verdict according to the rejected DoD phases.
+
+    This does not create a verdict. ai-orchestrator remains the sole audit
+    authority; the PM only prevents an audit-only failure from reopening an
+    already-complete implementation loop. Any implementation item keeps the
+    historical ``in_progress`` route.
+    """
+    indices = sorted({index for index in (rejected_indices or []) if isinstance(index, int)})
+    if indices and all(
+        0 <= index < len(project.dod) and project.dod[index].phase == "audit"
+        for index in indices
+    ):
+        return "testing"
+    return "in_progress"
 
 
 def build_audit_run_fn(
@@ -913,6 +938,7 @@ def build_audit_run_fn(
 
     def audit_run_fn(project: ProjectRecord, provider: str) -> dict:
         agent_name = map_provider_to_agent(provider, provider_agent_map)
+        selected_model = provider_registry.selected_model(provider)
         task = build_audit_task(project, provider=agent_name)
 
         try:
@@ -943,6 +969,10 @@ def build_audit_run_fn(
             "--goal", task.task,
             "--spec", str(spec_path),
             "--agent", agent_name,
+        ]
+        if selected_model:
+            full_command += ["--model", selected_model]
+        full_command += [
             "--run-id", run_id,
             # Testování is an audit gate, not another implementation loop.
             # One autonomous iteration is enough to run the configured tests
@@ -1050,15 +1080,30 @@ def build_audit_run_fn(
         if audit_performed and not audit_protocol_error and not rejected_indices and payload.get("status") == "completed":
             if report.is_valid:
                 verdict = AUDIT_VERDICT_ACCEPTED
-                return {"verdict": verdict, "evidence": evidence, "usage": payload.get("usage")}
+                return {
+                    "verdict": verdict,
+                    "evidence": evidence,
+                    "usage": payload.get("usage"),
+                    **{
+                        key: payload[key]
+                        for key in ("active_provider", "active_model", "model", "provider_sequence")
+                        if key in payload
+                    },
+                }
             else:
                 detail = report.rejection_summary or "DoD validace selhala"
                 return {
                     "verdict": AUDIT_VERDICT_REJECTED,
                     "reason": f"ai-orchestrator audit rejected DoD index(es) {report.rejected_indices}: {detail}",
                     "evidence": evidence,
-                    "reject_target": "in_progress",
+                    "reject_target": _audit_reject_target(project, report.rejected_indices),
+                    "rejected_indices": report.rejected_indices,
                     "usage": payload.get("usage"),
+                    **{
+                        key: payload[key]
+                        for key in ("active_provider", "active_model", "model", "provider_sequence")
+                        if key in payload
+                    },
                 }
         if audit_performed and rejected_indices:
             all_rejected = sorted(set(list(rejected_indices) + report.rejected_indices))
@@ -1074,8 +1119,14 @@ def build_audit_run_fn(
                 "verdict": AUDIT_VERDICT_REJECTED,
                 "reason": f"ai-orchestrator audit rejected DoD index(es) {all_rejected}: {detail}",
                 "evidence": audit_evidence,
-                "reject_target": "in_progress",
+                "reject_target": _audit_reject_target(project, all_rejected),
+                "rejected_indices": all_rejected,
                 "usage": payload.get("usage"),
+                **{
+                    key: payload[key]
+                    for key in ("active_provider", "active_model", "model", "provider_sequence")
+                    if key in payload
+                },
             }
         verdict = payload.get("verdict")
         if verdict not in (AUDIT_VERDICT_ACCEPTED, AUDIT_VERDICT_REJECTED):
@@ -1089,8 +1140,14 @@ def build_audit_run_fn(
                 "verdict": AUDIT_VERDICT_REJECTED,
                 "reason": f"ai-orchestrator audit rejected DoD index(es) {report.rejected_indices}: {report.rejection_summary}",
                 "evidence": evidence,
-                "reject_target": "in_progress",
+                "reject_target": _audit_reject_target(project, report.rejected_indices),
+                "rejected_indices": report.rejected_indices,
                 "usage": payload.get("usage"),
+                **{
+                    key: payload[key]
+                    for key in ("active_provider", "active_model", "model", "provider_sequence")
+                    if key in payload
+                },
             }
 
         terminal_issue = None if post_completion_finalization else _terminal_finalization_issue(
@@ -1103,6 +1160,11 @@ def build_audit_run_fn(
                 "evidence": evidence,
                 "reject_target": "in_progress",
                 "usage": payload.get("usage"),
+                **{
+                    key: payload[key]
+                    for key in ("active_provider", "active_model", "model", "provider_sequence")
+                    if key in payload
+                },
             }
 
         result: dict = {"verdict": verdict, "reason": payload.get("reason")}
@@ -1110,10 +1172,14 @@ def build_audit_run_fn(
             result["evidence"] = payload.get("evidence") or evidence
         if "reject_target" in payload:
             result["reject_target"] = payload["reject_target"]
+        elif verdict == AUDIT_VERDICT_REJECTED:
+            result["reject_target"] = _audit_reject_target(project, report.rejected_indices)
+            result["rejected_indices"] = report.rejected_indices
         if "checkpoint" in payload:
             result["checkpoint"] = payload["checkpoint"]
-        if "usage" in payload:
-            result["usage"] = payload["usage"]
+        for key in ("active_provider", "active_model", "model", "provider_sequence", "usage"):
+            if key in payload:
+                result[key] = payload[key]
         return result
 
     return audit_run_fn

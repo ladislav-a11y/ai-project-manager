@@ -110,13 +110,21 @@ def recheck_due_providers(provider_registry: ProviderRegistry, probe: ProbeFn = 
     return resumed
 
 
-def _resume_due_provider_waits(client, projects: list, provider_registry: ProviderRegistry) -> list:
+def _resume_due_provider_waits(
+    client,
+    projects: list,
+    provider_registry: ProviderRegistry,
+    providers_for_project: Optional[dict] = None,
+    default_providers: Optional[list[str]] = None,
+) -> list:
     """Resume due provider-limit waits in their owning workflow phase.
 
     A provider limit is represented by the physical ``Čeká na AI`` list,
     not by an active ``Pracuje se`` card.  Only waits with an explicit
-    ``retry_after`` and a currently available provider are resumed; human
-    holds and other paused cards remain untouched.  Audit waits return to
+    ``retry_after`` and a currently available provider are resumed; when the
+    recorded provider is still limited but another configured provider is
+    available, the card fails over immediately on the next tick. Human holds
+    and other paused cards remain untouched. Audit waits return to
     ``Testování``; ordinary implementation waits return to ``Připraveno``.
     The existing checkpoint is deliberately preserved for the next tick.
     """
@@ -131,10 +139,22 @@ def _resume_due_provider_waits(client, projects: list, provider_registry: Provid
             continue
         if retry_after.tzinfo is None:
             retry_after = retry_after.replace(tzinfo=timezone.utc)
-        if now < retry_after:
-            continue
         provider = project.provider
-        if not provider or not provider_registry.is_available(provider):
+        allowed_providers = (providers_for_project or {}).get(
+            project.name,
+            default_providers or provider_registry.registered_names(),
+        )
+        fallback_provider = next(
+            (
+                candidate
+                for candidate in allowed_providers
+                if candidate != provider and provider_registry.is_available(candidate)
+            ),
+            None,
+        )
+        current_provider_available = bool(provider and provider_registry.is_available(provider))
+        retry_due = now >= retry_after
+        if not retry_due and fallback_provider is None:
             continue
 
         resume_status = project.extra_data.pop("resume_status", ProjectStatus.READY.value)
@@ -147,13 +167,24 @@ def _resume_due_provider_waits(client, projects: list, provider_registry: Provid
         project.transition_to(ProjectStatus(resume_status))
         project.retry_after = None
         project.review_at = None
+        if fallback_provider is not None and not current_provider_available:
+            project.provider = fallback_provider
         sync_project_to_trello(client, project)
         resumed.append(project.name)
-        notify(
-            f"[AI Project Manager] Čekání skončilo: {project.name} - "
-            f"karta vrácena do {'Testování' if resume_status == ProjectStatus.TESTING.value else 'Připraveno'} "
-            "k pokračování z checkpointu."
+        destination = (
+            "Testování" if resume_status == ProjectStatus.TESTING.value else "Připraveno"
         )
+        if fallback_provider is not None and not current_provider_available:
+            notify(
+                f"[AI Project Manager] Failover: {project.name} - provider {provider or 'neznámý'} "
+                f"není dostupný, karta vrácena do {destination} pro dostupný provider "
+                f"{fallback_provider} z checkpointu."
+            )
+        else:
+            notify(
+                f"[AI Project Manager] Čekání skončilo: {project.name} - "
+                f"karta vrácena do {destination} k pokračování z checkpointu."
+            )
     return resumed
 
 
@@ -389,6 +420,14 @@ def load_projects_and_inbox(
     )
     known_card_ids = {p.trello_card_id for p in projects if p.trello_card_id is not None}
     for project in changed:
+        # Intake admission and implementation dispatch are separate phases.
+        # Keep this marker in memory only: a card prepared during this tick
+        # must remain in Připraveno until the next tick, otherwise the same
+        # scheduler pass can immediately move a brand-new Inbox task to
+        # Pracuje se and spend provider tokens before the user can inspect it.
+        preparation = (project.extra_data or {}).get("inbox_preparation")
+        if project.status == ProjectStatus.NEW and isinstance(preparation, dict):
+            setattr(project, "_prepared_this_tick", True)
         # Existing classifications are mutated in place by process_inbox.
         # Append only genuinely new cards, without ever deduplicating by the
         # editable/display-only card title.
@@ -490,7 +529,13 @@ def run_tick(
         for issue in contract_issues:
             notify(f"[AI Project Manager] Trello Card Contract vyžaduje zásah: {issue}")
 
-        _resume_due_provider_waits(client, projects, provider_registry)
+        _resume_due_provider_waits(
+            client,
+            projects,
+            provider_registry,
+            providers_for_project=providers_for_project,
+            default_providers=default_providers,
+        )
 
         _run_recovery_pass(
             client,
@@ -503,6 +548,14 @@ def run_tick(
         # Reflect the test/audit phase on Trello before the audit provider is
         # invoked. This local transition spends no AI tokens.
         _promote_completed_implementations_to_testing(client, projects)
+
+        # New Inbox tasks were already admitted to Připraveno above. They are
+        # intentionally not eligible for implementation dispatch until the
+        # next tick; audits and recovery still see the complete board snapshot.
+        dispatch_projects = [
+            project for project in projects
+            if not getattr(project, "_prepared_this_tick", False)
+        ]
 
         outcome = None
         if audit_run_fn is not None:
@@ -521,7 +574,7 @@ def run_tick(
         if outcome is None or not outcome.ran:
             outcome = run_once(
                 client,
-                projects,
+                dispatch_projects,
                 provider_registry,
                 run_fn,
                 lock_manager=lock_manager,

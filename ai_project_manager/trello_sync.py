@@ -233,6 +233,7 @@ STATUS_TO_LIST_CANDIDATES = {
 MAX_TRELLO_FEEDBACK_CHARS = 3500
 MAX_TRELLO_LAST_OUTPUT_CHARS = 2500
 TITLE_PRIORITY_RE = re.compile(r"^\s*P([0-5])(?:\s|[-—–:])", re.IGNORECASE)
+TITLE_PRIORITY_PREFIX_RE = re.compile(r"^\s*P[0-5]\s*(?:[-—–:]\s*)?", re.IGNORECASE)
 
 
 def priority_from_labels(labels: list[dict]) -> int:
@@ -286,6 +287,22 @@ def priority_from_card(card: dict) -> int:
 
 def priority_label_name(priority: int) -> str:
     return f"P{priority}"
+
+
+def _priority_prefixed_name(project: ProjectRecord) -> str:
+    """Return the canonical visible name for a non-terminal work card.
+
+    Priority is operational metadata, but it must also remain visible in the
+    title so a human can understand the Ready queue without opening PM-DATA.
+    Replace an old prefix rather than stacking prefixes after a reprioritization.
+    """
+    base_name = TITLE_PRIORITY_PREFIX_RE.sub("", str(project.name or ""), count=1).strip()
+    return f"P{project.priority} — {base_name or 'Inbox úkol'}"
+
+
+def _is_intake_prepared(project: ProjectRecord) -> bool:
+    """Whether this record was created by the governed Inbox preparation."""
+    return isinstance((project.extra_data or {}).get("inbox_preparation"), dict)
 
 
 def status_from_list(list_id: Optional[str], list_id_to_name: dict[str, str]) -> ProjectStatus:
@@ -744,8 +761,19 @@ def card_updates_from_project(project: ProjectRecord, list_name_to_id: dict[str,
     if project.project_key:
         labels.append(project.project_key)
 
+    visible_name = (
+        _priority_prefixed_name(project)
+        if _is_intake_prepared(project) and project.status in {
+            ProjectStatus.NEW,
+            ProjectStatus.READY,
+            ProjectStatus.IN_PROGRESS,
+            ProjectStatus.TESTING,
+        }
+        else project.name
+    )
+
     return {
-        "name": project.name,
+        "name": visible_name,
         "desc": desc,
         "list_id": list_id,
         "labels": labels,

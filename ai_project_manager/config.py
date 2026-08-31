@@ -103,6 +103,7 @@ class Config:
     # complete. The production launcher keeps this disabled explicitly.
     inbox_enabled: bool = False
     providers_for_project: dict = field(default_factory=dict)
+    provider_models: dict = field(default_factory=dict)
     # One-time migration input for pre-existing production cards that
     # predate the project_key label: Trello card ID *or* exact current
     # card title -> stable project identity (e.g. "AI Project Manager").
@@ -223,6 +224,7 @@ def load_config(env: Optional[Mapping[str, str]] = None) -> Config:
       AI_ORCHESTRATOR_OUTBOX_DIR                   (default "outbox")
       AI_PM_PROVIDERS                              (default "auto")
       AI_PM_PROVIDERS_FOR_PROJECT                  (optional JSON object)
+      AI_PM_PROVIDER_MODELS                        (optional JSON provider -> ordered model list)
       AI_PM_CARD_PROJECT_KEYS                      (optional JSON object: Trello card ID or exact title -> project identity)
       AI_PM_POLL_INTERVAL_SECONDS                  (default "300")
       AI_PM_HOLDER                                 (default "project-manager")
@@ -320,6 +322,19 @@ def load_config(env: Optional[Mapping[str, str]] = None) -> Config:
                 f"AI_PM_PROVIDERS: {', '.join(unknown_providers)}"
             )
 
+    provider_models: dict = {}
+    raw_provider_models = env.get("AI_PM_PROVIDER_MODELS")
+    if raw_provider_models:
+        provider_models = _load_string_mapping(
+            raw_provider_models, "AI_PM_PROVIDER_MODELS", list_values=True
+        )
+        unknown_model_providers = sorted(set(provider_models) - set(providers))
+        if unknown_model_providers:
+            raise ConfigError(
+                "AI_PM_PROVIDER_MODELS references providers not listed in "
+                f"AI_PM_PROVIDERS: {', '.join(unknown_model_providers)}"
+            )
+
     card_project_keys: dict = {}
     raw_card_project_keys = env.get("AI_PM_CARD_PROJECT_KEYS")
     if raw_card_project_keys:
@@ -353,6 +368,7 @@ def load_config(env: Optional[Mapping[str, str]] = None) -> Config:
         holder=_non_empty(env, "AI_PM_HOLDER", "project-manager"),
         inbox_enabled=_boolean_setting(env, "AI_PM_ENABLE_INBOX"),
         providers_for_project=providers_for_project,
+        provider_models=provider_models,
         card_project_keys=card_project_keys,
         provider_state_path=_absolute_path_setting(
             env, "AI_PM_PROVIDER_STATE_PATH", "provider_state.json"

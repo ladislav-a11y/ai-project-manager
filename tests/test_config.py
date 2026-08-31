@@ -100,6 +100,26 @@ def test_load_config_parses_custom_providers_and_orchestrator_command():
     assert config.trello.inbox_list_name == "Intake"
 
 
+def test_load_config_parses_ordered_models_for_each_provider():
+    config = load_config(base_env(
+        AI_PM_PROVIDERS="claude,codex",
+        AI_PM_PROVIDER_MODELS='{"claude":["claude-opus-4-1","claude-sonnet-4"],"codex":["gpt-5.6"]}',
+    ))
+
+    assert config.provider_models == {
+        "claude": ["claude-opus-4-1", "claude-sonnet-4"],
+        "codex": ["gpt-5.6"],
+    }
+
+
+def test_load_config_rejects_models_for_unconfigured_provider():
+    with pytest.raises(ConfigError, match="not listed in AI_PM_PROVIDERS"):
+        load_config(base_env(
+            AI_PM_PROVIDERS="claude",
+            AI_PM_PROVIDER_MODELS='{"codex":["gpt-5.6"]}',
+        ))
+
+
 def test_load_config_preserves_backslashes_in_windows_orchestrator_command(monkeypatch):
     # shlex.split's default POSIX mode treats "\" as an escape character
     # and silently strips it, mangling a Windows path like this one into

@@ -38,6 +38,19 @@ def usage_suffix(result: dict | None) -> str:
     )
 
 
+def result_model(result: dict | None, fallback: str | None = None) -> str | None:
+    """Return the bounded model identity confirmed by an orchestrator receipt."""
+    if not isinstance(result, dict):
+        return fallback
+    direct = result.get("active_model") or result.get("model")
+    if isinstance(direct, str) and direct.strip():
+        return direct.strip()
+    usage = result.get("usage")
+    total = usage.get("total") if isinstance(usage, dict) else None
+    model = total.get("model") if isinstance(total, dict) else None
+    return model.strip() if isinstance(model, str) and model.strip() else fallback
+
+
 def notify(message: str) -> bool:
     """
     Send notification when Slack is explicitly enabled and configured.

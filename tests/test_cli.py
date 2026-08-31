@@ -75,6 +75,7 @@ def _set_trello_env(monkeypatch):
     monkeypatch.setenv("TRELLO_TOKEN", "test-token")
     monkeypatch.setenv("TRELLO_BOARD_ID", "test-board")
     monkeypatch.setenv("AI_PM_PROVIDERS", "claude")
+    monkeypatch.delenv("AI_PM_PROVIDER_MODELS", raising=False)
 
 
 def test_main_once_runs_a_full_tick_through_the_real_entrypoint_wiring(monkeypatch):

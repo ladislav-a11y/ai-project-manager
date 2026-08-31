@@ -28,6 +28,16 @@ def test_new_provider_defaults_to_available(clock):
     assert registry.get_status("claude").state == ProviderState.AVAILABLE
 
 
+def test_provider_model_catalog_selects_first_unique_model(clock):
+    registry = ProviderRegistry(clock=clock)
+
+    status = registry.configure_models("codex", [" gpt-5.6 ", "gpt-5.6", "gpt-5.5"])
+
+    assert status.models == ("gpt-5.6", "gpt-5.5")
+    assert registry.selected_model("codex") == "gpt-5.6"
+    assert status.to_dict()["selected_model"] == "gpt-5.6"
+
+
 def test_mark_limited_sets_state_and_retry_after(clock):
     registry = ProviderRegistry(clock=clock)
     registry.mark_limited("claude", retry_after=timedelta(minutes=30), checkpoint={"step": 3}, reason="quota exceeded")

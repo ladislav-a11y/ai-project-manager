@@ -81,7 +81,14 @@ try {
     # was prepared in Připraveno. The intake remains fail-closed on project
     # identity and never touches the personal Inbox.
     $env:AI_PM_ENABLE_INBOX = '1'
-    $env:AI_PM_PROVIDERS = 'auto'
+    $env:AI_PM_PROVIDERS = 'claude,antigravity,codex'
+    $env:AI_PM_PROVIDER_MODELS = (@{
+        'claude' = @('claude-opus-4-1', 'claude-sonnet-4')
+        'antigravity' = @('gemini-2.5-pro')
+        # The ChatGPT-account Codex CLI rejects the generic gpt-5.6 alias;
+        # use the concrete model configured for this installation.
+        'codex' = @('gpt-5.6-luna')
+    } | ConvertTo-Json -Compress)
     $env:AI_PM_POLL_INTERVAL_SECONDS = [string]$PollIntervalSeconds
     $env:AI_ORCHESTRATOR_TIMEOUT_SECONDS = '3600'
     $env:AI_ORCHESTRATOR_CMD = "`"$orchestratorPython`" `"$orchestratorScript`" autonomous --no-commit"
@@ -151,6 +158,9 @@ try {
     # ai_project_manager.daemon._bootstrap_project_keys.
     $cardProjectKeys = [ordered]@{
         '6a8f0baf1332f1d03b972003' = 'AI Project Manager'
+        '6a9537223372a7c011c2f651' = 'Station Agent'
+        '6a954cb7a0650b2d68cbb51f' = 'AI Project Manager'
+        '6a954f060373e6917e0a7291' = 'AI Project Manager'
     }
     $env:AI_PM_CARD_PROJECT_KEYS = $cardProjectKeys | ConvertTo-Json -Compress
 
@@ -216,6 +226,7 @@ finally {
     $env:TRELLO_INBOX_LIST = $null
     $env:AI_PM_ENABLE_INBOX = $null
     $env:AI_PM_PROVIDERS = $null
+    $env:AI_PM_PROVIDER_MODELS = $null
     $env:AI_PM_POLL_INTERVAL_SECONDS = $null
     $env:AI_ORCHESTRATOR_TIMEOUT_SECONDS = $null
     $env:AI_ORCHESTRATOR_CMD = $null

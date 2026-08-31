@@ -520,7 +520,12 @@ def process_inbox(
                             "content_sha256": source_reference["content_sha256"],
                             "subtask_index": index,
                             "subtask_count": len(preparation.tasks),
+                            "scope": prepared_task.scope,
+                            "source_priority": preparation.priority,
+                            "source_priority_reason": preparation.priority_reason,
+                            "task_priority": prepared_task.priority,
                             "priority_reason": prepared_task.priority_reason,
+                            "dod": [item.to_dict() for item in build_dod((prepared_task,))],
                         }
                     },
                 )

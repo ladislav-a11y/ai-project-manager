@@ -119,6 +119,7 @@ def main(
     provider_registry = ProviderRegistry()
     for name in config.providers:
         provider_registry.mark_available(name)
+        provider_registry.configure_models(name, config.provider_models.get(name, []))
 
     load_provider_state(config.provider_state_path, provider_registry)
 

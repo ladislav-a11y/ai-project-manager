@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
 from typing import Callable, Optional
 
 from .guard import OrchestratorGuard
@@ -32,7 +33,7 @@ from .orchestrator_handoff import (
 from .providers import ProviderRegistry
 from .scheduler import pick_next_audit_project, pick_next_project
 from .trello_sync import sync_project_to_trello
-from .slack_notify import notify, usage_suffix
+from .slack_notify import notify, result_model, usage_suffix
 
 logger = logging.getLogger("ai_project_manager")
 
@@ -52,9 +53,106 @@ AuditRunFn = Callable[[ProjectRecord, str], dict]
 _REJECT_TARGET_MAP = {
     "in_progress": ProjectStatus.IN_PROGRESS,
     "ready": ProjectStatus.READY,
+    "testing": ProjectStatus.TESTING,
 }
 
 DEFAULT_HOLDER = "project-manager"
+
+
+def _capture_live_trello_readback(client, project: ProjectRecord) -> dict:
+    """Capture compact, fresh Trello evidence immediately before an audit.
+
+    The audit must be able to verify the card that is actually on the board,
+    not only the ProjectRecord snapshot selected earlier in the tick. Keep
+    the payload bounded and focused on lifecycle, identity, DoD, checkpoint,
+    and Inbox/contract fields; the full card description is intentionally not
+    copied into PM-DATA.
+    """
+    captured_at = datetime.now(timezone.utc).isoformat()
+    if not project.trello_card_id:
+        return {
+            "status": "error",
+            "captured_at": captured_at,
+            "error": "project has no Trello card id",
+        }
+
+    try:
+        card = client.get_card(project.trello_card_id)
+        list_name = None
+        list_lookup_error = None
+        try:
+            lists = client.list_lists()
+            list_name = next(
+                (
+                    item.get("name")
+                    for item in lists
+                    if isinstance(item, dict) and item.get("id") == card.get("list_id")
+                ),
+                None,
+            )
+            if list_name is None:
+                list_lookup_error = f"unknown list id {card.get('list_id')!r}"
+        except Exception as exc:  # noqa: BLE001 - evidence records lookup failure
+            list_lookup_error = str(exc)
+
+        contract_keys = (
+            "schema_version",
+            "card_identity",
+            "source_card_id",
+            "source_card_url",
+            "source_content_sha256",
+            "source_priority",
+            "task_priority",
+            "scope",
+            "inbox_receipts",
+            "processed_inbox_card_ids",
+            "dod_routing_policy",
+            "governance",
+        )
+        contract_metadata = {
+            key: project.extra_data[key]
+            for key in contract_keys
+            if key in project.extra_data
+        }
+        readback = {
+            "status": "ok",
+            "captured_at": captured_at,
+            "card_id": card.get("id"),
+            "card_name": card.get("name"),
+            "card_url": card.get("url"),
+            "list_id": card.get("list_id"),
+            "list_name": list_name,
+            "list_lookup_error": list_lookup_error,
+            "labels": [
+                label.get("name")
+                for label in (card.get("labels") or [])
+                if isinstance(label, dict) and label.get("name")
+            ],
+            "last_activity_at": card.get("last_activity_at"),
+            "pm_data_present": "PM-DATA" in (card.get("desc") or ""),
+            "lifecycle_status": project.status.value,
+            "dod": [
+                {
+                    "index": index,
+                    "text": item.text,
+                    "checked": item.checked,
+                    "phase": item.phase,
+                }
+                for index, item in enumerate(project.dod)
+            ],
+            "checkpoint": dict(project.checkpoint or {}),
+            "contract_metadata": contract_metadata,
+        }
+        if list_lookup_error:
+            readback["status"] = "partial"
+        return readback
+    except Exception as exc:  # noqa: BLE001 - never invent evidence
+        return {
+            "status": "error",
+            "captured_at": captured_at,
+            "card_id": project.trello_card_id,
+            "error": str(exc),
+        }
 
 
 @dataclass
@@ -179,14 +277,21 @@ def run_once(
 
     project = decision.project
     provider = decision.provider
+    selected_model = provider_registry.selected_model(provider)
+    provider_detail = f"{provider} | model: {selected_model or 'provider default (nezjištěn)'}"
     logger.info("selected project=%r provider=%s", project.name, provider)
 
     try:
         with lock_manager.hold(project.name, holder):
             # Announce only after the lock is actually held.  Another worker
             # may win the race after the optimistic filter above.
-            notify(f"[AI Project Manager] Zahajuji: {project.name} | režim providerů: {provider}")
+            notify(f"[AI Project Manager] Zahajuji: {project.name} | provider: {provider_detail}")
             project.provider = provider
+            project.extra_data["provider_selection"] = {
+                "provider": provider,
+                "model": selected_model,
+                "source": "AI_PM_PROVIDER_MODELS" if selected_model else "provider_default",
+            }
             # The Trello board must show the real flow while the provider is
             # working, not leave an active card looking idle in Připraveno.
             project.transition_to(ProjectStatus.IN_PROGRESS)
@@ -237,12 +342,20 @@ def run_once(
                 "run result project=%r provider=%s status=%s stop_reason=%s retry_after=%s",
                 project.name, provider, project.status.value, project.stop_reason, project.retry_after,
             )
+            actual_provider = result.get("active_provider") or provider
+            confirmed_model = result_model(result)
+            if confirmed_model:
+                # Learn the model actually used from ai-orchestrator's receipt;
+                # this becomes the preferred model shown on the next dispatch.
+                provider_registry.configure_models(provider, [confirmed_model])
+            actual_model = confirmed_model or selected_model or "provider default (nezjištěn)"
+            project.extra_data["provider_selection"]["actual_provider"] = actual_provider
+            project.extra_data["provider_selection"]["actual_model"] = actual_model
             sync_project_to_trello(client, project)
             logger.info("synced project=%r state to trello (card=%s)", project.name, project.trello_card_id)
-            actual_provider = result.get("active_provider") or provider
             if project.status == ProjectStatus.DONE:
                 notify(
-                    f"[AI Project Manager] Dokončeno: {project.name} | provider: {actual_provider} | výsledek zapsán do Trella"
+                    f"[AI Project Manager] Dokončeno: {project.name} | provider: {actual_provider} | model: {actual_model} | výsledek zapsán do Trella"
                     + usage_suffix(result)
                 )
             elif project.retry_after:
@@ -252,7 +365,7 @@ def run_once(
             else:
                 next_step = project.next_step or project.stop_reason or "pokračování v dalším běhu"
                 notify(
-                    f"[AI Project Manager] Průběžný stav: {project.name} | provider: {actual_provider} | další krok: {next_step}"
+                    f"[AI Project Manager] Průběžný stav: {project.name} | provider: {actual_provider} | model: {actual_model} | další krok: {next_step}"
                     + usage_suffix(result)
                 )
             return RunOutcome(
@@ -308,6 +421,8 @@ def run_once_audit(
 
     project = decision.project
     provider = decision.provider
+    selected_model = provider_registry.selected_model(provider)
+    provider_detail = f"{provider} | model: {selected_model or 'provider default (nezjištěn)'}"
     logger.info("selected project=%r provider=%s for audit", project.name, provider)
 
     try:
@@ -336,14 +451,27 @@ def run_once_audit(
                     provider=provider,
                     reason=project.stop_reason,
                 )
-            notify(f"[AI Project Manager] Zahajuji audit: {project.name} | režim providerů: {provider}")
+            notify(f"[AI Project Manager] Zahajuji audit: {project.name} | provider: {provider_detail}")
             project.provider = provider
+            project.extra_data["provider_selection"] = {
+                "provider": provider,
+                "model": selected_model,
+                "source": "AI_PM_PROVIDER_MODELS" if selected_model else "provider_default",
+            }
             sync_project_to_trello(client, project)
             logger.info(
                 "dispatching project=%r to provider=%s in audit-only mode (checkpoint=%s)",
                 project.name, provider, project.checkpoint,
             )
             try:
+                # Refresh the durable source of truth immediately before
+                # building the audit handoff. This evidence is persisted by
+                # the unconditional sync below, so a failed/rejected audit
+                # leaves the exact board readback available for the next
+                # attempt instead of forcing the auditor to speculate.
+                project.extra_data["live_trello_readback"] = _capture_live_trello_readback(
+                    client, project
+                )
                 result = audit_run_fn(project, provider)
                 if not isinstance(result, dict):
                     raise TypeError(
@@ -369,6 +497,7 @@ def run_once_audit(
                         reason=result.get("reason"),
                         evidence=result.get("evidence"),
                         reject_target=reject_target,
+                        rejected_indices=result.get("rejected_indices"),
                     )
                 else:
                     # A provider/session limit is a workflow wait, not an
@@ -385,6 +514,16 @@ def run_once_audit(
                         project.transition_to(ProjectStatus.PAUSED)
             except Exception as exc:  # noqa: BLE001 - audit failures are reported on the card, not raised
                 signature = str(exc)
+                # An audit provider that cannot return a verdict must not be
+                # selected again on the very next tick. Keep the card in the
+                # audit phase, preserve its checkpoint, and let the normal
+                # provider selector fail over after a short local backoff.
+                provider_registry.mark_error(
+                    provider,
+                    signature,
+                    retry_after=timedelta(minutes=5),
+                    checkpoint=project.checkpoint,
+                )
                 halted = guard.record_denial(project.name, signature)
                 project.stop_reason = signature
                 if halted:
@@ -404,6 +543,13 @@ def run_once_audit(
                     halted=halted,
                 )
             guard.reset(project.name)
+            actual_provider = result.get("active_provider") or provider
+            confirmed_model = result_model(result)
+            if confirmed_model:
+                provider_registry.configure_models(provider, [confirmed_model])
+            actual_model = confirmed_model or selected_model or "provider default (nezjištěn)"
+            project.extra_data["provider_selection"]["actual_provider"] = actual_provider
+            project.extra_data["provider_selection"]["actual_model"] = actual_model
             sync_project_to_trello(client, project)
             logger.info(
                 "audit result project=%r provider=%s status=%s stop_reason=%s",
@@ -411,7 +557,7 @@ def run_once_audit(
             )
             if project.status == ProjectStatus.DONE:
                 notify(
-                    f"[AI Project Manager] Audit přijat: {project.name} | provider: {provider} | přesunuto do Hotovo"
+                    f"[AI Project Manager] Audit přijat: {project.name} | provider: {actual_provider} | model: {actual_model} | přesunuto do Hotovo"
                     + usage_suffix(result)
                 )
             elif project.retry_after:
@@ -420,7 +566,7 @@ def run_once_audit(
                 )
             else:
                 notify(
-                    f"[AI Project Manager] Audit odmítnut: {project.name} | provider: {provider} | "
+                    f"[AI Project Manager] Audit odmítnut: {project.name} | provider: {actual_provider} | model: {actual_model} | "
                     f"vráceno do {project.status.value} | důvod: {project.stop_reason}"
                     + usage_suffix(result)
                 )

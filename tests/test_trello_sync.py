@@ -76,6 +76,34 @@ def test_priority_falls_back_to_card_title_when_board_has_no_priority_labels():
     assert priority_from_card({"name": "No priority", "labels": []}) == 0
 
 
+def test_non_terminal_work_card_name_always_exposes_current_priority():
+    project = ProjectRecord(
+        name="Inbox task",
+        priority=3,
+        status=ProjectStatus.READY,
+        main_task="Implement the prepared task",
+        extra_data={"inbox_preparation": {"source_card_id": "source-1"}},
+    )
+
+    updates = card_updates_from_project(project, {"Připraveno": "ready"})
+
+    assert updates["name"] == "P3 — Inbox task"
+
+
+def test_priority_prefix_is_replaced_after_reprioritization():
+    project = ProjectRecord(
+        name="P2 — Inbox task",
+        priority=5,
+        status=ProjectStatus.NEW,
+        main_task="Repair the prepared task",
+        extra_data={"inbox_preparation": {"source_card_id": "source-1"}},
+    )
+
+    updates = card_updates_from_project(project, {"Připraveno": "ready"})
+
+    assert updates["name"] == "P5 — Inbox task"
+
+
 def test_explicit_priority_label_wins_over_title_prefix():
     assert priority_from_card({"name": "P5 — title", "labels": [{"name": "P2"}]}) == 2
 

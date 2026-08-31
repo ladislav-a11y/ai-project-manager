@@ -164,6 +164,40 @@ def test_run_tick_loads_real_projects_and_processes_inbox_only_when_explicitly_e
     assert receipts[0]["name"].startswith("Zpracováno")
 
 
+def test_run_tick_keeps_new_inbox_task_in_ready_until_next_tick():
+    client = InMemoryTrelloClient()
+    _, name_to_id = build_list_maps(client)
+    client.create_card(
+        name_to_id["Inbox"],
+        "New dashboard feature",
+        desc="Přidat novou funkci dashboardu.",
+        labels=["AI Project Manager"],
+    )
+
+    registry = ProviderRegistry()
+    registry.mark_available("claude")
+    calls = []
+
+    def run_fn(project, provider):
+        calls.append(project.name)
+        return {"status": "in_progress"}
+
+    outcome = run_tick(
+        client,
+        registry,
+        run_fn,
+        default_providers=["claude"],
+        process_inbox_enabled=True,
+    )
+
+    assert outcome.ran is False
+    assert calls == []
+    ready_cards = client.list_cards(name_to_id["New"])
+    assert len(ready_cards) == 1
+    assert ready_cards[0]["name"].startswith("P3 — ")
+    assert {label["name"] for label in ready_cards[0]["labels"]} >= {"P3", "AI Project Manager"}
+
+
 def test_run_tick_ignores_inbox_by_default():
     client = InMemoryTrelloClient()
     _, name_to_id = build_list_maps(client)
@@ -370,6 +404,38 @@ def test_due_audit_provider_wait_returns_to_testing_not_ready():
     id_to_name, _ = build_list_maps(client)
     reloaded = project_from_card(client.get_card(project.trello_card_id), id_to_name)
     assert reloaded.status == ProjectStatus.TESTING
+
+
+def test_provider_wait_fails_over_to_available_provider_before_retry_deadline():
+    clock = FakeClock(datetime(2026, 1, 1, tzinfo=timezone.utc))
+    project = ProjectRecord(
+        name="Audit failover demo",
+        priority=3,
+        status=ProjectStatus.PAUSED,
+        checkpoint={"completed_dod_indices": [0]},
+        provider="claude",
+        stop_reason="provider session limit hit",
+        retry_after=(clock.now + timedelta(days=1)).isoformat(),
+        extra_data={"resume_status": ProjectStatus.TESTING.value},
+    )
+    client = make_client_with_project(project)
+    registry = ProviderRegistry(clock=clock)
+    registry.mark_limited("claude", retry_after=timedelta(days=1), checkpoint=project.checkpoint)
+    registry.mark_available("antigravity")
+
+    resumed = _resume_due_provider_waits(
+        client,
+        [project],
+        registry,
+        default_providers=["claude", "antigravity", "codex"],
+    )
+
+    assert resumed == ["Audit failover demo"]
+    assert project.status == ProjectStatus.TESTING
+    assert project.provider == "antigravity"
+    assert project.retry_after is None
+    assert project.checkpoint == {"completed_dod_indices": [0]}
+    assert "resume_status" not in project.extra_data
 
 
 def test_recheck_due_providers_returns_names_that_resumed():

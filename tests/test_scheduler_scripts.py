@@ -46,8 +46,21 @@ def test_runner_seeds_card_project_key_migration_for_the_known_real_production_c
     source = (SCRIPTS / "run-ai-project-manager.ps1").read_text(encoding="utf-8")
 
     assert "'6a8f0baf1332f1d03b972003' = 'AI Project Manager'" in source
+    assert "'6a9537223372a7c011c2f651' = 'Station Agent'" in source
+    assert "'6a954cb7a0650b2d68cbb51f' = 'AI Project Manager'" in source
+    assert "'6a954f060373e6917e0a7291' = 'AI Project Manager'" in source
     assert "$cardProjectKeys | ConvertTo-Json -Compress" in source
     assert "$env:AI_PM_CARD_PROJECT_KEYS = $cardProjectKeys | ConvertTo-Json -Compress" in source
+
+
+def test_runner_configures_explicit_provider_model_catalog() -> None:
+    source = (SCRIPTS / "run-ai-project-manager.ps1").read_text(encoding="utf-8")
+
+    assert "$env:AI_PM_PROVIDERS = 'claude,antigravity,codex'" in source
+    assert "$env:AI_PM_PROVIDER_MODELS" in source
+    assert "'codex' = @('gpt-5.6-luna')" in source
+    assert "'claude' = @('claude-opus-4-1', 'claude-sonnet-4')" in source
+    assert "'antigravity' = @('gemini-2.5-pro')" in source
 
 
 def test_runner_preserves_configured_czech_trello_names_as_utf8() -> None:

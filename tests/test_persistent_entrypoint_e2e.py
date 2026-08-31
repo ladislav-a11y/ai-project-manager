@@ -129,6 +129,9 @@ def test_live_e2e_persistent_entrypoint_readback_slack_trello_log_process(tmp_pa
                 "AI_PM_PROVIDER_STATE_PATH": str(tmp_path / "provider_state.json"),
             }
         )
+        # Do not inherit the production launcher's multi-provider model
+        # catalog into this single-provider test process.
+        env.pop("AI_PM_PROVIDER_MODELS", None)
 
         result = subprocess.run(
             [sys.executable, str(harness), str(readback_path)],

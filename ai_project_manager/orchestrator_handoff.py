@@ -11,6 +11,7 @@ restarting from scratch.
 
 from __future__ import annotations
 
+import json
 import re
 from dataclasses import dataclass
 from typing import Callable, Optional
@@ -31,11 +32,14 @@ AUDIT_VERDICT_ACCEPTED = "accepted"
 AUDIT_VERDICT_REJECTED = "rejected"
 _VALID_AUDIT_VERDICTS = {AUDIT_VERDICT_ACCEPTED, AUDIT_VERDICT_REJECTED}
 
-# Where a rejected audit may send the card back to - Pracuje se (more
-# implementation work continues, e.g. a checkpoint exists) or Připraveno
-# (start the next attempt fresh). Which one applies is decided by
-# ai-orchestrator from the concrete rejection feedback, never guessed here.
-_VALID_REJECT_TARGETS = {ProjectStatus.IN_PROGRESS, ProjectStatus.READY}
+# Where a rejected audit may send the card: Pracuje se (more implementation
+# work continues), Připraveno (start the next attempt fresh), or Testování
+# when only an audit gate is rejected and the implementation is complete.
+_VALID_REJECT_TARGETS = {
+    ProjectStatus.IN_PROGRESS,
+    ProjectStatus.READY,
+    ProjectStatus.TESTING,
+}
 
 # Below this length an orchestrator_ready_task is considered small enough
 # to not necessarily need a full autonomous handoff; at/above it, or with
@@ -148,6 +152,18 @@ def _goal_text(project: ProjectRecord) -> str:
                     "(verify it; do not repeat the live test):\n"
                     + "\n".join(f"- {entry}" for entry in evidence_lines[:8])
                 )
+    live_readback = project.extra_data.get("live_trello_readback")
+    if project.status == ProjectStatus.TESTING and isinstance(live_readback, dict):
+        readback_text = json.dumps(
+            live_readback, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+        )
+        if len(readback_text) > 6000:
+            readback_text = readback_text[:6000] + "..."
+        parts.append(
+            "Fresh live Trello readback captured by AI Project Manager "
+            "(treat as evidence, not as permission to change Trello):\n"
+            + readback_text
+        )
     return "\n\n".join(parts)
 
 
@@ -383,6 +399,7 @@ def apply_audit_verdict(
     reason: Optional[str] = None,
     evidence: Optional[str] = None,
     reject_target: Optional[ProjectStatus] = None,
+    rejected_indices: Optional[list[int]] = None,
 ) -> None:
     """Apply ai-orchestrator's audit verdict to a Testování project - the
     only place a Testování card's lifecycle may change.
@@ -402,11 +419,13 @@ def apply_audit_verdict(
     traceable evidence would leave a human or the next implementation run
     with nothing reliable to act on. The reason and evidence are recorded on
     the card's open feedback and stop reason,
-    and the card returns to Pracuje se (default - there is more
-    implementation work to continue) or, when ai-orchestrator explicitly
-    says so via ``reject_target``, to Připraveno (start the next attempt
-    fresh). The Definition of Done is left exactly as it was - a
-    rejection never itself checks or unchecks an item.
+    and the card returns to Pracuje se when implementation work remains;
+    rejected implementation items are reopened so the next implementation
+    run cannot restore a false-complete checkpoint,
+    Připraveno when ai-orchestrator explicitly requests a fresh attempt, or
+    remains in Testování when only an audit gate is rejected. The Definition
+    of Done is left exactly as it was - a rejection never itself checks or
+    unchecks an item.
     """
     if verdict not in _VALID_AUDIT_VERDICTS:
         raise AuditVerdictError(
@@ -455,6 +474,30 @@ def apply_audit_verdict(
     project.open_feedback = [*project.open_feedback, feedback_entry]
     project.stop_reason = reason.strip()
     if target == ProjectStatus.IN_PROGRESS:
+        # An implementation rejection is a request for actual rework. Keep
+        # audit-only rejections immutable, but reopen exactly the rejected
+        # implementation items and remove them from the resumable checkpoint.
+        # Otherwise the next autonomous run restores the old "completed"
+        # indices, performs no implementation, and immediately loops back to
+        # Testování with the same defect.
+        rejected = {
+            index for index in (rejected_indices or [])
+            if isinstance(index, int) and 0 <= index < len(project.dod)
+        }
+        for index in rejected:
+            if project.dod[index].phase == "implementation":
+                project.dod[index].checked = False
+        if rejected:
+            checkpoint = dict(project.checkpoint or {})
+            completed = [
+                index for index in checkpoint.get("completed_dod_indices", [])
+                if index not in rejected
+            ]
+            checkpoint["completed_dod_indices"] = sorted(
+                index for index in completed
+                if isinstance(index, int) and 0 <= index < len(project.dod)
+            )
+            project.checkpoint = checkpoint
         project.mark_returned_from_testing("audit_rejected")
     project.transition_to(target)
 

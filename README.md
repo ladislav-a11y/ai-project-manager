@@ -219,3 +219,17 @@ python -m pytest -q
 ```
 
 Testy jsou plně lokální; produkční Trello ani orchestrátor nevolají.
+
+# Provider model selection
+
+`AI_PM_PROVIDER_MODELS` is an optional JSON mapping from every configured
+provider to an ordered, non-empty model list. The first entry is the selected
+model and is passed to ai-orchestrator as `--model` for both implementation and
+audit dispatches. The PM persists that selection with the Trello run evidence and includes
+the provider and model in Slack start/result messages. If ai-orchestrator
+returns `active_model`, `model`, or `usage.total.model`, the confirmed runtime
+model replaces the configured selection in result messages. Missing model
+information is reported explicitly as an unknown provider default; it is never
+guessed from the provider name.
+
+Example: `{"claude":["claude-opus-4-1","claude-sonnet-4"],"codex":["gpt-5.6"]}`.

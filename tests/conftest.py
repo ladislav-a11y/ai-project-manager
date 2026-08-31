@@ -23,3 +23,23 @@ def pytest_configure(config):
 def _disable_real_slack_webhook(monkeypatch):
     """Tests must never send notifications to the real Slack webhook."""
     monkeypatch.delenv("SLACK_WEBHOOK_URL", raising=False)
+
+
+@pytest.fixture(autouse=True)
+def _isolate_provider_model_catalog(monkeypatch):
+    """Do not let the production launcher leak provider models into tests.
+
+    Individual tests deliberately configure a smaller provider set.  The
+    persistent launcher may export a catalog for several providers, and
+    ``load_config`` intentionally rejects model entries for providers that are
+    not enabled.  Keeping that strict production validation while clearing
+    the ambient launcher value makes the suite deterministic when it is run
+    by ai-orchestrator as the project's real test command.
+    """
+    monkeypatch.delenv("AI_PM_PROVIDER_MODELS", raising=False)
+
+
+@pytest.fixture(autouse=True)
+def _isolate_provider_state_path(monkeypatch):
+    """Never load the live scheduler's provider-limit cache in tests."""
+    monkeypatch.delenv("AI_PM_PROVIDER_STATE_PATH", raising=False)

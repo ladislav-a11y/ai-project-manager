@@ -29,6 +29,14 @@ def test_usage_suffix_renders_only_bounded_total_receipt():
     assert "raw_prompt" not in rendered
 
 
+def test_result_model_prefers_actual_receipt_and_supports_usage_model():
+    assert slack_notify.result_model({"active_model": "gpt-5.6"}, "configured") == "gpt-5.6"
+    assert slack_notify.result_model(
+        {"usage": {"total": {"model": "claude-opus-4-1"}}}, "configured"
+    ) == "claude-opus-4-1"
+    assert slack_notify.result_model({}, "configured") == "configured"
+
+
 def test_webhook_url_alone_does_not_enable_real_notifications(monkeypatch, caplog):
     secret_webhook = "https://hooks.slack.invalid/secret"
     caplog.set_level("INFO")

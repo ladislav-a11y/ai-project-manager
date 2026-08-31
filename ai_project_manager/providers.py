@@ -57,6 +57,8 @@ class ProviderStatus:
     last_error: Optional[str] = None
     checkpoint: dict = field(default_factory=dict)
     updated_at: datetime = field(default_factory=_utcnow)
+    models: tuple[str, ...] = ()
+    selected_model: Optional[str] = None
 
     def to_dict(self) -> dict:
         return {
@@ -66,6 +68,8 @@ class ProviderStatus:
             "last_error": self.last_error,
             "checkpoint": dict(self.checkpoint),
             "updated_at": self.updated_at.isoformat(),
+            "models": list(self.models),
+            "selected_model": self.selected_model,
         }
 
 
@@ -84,6 +88,24 @@ class ProviderRegistry:
         if name not in self._statuses:
             self._statuses[name] = ProviderStatus(name=name, updated_at=self._clock())
         return self._statuses[name]
+
+    def configure_models(self, name: str, models: list[str]) -> ProviderStatus:
+        """Record an ordered, provider-reported/configured model catalog.
+
+        Empty and duplicate values are discarded.  The first model is the
+        selected model; callers must supply the catalog explicitly so the PM
+        never guesses a model from a provider name.
+        """
+        status = self.register(name)
+        normalized = tuple(dict.fromkeys(model.strip() for model in models if model.strip()))
+        status.models = normalized
+        status.selected_model = normalized[0] if normalized else None
+        status.updated_at = self._clock()
+        return status
+
+    def selected_model(self, name: str) -> Optional[str]:
+        status = self._statuses.get(name)
+        return status.selected_model if status is not None else None
 
     def get_status(self, name: str) -> ProviderStatus:
         return self._statuses.setdefault(name, ProviderStatus(name=name, updated_at=self._clock()))

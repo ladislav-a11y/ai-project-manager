@@ -70,6 +70,14 @@ def test_process_inbox_creates_multiple_ready_tasks_from_one_source_card():
     assert changed[0].trello_card_id == source["id"]
     assert client.list_cards(name_to_id["Inbox"]) == []
     assert len(client.list_cards(name_to_id["New"])) == 3
+    for project in changed:
+        metadata = project.extra_data["inbox_preparation"]
+        assert metadata["source_card_id"] == source["id"]
+        assert metadata["content_sha256"] == inbox_content_hash(source)
+        assert metadata["scope"]
+        assert metadata["source_priority"] == 4
+        assert metadata["task_priority"] == project.priority
+        assert metadata["dod"] == [item.to_dict() for item in project.dod]
 
 
 def test_split_retry_keeps_source_until_children_persist_and_does_not_duplicate_them():
@@ -223,7 +231,7 @@ def test_persisted_new_inbox_project_reuses_created_card_on_next_sync():
     project_cards = [
         card
         for card in client.list_cards(name_to_id["New"])
-        if card["name"] == project.name
+        if card["id"] == created_card_id
     ]
     assert [card["id"] for card in project_cards] == [created_card_id]
 
@@ -327,7 +335,7 @@ def test_duplicate_inbox_copy_creates_only_a_done_receipt_not_new_work():
         persist_project=lambda project: sync_project_to_trello(client, project),
     )
     projects = fetch_all_projects(client)
-    target = next(project for project in projects if project.name == "Weather widget")
+    target = next(project for project in projects if project.trello_card_id == first["id"])
 
     duplicate = client.create_card(
         name_to_id["Inbox"],
@@ -365,7 +373,7 @@ def test_revised_inbox_source_updates_existing_project_without_new_work_card():
         persist_project=lambda project: sync_project_to_trello(client, project),
     )
     projects = fetch_all_projects(client)
-    target = next(project for project in projects if project.name == "Weather widget")
+    target = next(project for project in projects if project.trello_card_id == source["id"])
 
     revised = client.update_card(source["id"], desc="Build a weather widget with a forecast")
     # Simulate a source card that remained in the board Inbox until the
