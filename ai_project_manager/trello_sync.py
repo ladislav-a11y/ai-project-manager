@@ -712,6 +712,10 @@ def card_updates_from_project(project: ProjectRecord, list_name_to_id: dict[str,
     machine-readable block (e.g. a human-friendly summary).
     """
     data = dict(project.extra_data)
+    # Fresh live Trello readback is evidence for the audit prompt only. It is
+    # intentionally transient: persisting it would duplicate board metadata
+    # inside PM-DATA and can push an already large contract over Trello's limit.
+    data.pop("live_trello_readback", None)
     data.update({
         "schema_version": CURRENT_SCHEMA_VERSION,
         "governance": GOVERNANCE_POLICY,

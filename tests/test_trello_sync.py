@@ -90,6 +90,20 @@ def test_card_update_preserves_contract_when_visible_notes_are_oversized():
     assert data["checkpoint"]["run_id"] == "keep-me"
 
 
+def test_live_audit_readback_is_prompt_only_and_not_persisted():
+    project = ProjectRecord(
+        name="P5 — audit",
+        status=ProjectStatus.TESTING,
+        main_task="Implement the feature",
+        dod=[DoDItem(text="implementation", checked=True)],
+        extra_data={"live_trello_readback": {"card_name": "audit"}},
+    )
+
+    updates = card_updates_from_project(project, {"Testování": "testing"})
+
+    assert "live_trello_readback" not in _parse_data_block(updates["desc"])
+
+
 def test_priority_falls_back_to_card_title_when_board_has_no_priority_labels():
     assert priority_from_card({"name": "P5 — AI Orchestrator", "labels": []}) == 5
     assert priority_from_card({"name": "P1 - Audit", "labels": []}) == 1
