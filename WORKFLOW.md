@@ -65,6 +65,22 @@ před výběrem nového úkolu. U úkolů ve stejné fázi rozhoduje priorita `P
 Scheduler musí být idempotentní a při absenci bezpečně zpracovatelné práce
 nesmí volat AI.
 
+### Inbox intake
+
+`INBOX / Nápady` je hlavní boardový vstup PM; osobní Inbox se nikdy nemění.
+Intake musí před implementačním dispatch oddělit přípravu od práce: každá
+nová karta se nejprve zařadí do `Připraveno`, případně rozdělí na samostatné
+úkoly, dostane prioritu `P5` až `P0` a každý připravený název ji musí viditelně
+obsahovat jako `P<n> — název`. Až další tick smí takovou kartu přesunout do
+`Pracuje se`. Při přípravě se používá pouze uživatelský text a název Inbox
+karty; strojový blok `PM-DATA` se nesmí považovat za nové zadání. Chybějící,
+nejasná nebo víceznačná projektová identita je fail-closed a karta zůstává v
+Inboxu s konkrétním požadavkem na člověka.
+
+Přednost mají opravy PM/orchestrátoru a potvrzené live regrese; priorita je
+součástí názvu i Card Contractu. Intake musí být idempotentní podle neměnného
+ID zdrojové karty a nesmí vytvořit duplicitní pracovní kartu.
+
 Stav `ERROR` je čekací stav, který nejdříve projde recovery passem. Známá
 providerová/protokolová chyba se smí automaticky vrátit do `Připraveno` se
 zachovaným checkpointem; neznámá nebo opakovaná chyba vyžaduje člověka.

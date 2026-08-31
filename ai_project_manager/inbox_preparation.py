@@ -19,6 +19,7 @@ from .models import DoDItem
 _WORD_RE = re.compile(r"[a-zA-Z0-9áčďéěíňóřšťúůýž]+", re.IGNORECASE)
 _EXPLICIT_PRIORITY_RE = re.compile(r"^P([0-5])$", re.IGNORECASE)
 _SENTENCE_RE = re.compile(r"(?<=[.!?])\s+|\"(?=[A-ZÁČĎÉĚÍŇÓŘŠŤÚŮÝŽ])")
+_PM_DATA_BLOCK_RE = re.compile(r"<!--\s*PM-DATA.*?-->", re.DOTALL)
 
 
 @dataclass(frozen=True)
@@ -47,6 +48,16 @@ class InboxPreparation:
     human_required_reason: Optional[str] = None
 
 
+def visible_inbox_description(card: Mapping) -> str:
+    """Return only user-authored Inbox text, excluding the machine contract."""
+    return _PM_DATA_BLOCK_RE.sub("", str(card.get("desc") or "")).strip()
+
+
+def inbox_source_text(card: Mapping) -> str:
+    """Return the human Inbox request, falling back to its title."""
+    return visible_inbox_description(card) or str(card.get("name") or "").strip()
+
+
 def prioritize_inbox_cards(
     cards: list[Mapping],
     *,
@@ -61,7 +72,9 @@ def prioritize_inbox_cards(
     ranked: list[tuple[int, str, str]] = []
     for card in cards:
         card_id = str(card.get("id") or "")
-        text = normalize_inbox_text(f"{card.get('name', '')} {card.get('desc', '')}")
+        text = normalize_inbox_text(
+            f"{card.get('name', '')} {visible_inbox_description(card)}"
+        )
         priority, reason = derive_priority(card, text, default_priority)
         ranked.append((priority, card_id, reason))
     # Stable tie-breaking is deterministic and independent of Trello card
@@ -254,7 +267,7 @@ def prepare_inbox_card(
     priority_override: Optional[tuple[int, str]] = None,
 ) -> InboxPreparation:
     source_name = str(card.get("name") or "Inbox úkol").strip()
-    text = normalize_inbox_text(str(card.get("desc") or source_name))
+    text = normalize_inbox_text(inbox_source_text(card) or source_name)
     project_key, human_reason = resolve_project_key(card, text, project_paths, card_project_keys)
     priority, priority_reason = priority_override or derive_priority(card, text, default_priority)
     raw_tasks = split_tasks(source_name, text, project_key)

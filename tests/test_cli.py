@@ -32,6 +32,9 @@ def test_parser_supports_once_flag():
     args = build_parser().parse_args([])
     assert args.once is False
 
+    args = build_parser().parse_args(["--enable-inbox-intake"])
+    assert args.enable_inbox_intake is True
+
 
 def test_slack_probe_returns_delivery_status_without_loading_trello(monkeypatch):
     monkeypatch.setattr("ai_project_manager.cli.notify", lambda _message: True)

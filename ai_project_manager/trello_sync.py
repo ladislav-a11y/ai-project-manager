@@ -403,18 +403,30 @@ def _bound_contract_history(data: dict) -> dict:
     # machine contract are never silently shortened because doing so could
     # change the work the agent receives or invalidate its checkpoint.
     prose_fields = ("open_feedback", "last_output")
-    while len(_render_data_block(bounded)) > MAX_TRELLO_DESC_CHARS:
+    rendered_length = len(_render_data_block(bounded))
+    while rendered_length > MAX_TRELLO_DESC_CHARS:
         changed = False
         for field in prose_fields:
             value = bounded.get(field)
             if isinstance(value, list) and value:
                 text = str(value[-1])
-                if len(text) > 600:
-                    bounded[field] = [text[: max(600, len(text) - 1000)] + " [zkráceno]" ]
-                    changed = True
-                    break
-            elif isinstance(value, str) and len(value) > 600:
-                bounded[field] = value[: max(600, len(value) - 1000)] + " [zkráceno]"
+                marker = "[zkráceno] "
+                reduction = max(1000, rendered_length - MAX_TRELLO_DESC_CHARS)
+                retained = max(0, len(text) - reduction - len(marker))
+                shortened = marker + text[-retained:] if retained else marker.rstrip()
+                if shortened == text:
+                    continue
+                bounded[field] = [shortened]
+                changed = True
+                break
+            elif isinstance(value, str) and value:
+                marker = "[zkráceno] "
+                reduction = max(1000, rendered_length - MAX_TRELLO_DESC_CHARS)
+                retained = max(0, len(value) - reduction - len(marker))
+                shortened = marker + value[-retained:] if retained else marker.rstrip()
+                if shortened == value:
+                    continue
+                bounded[field] = shortened
                 changed = True
                 break
         if not changed:
@@ -425,6 +437,12 @@ def _bound_contract_history(data: dict) -> dict:
                 "refusing Trello write: PM-DATA exceeds the safe description "
                 f"limit of {MAX_TRELLO_DESC_CHARS} characters after diagnostic truncation"
             )
+        new_rendered_length = len(_render_data_block(bounded))
+        if new_rendered_length >= rendered_length:
+            raise CardContractError(
+                "refusing Trello write: diagnostic truncation did not reduce PM-DATA"
+            )
+        rendered_length = new_rendered_length
     return bounded
 
 

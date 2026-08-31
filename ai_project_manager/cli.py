@@ -64,6 +64,11 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
+        "--enable-inbox-intake",
+        action="store_true",
+        help="explicitly enable governed processing of the main-board Inbox",
+    )
+    parser.add_argument(
         "--log-level",
         default="INFO",
         type=_log_level,
@@ -150,8 +155,12 @@ def main(
         )
 
     logger.info(
-        "starting ai-project-manager (once=%s, providers=%s, poll_interval=%ss)",
-        args.once, config.providers, config.poll_interval_seconds,
+        "starting ai-project-manager (once=%s, providers=%s, poll_interval=%ss, inbox_enabled=%s, inbox_list=%r)",
+        args.once,
+        config.providers,
+        config.poll_interval_seconds,
+        config.inbox_enabled or args.enable_inbox_intake,
+        config.trello.inbox_list_name,
     )
 
     outcome = run_loop(
@@ -164,7 +173,7 @@ def main(
         providers_for_project=config.providers_for_project,
         default_providers=config.providers,
         inbox_list_name=config.trello.inbox_list_name,
-        process_inbox_enabled=config.inbox_enabled,
+        process_inbox_enabled=config.inbox_enabled or args.enable_inbox_intake,
         provider_state_path=config.provider_state_path,
         project_paths=(
             config.orchestrator.project_paths if validate_repository_paths else None

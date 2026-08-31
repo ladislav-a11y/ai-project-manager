@@ -122,7 +122,7 @@ def test_runner_routes_the_persistent_loop_through_the_watchdog() -> None:
     assert "'--scheduled-task-name', 'AI Project Manager Scheduler'" in source
     assert "'--mode', 'persistent'" in source
     assert "'--log-path', $logPath" in source
-    assert "'-m', 'ai_project_manager', '--once', '--log-level', 'INFO'" in source
+    assert "'-m', 'ai_project_manager', '--once', '--enable-inbox-intake', '--log-level', 'INFO'" in source
 
 
 def test_persistent_bat_launcher_shares_config_with_the_runner_script() -> None:

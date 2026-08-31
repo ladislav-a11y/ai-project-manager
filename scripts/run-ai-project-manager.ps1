@@ -176,7 +176,7 @@ try {
     elseif ($Once) {
         # A single tick is already a safe, self-contained process (see
         # ai_project_manager/cli.py) - no supervising restart is needed.
-        $arguments = @('-m', 'ai_project_manager', '--once', '--log-level', 'INFO')
+        $arguments = @('-m', 'ai_project_manager', '--once', '--enable-inbox-intake', '--log-level', 'INFO')
         & $PythonExe @arguments
     }
     else {
@@ -209,7 +209,7 @@ try {
             '--mode', 'persistent',
             '--log-path', $logPath,
             '--log-level', 'INFO',
-            '--', '--log-level', 'INFO'
+            '--', '--enable-inbox-intake', '--log-level', 'INFO'
         )
         & $PythonExe @arguments
     }

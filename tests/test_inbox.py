@@ -46,6 +46,51 @@ def test_preparation_splits_station_agent_card_and_assigns_each_scope_priority()
     assert any(item.phase == "audit" for item in prepared.dod)
 
 
+def test_preparation_ignores_stale_pm_data_and_uses_visible_request():
+    card = {
+        "id": "pm-source",
+        "name": "Úprava zpráv PM do slacku",
+        "desc": (
+            "<!-- PM-DATA\n"
+            '{"main_task": "propagation scoring", "open_feedback": []}\n-->'
+        ),
+        "labels": [{"name": "AI Project Manager"}, {"name": "P0"}],
+    }
+
+    prepared = prepare_inbox_card(card, project_paths={"AI Project Manager": "D:/pm"})
+
+    assert len(prepared.tasks) == 1
+    assert prepared.tasks[0].task == "Úprava zpráv PM do slacku."
+    assert prepared.priority == 0
+
+
+def test_process_inbox_moves_contract_only_card_to_ready_with_priority_title():
+    client = InMemoryTrelloClient()
+    _, name_to_id = build_list_maps(client)
+    source = client.create_card(
+        name_to_id["Inbox"],
+        "Úprava zpráv PM do slacku",
+        desc=(
+            "<!-- PM-DATA\n"
+            '{"main_task": "propagation scoring", "open_feedback": []}\n-->'
+        ),
+        labels=["AI Project Manager", "P0"],
+    )
+
+    changed = process_inbox(
+        client,
+        [],
+        persist_project=lambda project: sync_project_to_trello(client, project),
+        project_paths={"AI Project Manager": "D:/pm"},
+    )
+
+    assert len(changed) == 1
+    prepared_card = client.get_card(source["id"])
+    assert prepared_card["name"] == "P0 — Úprava zpráv PM do slacku"
+    assert prepared_card["list_id"] == name_to_id["New"]
+    assert "propagation scoring" not in prepared_card["desc"]
+
+
 def test_process_inbox_creates_multiple_ready_tasks_from_one_source_card():
     client = InMemoryTrelloClient()
     _, name_to_id = build_list_maps(client)

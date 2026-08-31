@@ -1,6 +1,7 @@
 import json
 import pytest
 
+import ai_project_manager.trello_sync as trello_sync
 from ai_project_manager.models import DoDItem, GitHubRef, GoogleDriveRef, ProjectRecord, ProjectStatus
 from ai_project_manager.trello_client import InMemoryTrelloClient
 from ai_project_manager.trello_sync import (
@@ -43,6 +44,25 @@ def test_card_update_bounds_untrusted_audit_history_before_trello_write():
     assert "starší auditní historie zkrácena" in updates["desc"]
     assert priority_from_labels([{"name": "bug"}]) == 0
     assert priority_from_labels([]) == 0
+
+
+def test_contract_history_truncation_always_makes_progress(monkeypatch):
+    """Regression for the live post-audit 100% CPU loop.
+
+    The old truncator reached a 611-character feedback value, marked the
+    iteration as changed, but produced the same 611 characters forever.
+    """
+    monkeypatch.setattr(trello_sync, "MAX_TRELLO_DESC_CHARS", 1200)
+    data = {
+        "main_task": "m" * 700,
+        "open_feedback": ["newest audit reason " + "f" * 4000],
+        "last_output": "",
+    }
+
+    bounded = trello_sync._bound_contract_history(data)
+
+    assert len(trello_sync._render_data_block(bounded)) <= 1200
+    assert bounded["open_feedback"][0].startswith("[zkráceno]")
 
 
 def test_card_identity_ignores_rich_text_url_whitespace():

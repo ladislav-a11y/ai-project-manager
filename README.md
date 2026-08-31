@@ -2,7 +2,8 @@
 
 Autonomní řídicí vrstva nad Trello boardem a `ai-orchestrator`. Trello je
 zdroj pravdy pro projekty i jediný ruční vstup (`Inbox`). Jeden scheduler tick
-načte Inbox a projekty, vybere nejvýše prioritní neblokovanou práci, předá ji
+načte Inbox a projekty, připraví nové Inbox požadavky do `Připraveno` s prioritou
+v názvu a teprve potom vybere nejvýše prioritní neblokovanou práci, předá ji
 orchestrátoru a výsledek zapíše zpět do Trella.
 
 Pokud není práce nebo je provider dočasně omezený, tick nevolá AI. Stav
@@ -35,6 +36,7 @@ Nejdůležitější volitelné proměnné:
 | Proměnná | Výchozí hodnota | Význam |
 | --- | --- | --- |
 | `TRELLO_INBOX_LIST` | `Inbox` | Název jediného ručního vstupu |
+| `AI_PM_ENABLE_INBOX` | `0` | Povolení řízeného intake hlavního boardového Inboxu |
 | `AI_ORCHESTRATOR_CMD` | `ai-orchestrator` | Příkaz orchestrátoru; předávají se další argumenty |
 | `AI_PM_PROVIDERS` | `auto` | Čárkou oddělené providery |
 | `AI_PM_POLL_INTERVAL_SECONDS` | `300` | Maximální prodleva mezi polling tick-y |
@@ -93,7 +95,7 @@ nutné použít neměnné card ID.
 Nejprve proveďte jeden bezpečný integrační tick:
 
 ```powershell
-python -m ai_project_manager --once --log-level INFO
+python -m ai_project_manager --once --enable-inbox-intake --log-level INFO
 ```
 
 Proces vrací kód `2` při chybné konfiguraci a v režimu `--once` kód `1` při

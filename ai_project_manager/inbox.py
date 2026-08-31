@@ -17,7 +17,13 @@ from dataclasses import dataclass
 from typing import Callable, Mapping, Optional
 
 from .models import DoDItem, ProjectRecord, ProjectStatus
-from .inbox_preparation import build_dod, prepare_inbox_card, prioritize_inbox_cards
+from .inbox_preparation import (
+    build_dod,
+    inbox_source_text,
+    prepare_inbox_card,
+    prioritize_inbox_cards,
+    visible_inbox_description,
+)
 
 logger = logging.getLogger("ai_project_manager")
 
@@ -88,7 +94,7 @@ def inbox_content_hash(card: dict) -> str:
     source_text = "\n".join(
         (
             _normalize_source_text(str(card.get("name") or "")),
-            _normalize_source_text(str(card.get("desc") or "")),
+            _normalize_source_text(visible_inbox_description(card)),
         )
     )
     return hashlib.sha256(source_text.encode("utf-8")).hexdigest()
@@ -235,7 +241,7 @@ def classify_inbox_card(
 ) -> ClassificationResult:
     """Match an Inbox card to the best existing project, or flag it as a
     new project when nothing matches well enough. Pure, local, free."""
-    text = f"{card.get('name', '')} {card.get('desc', '')}"
+    text = f"{card.get('name', '')} {visible_inbox_description(card)}"
 
     best: Optional[ProjectRecord] = None
     best_score = 0.0
@@ -278,7 +284,7 @@ def apply_classification(
     """Fold a classified inbox card into the target ProjectRecord: either
     a fresh record (new project) or the existing one, with the card's
     text appended as the next step / open feedback."""
-    text = card.get("desc", "").strip() or card.get("name", "").strip()
+    text = inbox_source_text(card)
 
     if result.is_new_project:
         return ProjectRecord(
