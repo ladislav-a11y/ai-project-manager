@@ -45,6 +45,31 @@ def test_card_update_bounds_untrusted_audit_history_before_trello_write():
     assert priority_from_labels([]) == 0
 
 
+def test_card_identity_ignores_rich_text_url_whitespace():
+    client = InMemoryTrelloClient(("Připraveno", "Pracuje se", "Testování", "Hotovo"))
+    card = client.create_card("list-2", "P5 — URL", labels=["P5", "APM"])
+    project = project_from_card(card, {"list-2": "Pracuje se"})
+    project.trello_card_url = f"{card['url']} "
+
+    sync_project_to_trello(client, project)
+
+    assert client.get_card(card["id"])["name"] == project.name
+
+
+def test_card_update_preserves_contract_when_visible_notes_are_oversized():
+    client = InMemoryTrelloClient(("Připraveno", "Pracuje se", "Testování", "Hotovo"))
+    card = client.create_card("list-2", "P5 — notes", labels=["P5", "APM"])
+    project = project_from_card(card, {"list-2": "Pracuje se"})
+    project.checkpoint = {"completed_dod_indices": [0], "run_id": "keep-me"}
+
+    updates = card_updates_from_project(project, {"Pracuje se": "list-2"}, notes="n" * 20000)
+
+    assert len(updates["desc"]) <= 14000
+    assert "viditelná historie zkrácena" in updates["desc"]
+    data = _parse_data_block(updates["desc"])
+    assert data["checkpoint"]["run_id"] == "keep-me"
+
+
 def test_priority_falls_back_to_card_title_when_board_has_no_priority_labels():
     assert priority_from_card({"name": "P5 — AI Orchestrator", "labels": []}) == 5
     assert priority_from_card({"name": "P1 - Audit", "labels": []}) == 1

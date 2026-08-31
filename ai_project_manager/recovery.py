@@ -1,5 +1,6 @@
 """Unattended blocked-task recovery: a periodic revisit pass over
-``ProjectStatus.BLOCKED`` projects, independent of the normal priority
+``ProjectStatus.BLOCKED`` and recoverable ``ProjectStatus.ERROR`` projects,
+independent of the normal priority
 scheduler (see scheduler.py, which never picks a blocked project at all).
 
 Without this, a card that ever became blocked would stay blocked forever
@@ -104,7 +105,9 @@ _HUMAN_REQUIRED_PATTERNS = re.compile(
 _PROVIDER_PROTOCOL_ERROR_PATTERNS = re.compile(
     r"timeout|timed out|connection (?:reset|refused|error)|network error|"
     r"protocol error|unexpected eof|econnreset|http 5\d\d|server error|"
-    r"temporarily unavailable|service unavailable|internal error",
+    r"temporarily unavailable|service unavailable|internal error|"
+    r"exit (?:code|kod) \d+|neúplný výstup|failed to load models cache|"
+    r"no matching outbox result",
     re.IGNORECASE,
 )
 
@@ -338,7 +341,7 @@ def recover_project(
     max_attempts: int = DEFAULT_MAX_ATTEMPTS,
     backoff: Callable[[int], timedelta] = default_backoff,
 ) -> Optional[RecoveryOutcome]:
-    """Revisit a single project if it is currently blocked and due for a
+    """Revisit a single project if it is currently blocked or in ERROR and due for a
     recheck. Returns ``None`` for a project that is not blocked at all
     (nothing to do); a ``"deferred"`` outcome when it is blocked but its
     ``review_at`` backoff has not elapsed yet; otherwise the result of
@@ -346,7 +349,11 @@ def recover_project(
 
     Mutates ``project`` in place - callers are responsible for persisting
     it (see ``daemon.run_tick``)."""
-    if not project.is_blocked:
+    # ERROR is a workflow wait state as well: scheduler.py deliberately keeps
+    # it from normal dispatch because it must be classified before another
+    # provider run can start. Treat it as a recovery candidate here, otherwise
+    # one stale provider/protocol failure can deadlock every other card.
+    if not project.is_blocked and project.status != ProjectStatus.ERROR:
         return None
     if not _is_due(project, now):
         return RecoveryOutcome(
@@ -420,8 +427,8 @@ def scan_for_recovery(
     max_attempts: int = DEFAULT_MAX_ATTEMPTS,
     backoff: Callable[[int], timedelta] = default_backoff,
 ) -> list[RecoveryOutcome]:
-    """Revisit every currently-blocked project in ``projects``, in place.
-    Non-blocked projects are skipped entirely (no outcome recorded)."""
+    """Revisit every blocked or ERROR project in ``projects``, in place.
+    Other projects are skipped entirely (no outcome recorded)."""
     outcomes = []
     for project in projects:
         outcome = recover_project(project, now, max_attempts=max_attempts, backoff=backoff)

@@ -372,6 +372,10 @@ def load_projects_and_inbox(
         # same immutable identity as pre-existing cards.
         if project.trello_card_id is None:
             project.trello_card_id = card.get("id")
+            # Persist the generated identity immediately; this is required
+            # for split Inbox tasks and makes every target card self-bound in
+            # the versioned Trello contract.
+            card = sync_project_to_trello(client, project)
         return card
 
     changed = process_inbox(
@@ -380,6 +384,8 @@ def load_projects_and_inbox(
         inbox_list_name=inbox_list_name,
         default_priority=default_priority,
         persist_project=persist_inbox_project,
+        project_paths=project_paths,
+        card_project_keys=card_project_keys,
     )
     known_card_ids = {p.trello_card_id for p in projects if p.trello_card_id is not None}
     for project in changed:

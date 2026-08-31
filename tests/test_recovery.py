@@ -50,6 +50,25 @@ def test_done_project_with_stale_blocked_by_is_not_recovery_candidate():
     assert recover_project(project, NOW) is None
 
 
+def test_recoverable_error_is_requeued_without_losing_checkpoint():
+    project = ProjectRecord(
+        name="Scheduler",
+        priority=2,
+        status=ProjectStatus.ERROR,
+        main_task="Prepare the scheduler",
+        orchestrator_ready_task="Prepare the scheduler end to end",
+        checkpoint={"run_id": "keep-me"},
+        stop_reason="Codex CLI returned exit kod 4294967295: neúplný výstup",
+    )
+
+    outcome = recover_project(project, NOW)
+
+    assert outcome.action == "requeued"
+    assert outcome.cause == BlockCause.PROVIDER_ERROR_RESOLVED
+    assert project.status == ProjectStatus.READY
+    assert project.checkpoint == {"run_id": "keep-me"}
+
+
 # ---- review_at gating (backoff) ----------------------------------------
 
 

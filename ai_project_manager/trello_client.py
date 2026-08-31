@@ -34,6 +34,22 @@ from typing import Iterable, Optional, Protocol
 import requests
 
 
+# Keep a safety margin below Trello/proxy description limits.  All card
+# writers, including callers that bypass trello_sync, must reject a larger
+# payload instead of allowing a truncated description to destroy PM-DATA.
+MAX_TRELLO_DESC_CHARS = 14000
+
+
+def _validate_card_description(desc: str) -> None:
+    if not isinstance(desc, str):
+        raise TrelloError("card description must be a string")
+    if len(desc) > MAX_TRELLO_DESC_CHARS:
+        raise TrelloError(
+            "card description exceeds the safe limit of "
+            f"{MAX_TRELLO_DESC_CHARS} characters; refusing the write"
+        )
+
+
 class TrelloClient(Protocol):
     """Minimal surface the rest of the system needs from Trello."""
 
@@ -117,6 +133,7 @@ class InMemoryTrelloClient:
     def create_card(self, list_id: str, name: str, desc: str = "", labels: Optional[list[str]] = None) -> dict:
         if list_id not in self._lists:
             raise TrelloError(f"unknown list {list_id}")
+        _validate_card_description(desc)
         card_id = f"card-{self._next_card_id}"
         self._next_card_id += 1
         card = {
@@ -143,6 +160,8 @@ class InMemoryTrelloClient:
     ) -> dict:
         if card_id not in self._cards:
             raise TrelloError(f"unknown card {card_id}")
+        if desc is not None:
+            _validate_card_description(desc)
         card = self._cards[card_id]
         if name is not None:
             card["name"] = name
@@ -508,6 +527,7 @@ class RealTrelloClient:
         return self._to_card(raw)
 
     def create_card(self, list_id: str, name: str, desc: str = "", labels: Optional[list[str]] = None) -> dict:
+        _validate_card_description(desc)
         params = {"idList": list_id, "name": name, "desc": desc}
         if labels is not None:
             params["idLabels"] = ",".join(self._label_ids_for_names(labels))
@@ -527,6 +547,8 @@ class RealTrelloClient:
         labels: Optional[list[str]] = None,
         position: Optional[str | float] = None,
     ) -> dict:
+        if desc is not None:
+            _validate_card_description(desc)
         params = {}
         if name is not None:
             params["name"] = name

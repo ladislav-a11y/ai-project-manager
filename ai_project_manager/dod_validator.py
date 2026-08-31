@@ -206,6 +206,7 @@ def validate_dod_item(
     evidence: Optional[str] = None,
     run_git: RunCommand = default_run_command,
     expected_new_commit: bool = True,
+    allow_dirty_checkout: bool = False,
 ) -> ItemValidationResult:
     text = (item_text or "").strip()
     reasons = []
@@ -288,7 +289,7 @@ def validate_dod_item(
             )
 
     # 1. Clean/dirty tree check (only for direct runtime actions on the audited repo)
-    if _CLEANUP_KEYWORD_RE.search(text) and not is_meta_or_validation:
+    if _CLEANUP_KEYWORD_RE.search(text) and not is_meta_or_validation and not allow_dirty_checkout:
         matched_category = True
         status_ok, status_out = get_git_status(repo_path, run_git=run_git)
         details["git_status_ok"] = status_ok
@@ -390,6 +391,7 @@ def validate_project_dod(
     run_git: RunCommand = default_run_command,
     target_indices: Optional[Sequence[int]] = None,
     expected_new_commit: bool = True,
+    allow_dirty_checkout: bool = False,
 ) -> DoDValidationReport:
     if isinstance(project_or_dod, ProjectRecord):
         dod_items = project_or_dod.dod
@@ -413,6 +415,7 @@ def validate_project_dod(
             evidence=evidence,
             run_git=run_git,
             expected_new_commit=expected_new_commit,
+            allow_dirty_checkout=allow_dirty_checkout,
         )
         if _ORCHESTRATOR_AUDIT_EVIDENCE_RE.search(text) and evidence:
             indexed = re.search(rf"(?m)^\s*{idx}:(OK|REJECT)\b", evidence)

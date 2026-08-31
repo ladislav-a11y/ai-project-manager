@@ -10,9 +10,108 @@ from ai_project_manager.inbox import (
     looks_like_feedback,
     process_inbox,
 )
+from ai_project_manager.inbox_preparation import prepare_inbox_card, prioritize_inbox_cards
 from ai_project_manager.models import ProjectRecord, ProjectStatus
 from ai_project_manager.trello_client import InMemoryTrelloClient
 from ai_project_manager.trello_sync import build_list_maps, fetch_all_projects, sync_project_to_trello
+
+
+def test_batch_prioritization_puts_pm_repairs_before_new_features():
+    cards = [
+        {"id": "feature", "name": "Nová funkce dashboardu", "desc": "Přidat nový widget"},
+        {"id": "pm-bug", "name": "Oprava AI Project Manageru", "desc": "scheduler nefunguje a je potřeba opravit bug"},
+    ]
+
+    priorities = prioritize_inbox_cards(cards)
+
+    assert priorities["pm-bug"][0] == 5
+    assert priorities["feature"][0] == 3
+    assert "oprava vlastního PM" in priorities["pm-bug"][1]
+
+
+def test_preparation_splits_station_agent_card_and_assigns_each_scope_priority():
+    card = {
+        "id": "station-source",
+        "name": "Station agent live chyby a rozšíření",
+        "desc": "Bearing a vzdálenost. Auto tune a hold nefunguje. Přidat DX cluster poskytovatele.",
+        "labels": [{"name": "Station Agent"}],
+    }
+
+    prepared = prepare_inbox_card(card, project_paths={"Station Agent": "D:/station-agent"})
+
+    assert prepared.project_key == "Station Agent"
+    assert len(prepared.tasks) == 3
+    assert any(task.scope == "auto tune a hold" and task.priority == 4 for task in prepared.tasks)
+    assert all(item.phase in {"implementation", "audit"} for item in prepared.dod)
+    assert any(item.phase == "audit" for item in prepared.dod)
+
+
+def test_process_inbox_creates_multiple_ready_tasks_from_one_source_card():
+    client = InMemoryTrelloClient()
+    _, name_to_id = build_list_maps(client)
+    source = client.create_card(
+        name_to_id["Inbox"],
+        "Station agent live chyby a rozšíření",
+        desc="Bearing a vzdálenost. Auto tune a hold nefunguje. Přidat DX cluster poskytovatele.",
+        labels=["Station Agent"],
+    )
+
+    changed = process_inbox(
+        client,
+        [],
+        persist_project=lambda project: sync_project_to_trello(client, project),
+        project_paths={"Station Agent": "D:/station-agent"},
+    )
+
+    assert len(changed) == 3
+    assert all(project.project_key == "Station Agent" for project in changed)
+    assert all(project.status == ProjectStatus.NEW for project in changed)
+    assert all(project.trello_card_id for project in changed)
+    assert changed[0].trello_card_id == source["id"]
+    assert client.list_cards(name_to_id["Inbox"]) == []
+    assert len(client.list_cards(name_to_id["New"])) == 3
+
+
+def test_split_retry_keeps_source_until_children_persist_and_does_not_duplicate_them():
+    client = InMemoryTrelloClient()
+    _, name_to_id = build_list_maps(client)
+    source = client.create_card(
+        name_to_id["Inbox"],
+        "Station agent live chyby a rozšíření",
+        desc="Bearing a vzdálenost. Auto tune nefunguje. Přidat DX cluster poskytovatele.",
+        labels=["Station Agent"],
+    )
+    writes = 0
+
+    def fail_on_second_child(project):
+        nonlocal writes
+        writes += 1
+        if writes == 2:
+            raise RuntimeError("transient persistence failure")
+        return sync_project_to_trello(client, project)
+
+    with pytest.raises(RuntimeError, match="transient persistence failure"):
+        process_inbox(
+            client,
+            [],
+            persist_project=fail_on_second_child,
+            project_paths={"Station Agent": "D:/station-agent"},
+        )
+
+    assert [card["id"] for card in client.list_cards(name_to_id["Inbox"])] == [source["id"]]
+    partial = fetch_all_projects(client, exclude_list_names=("Inbox",))
+    assert len(partial) == 1
+
+    changed = process_inbox(
+        client,
+        partial,
+        persist_project=lambda project: sync_project_to_trello(client, project),
+        project_paths={"Station Agent": "D:/station-agent"},
+    )
+
+    assert len({project.trello_card_id for project in changed}) == 3
+    assert client.list_cards(name_to_id["Inbox"]) == []
+    assert len(client.list_cards(name_to_id["New"])) == 3
 
 
 def test_classify_matches_existing_project_by_keyword_overlap():
@@ -81,7 +180,7 @@ def test_process_inbox_assigns_cards_to_projects_end_to_end():
         "Dashboard spinner bug",
         desc="The orchestrator dashboard spinner never stops, this is a bug",
     )
-    client.create_card(name_to_id["Inbox"], "Brand new weather widget idea", desc="Build a weather widget")
+    client.create_card(name_to_id["Inbox"], "Brand new weather widget idea", desc="Build a weather widget", labels=["Weather Widget"])
 
     projects = fetch_all_projects(client)
     changed = process_inbox(client, projects)
@@ -105,6 +204,7 @@ def test_persisted_new_inbox_project_reuses_created_card_on_next_sync():
         name_to_id["Inbox"],
         "Brand new weather widget idea",
         desc="Build a weather widget",
+        labels=["Weather Widget"],
     )
 
     changed = process_inbox(
@@ -171,6 +271,7 @@ def test_process_inbox_does_not_acknowledge_card_when_project_persistence_fails(
         name_to_id["Inbox"],
         "Brand new weather widget idea",
         desc="Build a weather widget",
+        labels=["Weather Widget"],
     )
 
     def fail_persistence(project):
@@ -217,6 +318,7 @@ def test_duplicate_inbox_copy_creates_only_a_done_receipt_not_new_work():
         name_to_id["Inbox"],
         "Weather widget",
         desc="Build a weather widget",
+        labels=["Weather Widget"],
     )
 
     process_inbox(
@@ -255,6 +357,7 @@ def test_revised_inbox_source_updates_existing_project_without_new_work_card():
         name_to_id["Inbox"],
         "Weather widget",
         desc="Build a weather widget",
+        labels=["Weather Widget"],
     )
     process_inbox(
         client,

@@ -167,9 +167,21 @@ powershell -NoProfile -File scripts/install-scheduler.ps1 -IntervalMinutes 5
 
 Scheduler spouští persistentní watchdog; ten drží jedinou PM smyčku, odmítá
 duplicitní instanci a ukládá transcript do `runtime/scheduler/`. Installer po
-registraci ověří stav úlohy i PID watchdogu a při neúspěchu skončí chybou,
-takže samotná registrace nikdy není vydávána za stav online. Cesty k Pythonu a sousedním checkoutům lze
+registraci ověří, že úloha zůstala povolená. Instalace úlohu úmyslně
+nespouští a nikdy nevolá `Start-ScheduledTask`; persistentní watchdog se
+spustí až triggerem po přihlášení nebo startu systému. Cesty k Pythonu a sousedním checkoutům lze
 přepsat parametry runneru nebo `AI_PM_PYTHON_EXE`.
+
+Pro bezpečné zastavení použijte z kořene projektu:
+
+```powershell
+.\stop_ai_project_manager.bat
+```
+
+Stop nejdříve zakáže a zastaví úlohu `AI Project Manager Scheduler`, aby ji
+repetition trigger znovu nespustil, a potom ukončí pouze dohledaný PM/watchdog
+podstrom podle cesty tohoto checkoutu. Úloha zůstane registrovaná pro pozdější
+opětovné zapnutí; jiné procesy `python.exe` se necílí.
 
 Live stav včetně doručení Slacku (HTTP 200 zaznamenané bez webhooku v logu)
 a následného automatického ticku ověří:

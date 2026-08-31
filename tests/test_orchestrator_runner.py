@@ -133,6 +133,44 @@ def test_run_fn_controller_finalizes_repo_tail_without_spending_agent_tick(tmp_p
     assert calls[0][calls[0].index("--allowed-remote") + 1] == "https://example.invalid/repo.git"
 
 
+def test_run_fn_does_not_controller_finalize_fresh_implementation_card(tmp_path):
+    registry = ProviderRegistry()
+    registry.mark_available("claude")
+    calls = []
+
+    def fake_subprocess_run(command):
+        calls.append(command)
+        assert command[0] == "ai-orchestrator"
+        run_id = command[command.index("--run-id") + 1]
+        write_outbox_result(
+            tmp_path / "outbox",
+            "Demo",
+            {"status": "in_progress", "run_id": run_id},
+            run_id=run_id,
+        )
+        return completed()
+
+    project = ProjectRecord(
+        name="Demo",
+        orchestrator_ready_task="Install and verify the scheduler",
+        dod=[DoDItem(text="install the persistent scheduler")],
+    )
+    run_fn, _, _ = make_run_fn(
+        tmp_path,
+        registry,
+        subprocess_run=fake_subprocess_run,
+        finalize_command=["controller-finalize"],
+        finalize_paths={"Demo": ["tracked.py"]},
+        allowed_push_remotes={"Demo": "https://example.invalid/repo.git"},
+    )
+
+    result = run_fn(project, "claude")
+
+    assert result["status"] == "in_progress"
+    assert len(calls) == 1
+    assert "--implementation-only" in calls[0]
+
+
 def test_finalization_refresh_is_needed_when_card_proof_has_old_head(tmp_path):
     project = ProjectRecord(
         name="Demo",

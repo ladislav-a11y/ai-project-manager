@@ -27,6 +27,7 @@ from datetime import datetime, timezone
 from typing import Optional
 
 from .models import DoDItem, GitHubRef, GoogleDriveRef, ProjectRecord, ProjectStatus
+from .trello_client import MAX_TRELLO_DESC_CHARS
 from .card_contract import (
     CURRENT_SCHEMA_VERSION,
     DOD_ROUTING_POLICY,
@@ -229,7 +230,6 @@ STATUS_TO_LIST_CANDIDATES = {
     ProjectStatus.DONE: ("Hotovo", "Done"),
     ProjectStatus.ERROR: ("Čeká na AI", "Error"),
 }
-MAX_TRELLO_DESC_CHARS = 14000
 MAX_TRELLO_FEEDBACK_CHARS = 3500
 MAX_TRELLO_LAST_OUTPUT_CHARS = 2500
 TITLE_PRIORITY_RE = re.compile(r"^\s*P([0-5])(?:\s|[-—–:])", re.IGNORECASE)
@@ -344,7 +344,11 @@ def _validate_card_identity(data: dict, card: dict) -> None:
 
 def _card_url_key(url: str) -> str:
     """Stable identity part of a Trello URL; ignore host and title slug."""
-    match = re.search(r"/c/([^/]+)", url or "")
+    # Rich-text Trello editors may preserve harmless surrounding whitespace
+    # when a URL is converted to a smart-card link.  Identity comparison must
+    # normalize that presentation detail, while still rejecting a different
+    # card short-link.
+    match = re.search(r"/c/([^/]+)", (url or "").strip())
     return match.group(1) if match else (url or "").rstrip("/")
 
 
@@ -378,9 +382,10 @@ def _bound_contract_history(data: dict) -> dict:
             "[starší výstup zkrácen]\n" + last_output[-MAX_TRELLO_LAST_OUTPUT_CHARS:]
         )
     # The fixed per-field bounds above are not enough when a card also carries
-    # a large goal and checkpoint. Trim only diagnostic/task prose until the
-    # complete machine block is safely below Trello's limit.
-    prose_fields = ("open_feedback", "last_output", "main_task", "orchestrator_ready_task")
+    # a large checkpoint. Trim diagnostic history only. Task text and the
+    # machine contract are never silently shortened because doing so could
+    # change the work the agent receives or invalidate its checkpoint.
+    prose_fields = ("open_feedback", "last_output")
     while len(_render_data_block(bounded)) > MAX_TRELLO_DESC_CHARS:
         changed = False
         for field in prose_fields:
@@ -396,11 +401,34 @@ def _bound_contract_history(data: dict) -> dict:
                 changed = True
                 break
         if not changed:
-            # This should only be reachable for an unusually large structured
-            # checkpoint/DoD. Keep the contract valid and fail closed rather
-            # than sending an API payload that Trello will reject.
-            break
+            # This is an unusually large task/DoD/checkpoint. Keep the
+            # contract intact and fail closed rather than sending a payload
+            # that Trello may truncate or reject.
+            raise CardContractError(
+                "refusing Trello write: PM-DATA exceeds the safe description "
+                f"limit of {MAX_TRELLO_DESC_CHARS} characters after diagnostic truncation"
+            )
     return bounded
+
+
+def _bounded_description(visible_notes: str, data: dict) -> str:
+    """Build a safe description without ever cutting the PM-DATA block."""
+    rendered = _render_data_block(data)
+    if len(rendered) > MAX_TRELLO_DESC_CHARS:
+        raise CardContractError(
+            "refusing Trello write: PM-DATA exceeds the safe description limit"
+        )
+    visible_notes = visible_notes.strip()
+    if not visible_notes:
+        return rendered
+    separator = "\n\n"
+    available = MAX_TRELLO_DESC_CHARS - len(rendered) - len(separator)
+    if len(visible_notes) <= available:
+        return f"{visible_notes}{separator}{rendered}"
+    marker = "[viditelná historie zkrácena; PM-DATA zachován]\n"
+    if available <= len(marker):
+        return rendered
+    return f"{marker}{visible_notes[-(available - len(marker)):]}{separator}{rendered}"
 
 
 def _replace_data_block(desc: str, data: dict) -> str:
@@ -698,9 +726,7 @@ def card_updates_from_project(project: ProjectRecord, list_name_to_id: dict[str,
         visible_notes = _waiting_visible_notes(project)
 
     data = _bound_contract_history(data)
-    desc_parts = [visible_notes] if visible_notes else []
-    desc_parts.append(_render_data_block(data))
-    desc = "\n\n".join(desc_parts)
+    desc = _bounded_description(visible_notes, data)
 
     candidates = STATUS_TO_LIST_CANDIDATES[project.status]
     list_name = next((name for name in candidates if name in list_name_to_id), None)

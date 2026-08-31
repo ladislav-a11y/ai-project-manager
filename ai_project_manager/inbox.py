@@ -11,11 +11,15 @@ from __future__ import annotations
 
 import re
 import hashlib
+import logging
 import unicodedata
 from dataclasses import dataclass
-from typing import Callable, Optional
+from typing import Callable, Mapping, Optional
 
 from .models import DoDItem, ProjectRecord, ProjectStatus
+from .inbox_preparation import build_dod, prepare_inbox_card, prioritize_inbox_cards
+
+logger = logging.getLogger("ai_project_manager")
 
 # Below this score a card is treated as belonging to a brand-new project
 # rather than an existing one.
@@ -61,7 +65,7 @@ class ClassificationResult:
 # The default is a free local heuristic; a smarter (possibly
 # AI-assisted) classifier can be swapped in without touching callers.
 ClassifierFn = Callable[[dict, list[ProjectRecord]], ClassificationResult]
-PersistProjectFn = Callable[[ProjectRecord], None]
+PersistProjectFn = Callable[[ProjectRecord], Optional[Mapping]]
 
 
 @dataclass(frozen=True)
@@ -192,6 +196,18 @@ def record_inbox_receipt(
         for existing in receipts
     ):
         receipts.append(reference)
+    else:
+        # A newly-created split child may only learn its Trello ID after the
+        # first sync. Bind that ID to the existing source receipt on the
+        # follow-up write instead of creating another receipt.
+        for existing in receipts:
+            if (
+                isinstance(existing, dict)
+                and existing.get("source_card_id") == reference["source_card_id"]
+                and existing.get("content_sha256") == reference["content_sha256"]
+                and target_card_id
+            ):
+                existing["target_card_id"] = str(target_card_id)
     extra[INBOX_RECEIPTS_KEY] = receipts
     # Preserve the old field for backwards-compatible readback and tests.
     legacy_ids = extra.get("processed_inbox_card_ids")
@@ -337,6 +353,8 @@ def process_inbox(
     inbox_list_name: str = "Inbox",
     default_priority: int = 2,
     persist_project: Optional[PersistProjectFn] = None,
+    project_paths: Optional[Mapping[str, str]] = None,
+    card_project_keys: Optional[Mapping[str, str]] = None,
 ) -> list[ProjectRecord]:
     """Fetch new (not yet processed) cards from the Trello Inbox list,
     classify each one and fold it into the right project. Returns the
@@ -357,15 +375,48 @@ def process_inbox(
 
     projects_by_name = {p.name: p for p in projects}
     changed: list[ProjectRecord] = []
+    cards = client.list_cards(inbox_list_id)
+    batch_priorities = prioritize_inbox_cards(cards, default_priority=default_priority)
 
-    for card in client.list_cards(inbox_list_id):
+    for card in cards:
         if _is_processed(card) and persist_project is None:
             continue
 
         # Check the immutable source ID first, then URL/content hash.  This
         # makes retries and a second copy of the same Inbox request safe
         # without relying on an editable title or a local database.
+        source_id = str(card.get("id") or "")
+        partial_split = {
+            int(preparation["subtask_index"]): project
+            for project in projects_by_name.values()
+            for preparation in [
+                (project.extra_data or {}).get("inbox_preparation", {})
+            ]
+            if (
+                isinstance(preparation, dict)
+                and preparation.get("source_card_id") == source_id
+                and isinstance(preparation.get("subtask_index"), int)
+            )
+        }
+        # A split preparation marker is not a reason to skip receipt lookup.
+        # The source card may have remained in Inbox after a partial write, or
+        # its content may now be a revision; both cases must first reconcile
+        # against the durable receipt before preparing more children.
         previous = find_inbox_receipt(list(projects_by_name.values()), card)
+        if partial_split and previous is not None and previous.matched_by == "source_card_id":
+            canonical_source = any(
+                preparation.get("subtask_index") == 0
+                and project.trello_card_id == source_id
+                for project in projects_by_name.values()
+                for preparation in [(project.extra_data or {}).get("inbox_preparation", {})]
+                if isinstance(preparation, dict)
+            )
+            if not canonical_source:
+                # An exact receipt belonging to an already-persisted split
+                # child does not mean the source request is fully handled.
+                # Continue the split preparation so the missing children are
+                # created and the source card remains the canonical target.
+                previous = None
         if previous is not None:
             target = previous.project
             if previous.matched_by.endswith("_revision"):
@@ -423,6 +474,85 @@ def process_inbox(
             continue
 
         result = classifier(card, list(projects_by_name.values()))
+        if result.is_new_project or partial_split:
+            preparation = prepare_inbox_card(
+                card,
+                project_paths=project_paths,
+                card_project_keys=card_project_keys,
+                default_priority=default_priority,
+                priority_override=batch_priorities.get(str(card.get("id") or "")),
+            )
+            if preparation.human_required_reason:
+                logger.warning(
+                    "Inbox card requires human project assignment id=%s name=%r reason=%s",
+                    card.get("id"), card.get("name"), preparation.human_required_reason,
+                )
+                continue
+
+            source_reference = inbox_source_reference(card)
+            # Persist split children before mutating/moving the source card.
+            # Thus any failure leaves the canonical source in Inbox, while a
+            # retry can recognize already durable children by source/index.
+            ordered_tasks = list(enumerate(preparation.tasks))
+            if len(ordered_tasks) > 1:
+                ordered_tasks = ordered_tasks[1:] + ordered_tasks[:1]
+            prepared_projects: dict[int, ProjectRecord] = dict(partial_split)
+            for index, prepared_task in ordered_tasks:
+                if index in partial_split:
+                    continue
+                task = ProjectRecord(
+                    name=prepared_task.title,
+                    priority=prepared_task.priority,
+                    status=ProjectStatus.NEW,
+                    main_task=prepared_task.task,
+                    next_step=prepared_task.next_step,
+                    orchestrator_ready_task=(
+                        f"Implementovat tento samostatný rozsah v projektu "
+                        f"{preparation.project_key or prepared_task.title}: {prepared_task.task} "
+                        "Zachovat chování mimo tento rozsah; dokončení doložit testem a relevantním live důkazem."
+                    ),
+                    dod=list(build_dod((prepared_task,))),
+                    project_key=preparation.project_key,
+                    extra_data={
+                        "inbox_preparation": {
+                            "source_card_id": source_reference["source_card_id"],
+                            "source_card_url": source_reference.get("source_card_url"),
+                            "content_sha256": source_reference["content_sha256"],
+                            "subtask_index": index,
+                            "subtask_count": len(preparation.tasks),
+                            "priority_reason": prepared_task.priority_reason,
+                        }
+                    },
+                )
+                if index == 0:
+                    # Preserve the source card as the first canonical target.
+                    task.trello_card_id = card.get("id")
+                    task.trello_card_url = card.get("url")
+                    task.trello_list_id = card.get("list_id")
+                record_inbox_receipt(task, card, target_card_id=task.trello_card_id)
+                projects_by_name[task.name] = task
+                if persist_project is not None:
+                    persisted = persist_project(task)
+                    # Adapters may return the created Trello card instead of
+                    # mutating the ProjectRecord. Bind that identity here so
+                    # split children remain idempotent on retry.
+                    if isinstance(persisted, Mapping) and not task.trello_card_id:
+                        task.trello_card_id = persisted.get("id")
+                        task.trello_card_url = persisted.get("url", task.trello_card_url)
+                        task.trello_list_id = persisted.get("list_id", task.trello_list_id)
+                    if index > 0:
+                        # The first sync creates the child card and the second
+                        # sync binds its generated identity into PM-DATA.
+                        record_inbox_receipt(task, card, target_card_id=task.trello_card_id)
+                        persist_project(task)
+                prepared_projects[index] = task
+            changed.extend(
+                prepared_projects[index]
+                for index in range(len(preparation.tasks))
+                if index in prepared_projects
+            )
+            continue
+
         project = apply_classification(card, result, projects_by_name, default_priority=default_priority)
         projects_by_name[project.name] = project
 

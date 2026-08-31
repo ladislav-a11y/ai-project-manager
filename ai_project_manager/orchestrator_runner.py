@@ -570,6 +570,24 @@ def _terminal_finalization_issue(
     return None
 
 
+def _post_completion_finalization_allowed(project: ProjectRecord) -> bool:
+    """Return whether this card explicitly defers controller finalization.
+
+    A narrowly-scoped exception is needed for work that was already live
+    verified while the checkout was clean/controlled, but whose controller
+    commit/backup is intentionally performed after the card reaches Hotovo.
+    The flag is card-owned contract data, requires explicit human approval and
+    never changes who may issue the audit verdict.
+    """
+    policy = project.extra_data.get("completion_policy")
+    return (
+        isinstance(policy, dict)
+        and policy.get("mode") == "post_done_finalization"
+        and policy.get("human_approved") is True
+        and policy.get("controller_owner") == "ai-orchestrator"
+    )
+
+
 def _controller_finalize(
     project: ProjectRecord,
     project_path: str,
@@ -710,11 +728,12 @@ def build_run_fn(
             existing_finalization, initial_head
         )
         finalization_indices = _finalization_indices(project)
-        # Once a project enters Testování, finalization is a terminal gate for
-        # every card, not merely for cards whose DoD happened to mention the
-        # word "commit".  The finalizer still receives only configured
-        # explicit paths and therefore fails closed on an unscoped dirty tree.
-        if finalize_command and not finalization_verified:
+        # Do not run the controller finalizer at dispatch time for an ordinary
+        # implementation card.  It is a terminal handoff for the explicit
+        # commit/push tail only; invoking it before the agent gets a first
+        # implementation iteration makes every fresh card spend its tick on
+        # controller tests and can deadlock it before any work starts.
+        if finalize_command and finalization_indices is not None and not finalization_verified:
             return _controller_finalize(
                 project, project_path, task, run_id, finalize_command,
                 finalize_paths, allowed_push_remotes, subprocess_run,
@@ -1017,13 +1036,15 @@ def build_audit_run_fn(
             )
 
         # Perform fail-closed validation of all DoD items against repository state and evidence
+        post_completion_finalization = _post_completion_finalization_allowed(project)
         report = validate_project_dod(
             project,
             repo_path=project_path,
             initial_head=initial_head,
             evidence=evidence,
             run_git=git_cmd,
-            expected_new_commit=not controller_finalization_verified,
+            expected_new_commit=not controller_finalization_verified and not post_completion_finalization,
+            allow_dirty_checkout=post_completion_finalization,
         )
 
         if audit_performed and not audit_protocol_error and not rejected_indices and payload.get("status") == "completed":
@@ -1072,7 +1093,7 @@ def build_audit_run_fn(
                 "usage": payload.get("usage"),
             }
 
-        terminal_issue = _terminal_finalization_issue(
+        terminal_issue = None if post_completion_finalization else _terminal_finalization_issue(
             finalization, initial_head, project_path, git_cmd
         )
         if verdict == AUDIT_VERDICT_ACCEPTED and terminal_issue:

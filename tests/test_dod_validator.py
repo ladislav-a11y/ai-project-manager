@@ -54,6 +54,25 @@ def test_dod_commit_validation_fails_when_head_remained_unchanged():
     assert any("HEAD zůstal 4f9c001" in r for r in res.reasons)
 
 
+def test_post_completion_policy_does_not_require_dirty_checkout_commit():
+    run_git = fake_git({
+        "rev-parse": "4f9c001",
+        "status": " M source.py",
+        "diff": "diff --git a/source.py b/source.py",
+    })
+    res = validate_dod_item(
+        0,
+        "ai-orchestrator audit ověří existující stav; nový commit není podmínkou",
+        repo_path="/fake/repo",
+        initial_head="4f9c001",
+        evidence="628 passed; ai-orchestrator audit accepted",
+        run_git=run_git,
+        expected_new_commit=False,
+        allow_dirty_checkout=True,
+    )
+    assert res.valid is True
+
+
 def test_dod_commit_validation_passes_when_head_changed():
     run_git = fake_git({"rev-parse": "9a8b7c6"})
     res = validate_dod_item(

@@ -77,9 +77,10 @@ try {
     $env:AI_PM_SLACK_ENABLED = '1'
 
     $env:TRELLO_INBOX_LIST = 'INBOX / Nápady'
-    # Inbox intake is intentionally disabled until its lifecycle/governance is
-    # complete. PM may schedule only Testování -> Čeká na AI -> Pracuje se -> Připraveno.
-    $env:AI_PM_ENABLE_INBOX = '0'
+    # Inbox intake is enabled after the dedicated P5 governance/intake card
+    # was prepared in Připraveno. The intake remains fail-closed on project
+    # identity and never touches the personal Inbox.
+    $env:AI_PM_ENABLE_INBOX = '1'
     $env:AI_PM_PROVIDERS = 'auto'
     $env:AI_PM_POLL_INTERVAL_SECONDS = [string]$PollIntervalSeconds
     $env:AI_ORCHESTRATOR_TIMEOUT_SECONDS = '3600'
@@ -100,6 +101,7 @@ try {
             'ai_project_manager/daemon.py',
             'ai_project_manager/dod_validator.py',
             'ai_project_manager/inbox.py',
+            'ai_project_manager/inbox_preparation.py',
             'ai_project_manager/orchestrator_runner.py',
             'ai_project_manager/trello_sync.py',
             'scripts/run-ai-project-manager.ps1',

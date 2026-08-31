@@ -1,6 +1,10 @@
 @echo off
 setlocal
-cd /d D:\orchestrator\ai-project-manager
+
+rem Persistent launcher for the PM watchdog. This starts the
+rem already registered/configured production runner; it does not install a
+rem Scheduled Task and it does not use the one-shot --once mode. The Task
+rem Scheduler installer is scripts\install-scheduler.ps1.
 
 rem scripts\run-ai-project-manager.ps1 is the single, already-tested place
 rem that builds the PM's production configuration: Trello/Slack credentials
@@ -22,4 +26,4 @@ rem *that* invoking window sent a CTRL_CLOSE/CTRL_LOGOFF signal straight
 rem down the shared console to the whole watchdog+PM process tree, killing
 rem it with STATUS_CONTROL_C_EXIT (0xC000013A) even though nothing was
 rem actually wrong with the PM itself.
-start "AI Project Manager" /MIN powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%~dp0scripts\run-ai-project-manager.ps1"
+start "AI Project Manager" /MIN powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File "%~dp0scripts\run-ai-project-manager.ps1"

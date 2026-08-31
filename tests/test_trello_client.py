@@ -558,7 +558,7 @@ def test_move_card_delegates_to_update_card_with_list_id():
 
 def test_update_card_sends_long_description_in_body_not_url_query():
     session = FakeSession()
-    long_desc = "x" * 20000
+    long_desc = "x" * 1000
     session.script(
         "PUT", "/cards/card-1",
         {"id": "card-1", "name": "Demo", "desc": long_desc, "idList": "list-1", "labels": []},
@@ -570,6 +570,16 @@ def test_update_card_sends_long_description_in_body_not_url_query():
     update_call = next(c for c in session.calls if c["method"] == "PUT")
     assert update_call["data"]["desc"] == long_desc
     assert update_call["params"] == {"key": "k", "token": "t"}
+
+
+def test_update_card_rejects_description_over_safe_limit_before_request():
+    session = FakeSession()
+    client = make_client(session)
+
+    with pytest.raises(TrelloError, match="safe limit"):
+        client.update_card("card-1", desc="x" * 14001)
+
+    assert session.calls == []
 
 
 def test_get_list_id_by_name_finds_matching_list():

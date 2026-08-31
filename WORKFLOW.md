@@ -4,6 +4,12 @@ Trello je jediný zdroj pravdy. Stav, pořadí, DoD, checkpoint, čekání na
 provider i auditní výsledek se vždy načítají z Trella a po změně se do něj
 bezprostředně zapisují.
 
+Každý zápis popisu karty musí respektovat bezpečný limit 14 000 znaků. PM smí
+zkrátit pouze diagnostickou nebo viditelnou historii s explicitní značkou;
+PM-DATA, checkpoint a DoD se nikdy nesmí slepě oříznout. Pokud se úplný
+kontrakt nevejde ani po zkrácení historie, zápis i lifecycle přechod se
+odmítnou fail-closed a do Trella se nesmí poslat poškozený popis.
+
 ## Pevné pořadí
 
 1. `Testování` — nejdříve se zpracuje karta, která čeká na nezávislý audit.
@@ -11,9 +17,12 @@ bezprostředně zapisují.
    rozhodnutí; provider-limit se po termínu vrací do původní fáze.
 3. `Pracuje se` — agent provádí implementaci a postupně plní DoD.
 4. `Připraveno` — nový úkol smí být vybrán až po vyřešení předchozího řetězce.
-5. `Hotovo` — pouze po úspěšných testech, přijetí nezávislým auditem, úplném
-   viditelném DoD a ověřené terminální finalizaci repozitáře, pokud běh změnil
-   Git checkout.
+5. `Hotovo` — pouze po úspěšných testech, přijetí nezávislým auditem a úplném
+   viditelném DoD. U výslovně schválené karty s již dokončeným live ověřením
+   může být controllerová finalizace (commit, záloha a remote) vedena jako
+   navazující krok po `Hotovo`; tato výjimka musí být zapsaná v PM-DATA jako
+   `completion_policy.mode=post_done_finalization` a nikdy nemění auditní
+   autoritu ai-orchestratoru.
 
 ## Povinné přechody
 
@@ -28,12 +37,14 @@ bezprostředně zapisují.
 - `Testování → Čeká na AI`: pouze provider-limit; návratová fáze zůstává
   `Testování`.
 
-Terminální finalizace je vlastněna controllerem, nikdy agentem: před `Hotovo`
-musí být pro dirty checkout doložen test, explicitní rozsah commitu, čistý
-pracovní strom a záloha/ověřený remote HEAD. Pokud finalizátor nebo jeho
-allowlist není k dispozici, audit kartu nepřijme a vrátí ji do `Pracuje se`;
-PM nesmí použít globální `git add -A` jako náhradní řešení. Čistý checkout bez
-změn nevyžaduje prázdný commit.
+Terminální finalizace je vlastněna controllerem, nikdy agentem. Standardně
+musí být pro dirty checkout dokončena před `Hotovo`: test, explicitní rozsah
+commitu, čistý pracovní strom a záloha/ověřený remote HEAD. U schválené
+`post_done_finalization` karty se tento krok nesmí vydávat za hotový předem a
+musí se provést bezprostředně jako navazující finalizace. Pokud finalizátor
+nebo jeho allowlist není k dispozici, běžnou kartu audit nepřijme; PM nesmí
+použít globální `git add -A` jako náhradní řešení. Čistý checkout bez změn
+nevyžaduje prázdný commit.
 
 Implementační agent nikdy sám neuzavírá kartu do `Hotovo`. Neúplné nebo
 neověřené DoD se nesmí označit jako hotové. Karta vrácená z auditu se nesmí
@@ -53,6 +64,11 @@ před výběrem nového úkolu. U úkolů ve stejné fázi rozhoduje priorita `P
 `P0`, přičemž opravná karta vrácená z auditu má přednost před běžnou kartou.
 Scheduler musí být idempotentní a při absenci bezpečně zpracovatelné práce
 nesmí volat AI.
+
+Stav `ERROR` je čekací stav, který nejdříve projde recovery passem. Známá
+providerová/protokolová chyba se smí automaticky vrátit do `Připraveno` se
+zachovaným checkpointem; neznámá nebo opakovaná chyba vyžaduje člověka.
+`ERROR` nesmí trvale zablokovat ostatní karty ani vyvolat nekonečné retry.
 
 ## Důkaz dokončení
 

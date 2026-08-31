@@ -1,6 +1,8 @@
 import pytest
 
 from ai_project_manager.card_contract import (
+    DOD_ROUTING_POLICY,
+    GOVERNANCE_POLICY,
     KNOWN_FIELDS,
     CardContractError,
     UnsupportedCardSchemaError,
@@ -159,6 +161,32 @@ def test_dod_contract_requires_no_commit_wording_for_existing_state_audit():
         "phase": "audit",
     }
     assert dod_contract_issues([explicit]) == []
+
+
+def test_post_done_finalization_policy_requires_explicit_human_approval():
+    valid = {
+        "schema_version": 1,
+        "checkpoint": {},
+        "dod": [],
+        "open_feedback": [],
+        "governance": GOVERNANCE_POLICY,
+        "dod_routing_policy": DOD_ROUTING_POLICY,
+        "completion_policy": {
+            "mode": "post_done_finalization",
+            "human_approved": True,
+            "controller_owner": "ai-orchestrator",
+        },
+    }
+    assert migrate_and_validate(valid)["completion_policy"]["mode"] == "post_done_finalization"
+
+    invalid = dict(valid)
+    invalid["completion_policy"] = {
+        "mode": "post_done_finalization",
+        "human_approved": False,
+        "controller_owner": "ai-orchestrator",
+    }
+    with pytest.raises(CardContractError, match="human_approved"):
+        migrate_and_validate(invalid)
 
 
 @pytest.mark.parametrize(

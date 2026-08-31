@@ -294,6 +294,16 @@ def migrate_and_validate(raw: dict) -> dict:
             "audit/verdict work with ai-orchestrator, and reject controller-only "
             "verification in implementation DoD"
         )
+    completion_policy = data.get("completion_policy")
+    if completion_policy is not None:
+        if not isinstance(completion_policy, dict):
+            raise CardContractError("completion_policy must be a JSON object or null")
+        if completion_policy.get("mode") not in {"post_done_finalization"}:
+            raise CardContractError("completion_policy.mode is unsupported")
+        if completion_policy.get("human_approved") is not True:
+            raise CardContractError("post_done_finalization requires explicit human_approved=true")
+        if completion_policy.get("controller_owner") != "ai-orchestrator":
+            raise CardContractError("post_done_finalization must remain controller-owned by ai-orchestrator")
     return data
 
 

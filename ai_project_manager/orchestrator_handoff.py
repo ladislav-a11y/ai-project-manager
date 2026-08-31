@@ -130,6 +130,24 @@ def _goal_text(project: ProjectRecord) -> str:
             "Výsledek předchozího ověřeného běhu zapsaný v Trellu (použij ho "
             "ke změně strategie, neopakuj beze změny stejný postup):\n" + previous
         )
+    # A narrowly scoped, explicitly human-approved post-completion policy may
+    # carry compact evidence for an already completed live verification. This
+    # is evidence for the independent audit, not a verdict and not permission
+    # for the agent to alter files or bypass the controller-owned gate.
+    completion_policy = project.extra_data.get("completion_policy")
+    if isinstance(completion_policy, dict):
+        audit_evidence = completion_policy.get("audit_evidence")
+        if isinstance(audit_evidence, list):
+            evidence_lines = [
+                str(entry).strip() for entry in audit_evidence
+                if isinstance(entry, str) and entry.strip()
+            ]
+            if evidence_lines:
+                parts.append(
+                    "Human-approved evidence of an already completed live verification "
+                    "(verify it; do not repeat the live test):\n"
+                    + "\n".join(f"- {entry}" for entry in evidence_lines[:8])
+                )
     return "\n\n".join(parts)
 
 

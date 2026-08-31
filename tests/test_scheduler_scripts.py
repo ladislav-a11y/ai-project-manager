@@ -62,6 +62,14 @@ def test_runner_preserves_configured_czech_trello_names_as_utf8() -> None:
     assert "Ĺ" not in source
 
 
+def test_runner_enables_governed_main_board_inbox_intake() -> None:
+    source = (SCRIPTS / "run-ai-project-manager.ps1").read_text(encoding="utf-8")
+
+    assert "$env:TRELLO_INBOX_LIST = 'INBOX / Nápady'" in source
+    assert "$env:AI_PM_ENABLE_INBOX = '1'" in source
+    assert "personal Inbox" in source
+
+
 def test_runner_validates_orchestrator_before_importing_credentials() -> None:
     source = (SCRIPTS / "run-ai-project-manager.ps1").read_text(encoding="utf-8")
 
@@ -161,6 +169,32 @@ def test_persistent_bat_launcher_detaches_from_the_invoking_console() -> None:
     assert 'start "AI Project Manager" /MIN powershell.exe' in source
 
 
+def test_persistent_bat_launcher_uses_relocatable_production_runner() -> None:
+    source = (PROJECT_ROOT / "start_ai_project_manager.bat").read_text(encoding="utf-8")
+
+    assert '"%~dp0scripts\\run-ai-project-manager.ps1"' in source
+    assert "D:\\orchestrator\\ai-project-manager" not in source
+    assert "-NoLogo" in source
+
+
+def test_safe_stop_launcher_delegates_to_scoped_stop_script() -> None:
+    source = (PROJECT_ROOT / "stop_ai_project_manager.bat").read_text(encoding="utf-8")
+
+    assert '"%~dp0scripts\\stop-ai-project-manager.ps1"' in source
+    assert "Stop-Process" not in source
+
+
+def test_safe_stop_script_disables_task_and_scopes_process_tree() -> None:
+    source = (SCRIPTS / "stop-ai-project-manager.ps1").read_text(encoding="utf-8")
+
+    assert "Disable-ScheduledTask -TaskName $TaskName" in source
+    assert "Stop-ScheduledTask -TaskName $TaskName" in source
+    assert "Get-CimInstance Win32_Process" in source
+    assert "run-ai-project-manager.ps1" in source
+    assert "ai_project_manager.watchdog" in source
+    assert "*-m ai_project_manager*" in source
+
+
 def test_installer_description_uses_configured_interval() -> None:
     source = (SCRIPTS / "install-scheduler.ps1").read_text(encoding="utf-8")
 
@@ -168,16 +202,20 @@ def test_installer_description_uses_configured_interval() -> None:
     assert "every 5 minutes" not in source
 
 
-def test_installer_registers_and_live_verifies_persistent_watchdog() -> None:
+def test_installer_registers_enabled_persistent_watchdog_without_starting_it() -> None:
     source = (SCRIPTS / "install-scheduler.ps1").read_text(encoding="utf-8")
 
-    action = source[source.index("$action = New-ScheduledTaskAction"):source.index("$trigger =")]
+    action = source[source.index("$action = New-ScheduledTaskAction"):source.index("$triggers =")]
     assert "-Once" not in action
     assert "-PollIntervalSeconds $pollIntervalSeconds" in action
-    assert "Get-CimInstance Win32_Process" in source
-    assert "ai_project_manager.watchdog" in source
-    assert "$task.State -ne 'Running'" in source
-    assert "Watchdog PID" in source
+    assert "New-ScheduledTaskTrigger -AtLogOn" in source
+    assert "New-ScheduledTaskTrigger -AtStartup" in source
+    assert "-MultipleInstances IgnoreNew" in source
+    assert "-ExecutionTimeLimit ([TimeSpan]::Zero)" in source
+    assert "-StartWhenAvailable" in source
+    assert "Start-ScheduledTask" not in source
+    assert "if (-not $task.Settings.Enabled)" in source
+    assert '-PythonExe `"$PythonExe`"' in source
 
 
 def test_runner_poll_interval_is_explicit_and_validated() -> None:
