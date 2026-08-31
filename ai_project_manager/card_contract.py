@@ -40,7 +40,8 @@ DOD_ROUTING_POLICY = {
     "dispatch_requirements": [
         "at least one implementation DoD item remains for Pracuje se",
         "audit-only work is routed to Testování",
-        "audit rejection is persisted as feedback and consumed by the next tick",
+        "actionable audit rejection is persisted as feedback, materialized as one implementation rework item, and consumed by the next tick",
+        "an explicitly non-rework audit gate may remain in Testování",
     ],
 }
 # The first version of the routing contract was already written to live cards.
@@ -65,6 +66,12 @@ _LEGACY_DOD_ROUTING_POLICY_V2 = deepcopy(DOD_ROUTING_POLICY)
 _LEGACY_DOD_ROUTING_POLICY_V2.pop("audit_execution")
 _LEGACY_DOD_ROUTING_POLICY_V3 = deepcopy(DOD_ROUTING_POLICY)
 _LEGACY_DOD_ROUTING_POLICY_V3.pop("test_execution_rule")
+_LEGACY_DOD_ROUTING_POLICY_V4 = deepcopy(DOD_ROUTING_POLICY)
+_LEGACY_DOD_ROUTING_POLICY_V4["dispatch_requirements"] = [
+    "at least one implementation DoD item remains for Pracuje se",
+    "audit-only work is routed to Testování",
+    "audit rejection is persisted as feedback and consumed by the next tick",
+]
 
 
 class CardContractError(ValueError):
@@ -257,6 +264,7 @@ def migrate_and_validate(raw: dict) -> dict:
         _LEGACY_DOD_ROUTING_POLICY_V1,
         _LEGACY_DOD_ROUTING_POLICY_V2,
         _LEGACY_DOD_ROUTING_POLICY_V3,
+        _LEGACY_DOD_ROUTING_POLICY_V4,
     ):
         # Upgrade only this exact prior PM-authored contract. Any other
         # conflicting value remains fail-closed below.

@@ -174,6 +174,13 @@ nespouští a nikdy nevolá `Start-ScheduledTask`; persistentní watchdog se
 spustí až triggerem po přihlášení nebo startu systému. Cesty k Pythonu a sousedním checkoutům lze
 přepsat parametry runneru nebo `AI_PM_PYTHON_EXE`.
 
+Pokud nezávislý audit vrátí konkrétní námitku, PM ji uloží jako feedback. U
+rejection pouze auditních bodů automaticky přidá jeden nový neověřený
+implementační DoD bod s námitkou jako zadáním a kartu vrátí do `Pracuje se`,
+aby další provider skutečně provedl rework. Stejný audit se nesmí opakovat
+bez změny; pouze explicitně označený nereworkový auditní gate může zůstat v
+`Testování`.
+
 Pro bezpečné zastavení použijte z kořene projektu:
 
 ```powershell

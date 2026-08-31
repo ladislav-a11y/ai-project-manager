@@ -912,16 +912,13 @@ def _audit_reject_target(project: ProjectRecord, rejected_indices: list[int]) ->
     """Route a rejected verdict according to the rejected DoD phases.
 
     This does not create a verdict. ai-orchestrator remains the sole audit
-    authority; the PM only prevents an audit-only failure from reopening an
-    already-complete implementation loop. Any implementation item keeps the
-    historical ``in_progress`` route.
+    authority. An audit rejection is actionable by default: even when the
+    rejected indices are audit-only, ``apply_audit_verdict`` materializes the
+    finding as one implementation rework item before returning the card to
+    ``Pracuje se``. A controller may explicitly return ``testing`` when the
+    rejection is a non-rework audit gate.
     """
     indices = sorted({index for index in (rejected_indices or []) if isinstance(index, int)})
-    if indices and all(
-        0 <= index < len(project.dod) and project.dod[index].phase == "audit"
-        for index in indices
-    ):
-        return "testing"
     return "in_progress"
 
 

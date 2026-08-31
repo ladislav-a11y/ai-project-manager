@@ -81,6 +81,39 @@ def test_rejected_audit_only_item_does_not_reopen_implementation():
     assert project.checkpoint["completed_dod_indices"] == [0, 1]
 
 
+def test_actionable_audit_rejection_creates_rework_item_and_returns_to_implementation():
+    project = ProjectRecord(
+        name="Demo",
+        status=ProjectStatus.TESTING,
+        dod=[
+            DoDItem(text="implementation", checked=True),
+            DoDItem(text="independent audit", checked=True, phase="audit"),
+        ],
+        checkpoint={"completed_dod_indices": [0, 1]},
+    )
+
+    apply_audit_verdict(
+        project,
+        "rejected",
+        reason="live evidence is missing",
+        evidence="the audit could not verify the current runtime response",
+        rejected_indices=[1],
+    )
+
+    assert project.status == ProjectStatus.IN_PROGRESS
+    assert project.returned_from_testing is True
+    assert project.dod[-1].phase == "implementation"
+    assert project.dod[-1].checked is False
+    assert project.dod[-1].text == (
+        "Nápravný úkol: provést konkrétní nápravnou změnu "
+        "vyplývající z poslední námitky a doložit její výsledek"
+    )
+    assert project.next_step == project.dod[-1].text
+    # The rejected audit index is removed from the resumable checkpoint; the
+    # new implementation item is intentionally absent until rework completes.
+    assert project.checkpoint["completed_dod_indices"] == [0]
+
+
 def test_rejected_audit_verdict_can_target_ready_for_a_fresh_attempt():
     project = ProjectRecord(
         name="Demo",
@@ -291,6 +324,22 @@ def test_build_orchestrator_task_does_not_repeat_identical_prepared_task_and_nex
     task = build_orchestrator_task(project)
 
     assert task.task.count("Implement the current slice") == 1
+
+
+def test_build_orchestrator_task_carries_bounded_error_recovery_context():
+    project = ProjectRecord(
+        name="Demo",
+        status=ProjectStatus.ERROR,
+        orchestrator_ready_task="Implement the current slice",
+        stop_reason="apply_patch verification failed: stale README anchor",
+    )
+
+    task = build_orchestrator_task(project)
+
+    assert "Recovery context from the previous failed implementation run" in task.task
+    assert "stale README anchor" in task.task
+    assert "do not repeat a stale patch" in task.task
+    assert "stale README anchor" not in task.definition_of_done
 
 
 def test_build_orchestrator_task_carries_no_cross_card_learning_memory():

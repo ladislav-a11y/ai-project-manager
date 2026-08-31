@@ -41,6 +41,8 @@ _VALID_REJECT_TARGETS = {
     ProjectStatus.TESTING,
 }
 
+_AUDIT_REWORK_PREFIX = "Nápravný úkol: "
+
 # Below this length an orchestrator_ready_task is considered small enough
 # to not necessarily need a full autonomous handoff; at/above it, or with
 # a checkpoint already in progress, always hand off.
@@ -146,6 +148,22 @@ def _goal_text(project: ProjectRecord) -> str:
         next_key = re.sub(r"\s+", " ", next_step).casefold()
         if next_key not in seen_components:
             add_component(f"Next step: {next_step}")
+    # An execution error is durable Trello continuity.  Pass a bounded
+    # diagnostic to the next implementation attempt so a provider can change
+    # strategy (for example, inspect the current file after a stale patch
+    # anchor) instead of repeating the same expensive failure.  This is
+    # guidance only: the error text never becomes a new DoD requirement.
+    if project.status == ProjectStatus.ERROR and project.stop_reason and project.stop_reason.strip():
+        previous_failure = project.stop_reason.strip()
+        if len(previous_failure) > 1800:
+            previous_failure = previous_failure[-1800:]
+        parts.append(
+            "Recovery context from the previous failed implementation run "
+            "(diagnostic only): inspect the current repository state and target "
+            "lines before editing; do not repeat a stale patch or assume the "
+            "previous anchor still exists. Previous failure:\n"
+            + previous_failure
+        )
     if project.last_output and project.last_output.strip():
         # This is durable continuity from Trello, not a second source of
         # truth. Keep it bounded so a long prior result cannot inflate every
@@ -443,6 +461,8 @@ def apply_audit_verdict(
     with nothing reliable to act on. The reason and evidence are recorded on
     the card's open feedback and stop reason,
     and the card returns to Pracuje se when implementation work remains;
+    an actionable rejection of an otherwise complete implementation creates
+    one explicit implementation rework item before returning to Pracuje se;
     rejected implementation items are reopened so the next implementation
     run cannot restore a false-complete checkpoint,
     Připraveno when ai-orchestrator explicitly requests a fresh attempt, or
@@ -507,8 +527,11 @@ def apply_audit_verdict(
             index for index in (rejected_indices or [])
             if isinstance(index, int) and 0 <= index < len(project.dod)
         }
+        implementation_rejected = {
+            index for index in rejected if project.dod[index].phase == "implementation"
+        }
         for index in rejected:
-            if project.dod[index].phase == "implementation":
+            if index in implementation_rejected:
                 project.dod[index].checked = False
         if rejected:
             checkpoint = dict(project.checkpoint or {})
@@ -521,6 +544,27 @@ def apply_audit_verdict(
                 if isinstance(index, int) and 0 <= index < len(project.dod)
             )
             project.checkpoint = checkpoint
+        if not implementation_rejected:
+            # An audit can reject only audit-phase items (for example because
+            # live evidence is missing) after every original implementation
+            # item is checked. Leaving that card in Testování would cause the
+            # next PM cycle to run the identical audit forever: there is no
+            # implementation item for the provider to act on. Materialize the
+            # auditor's finding as one new unchecked implementation item.
+            # Keep controller/audit wording out of the implementation DoD
+            # itself: the Card Contract must not mistake quoted feedback for
+            # an instruction that the agent should run the audit. The full
+            # finding remains available in open_feedback and next_step.
+            rework_text = (
+                f"{_AUDIT_REWORK_PREFIX}provést konkrétní nápravnou změnu "
+                "vyplývající z poslední námitky a doložit její výsledek"
+            )
+            if not any(
+                item.phase == "implementation" and item.text == rework_text
+                for item in project.dod
+            ):
+                project.dod.append(DoDItem(text=rework_text))
+            project.next_step = rework_text
         project.mark_returned_from_testing("audit_rejected")
     project.transition_to(target)
 

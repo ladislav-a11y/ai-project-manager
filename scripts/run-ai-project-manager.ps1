@@ -76,6 +76,17 @@ try {
     $env:SLACK_WEBHOOK_URL = ConvertFrom-ProtectedString $credentials.SlackWebhookUrl
     $env:AI_PM_SLACK_ENABLED = '1'
 
+    # The locally installed Codex CLI does not reliably derive the Windows
+    # home directory from the service/launcher environment.  Give it the
+    # explicit per-user home so it can load its authenticated config without
+    # hard-coding an account path or exposing credentials.
+    if (-not $env:CODEX_HOME) {
+        if (-not $env:USERPROFILE) {
+            throw 'USERPROFILE is required to configure the local Codex CLI home.'
+        }
+        $env:CODEX_HOME = Join-Path $env:USERPROFILE '.codex'
+    }
+
     $env:TRELLO_INBOX_LIST = 'INBOX / Nápady'
     # Inbox intake is enabled after the dedicated P5 governance/intake card
     # was prepared in Připraveno. The intake remains fail-closed on project
@@ -85,9 +96,10 @@ try {
     # hard-wired in ai-orchestrator to the Nous free model only.  The PM
     # provider names intentionally remain stable; ``hermes`` maps to the
     # production Hermes agent, while ``claude`` maps to claude-code.
-    $env:AI_PM_PROVIDERS = 'hermes,antigravity,claude,codex'
+    $env:AI_PM_PROVIDERS = 'hermes,gemini,antigravity,claude,codex'
     $env:AI_PM_PROVIDER_MODELS = (@{
         'hermes' = @('upstage/solar-pro4:free')
+        'gemini' = @('gemini-2.5-flash')
         'claude' = @('claude-opus-4-1', 'claude-sonnet-4')
         'antigravity' = @('gemini-2.5-pro')
         # The ChatGPT-account Codex CLI rejects the generic gpt-5.6 alias;
@@ -227,6 +239,7 @@ finally {
     $env:TRELLO_TOKEN = $null
     $env:TRELLO_BOARD_ID = $null
     $env:SLACK_WEBHOOK_URL = $null
+    $env:CODEX_HOME = $null
     $env:AI_PM_SLACK_ENABLED = $null
     $env:TRELLO_INBOX_LIST = $null
     $env:AI_PM_ENABLE_INBOX = $null

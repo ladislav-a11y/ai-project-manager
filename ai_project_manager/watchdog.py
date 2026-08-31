@@ -28,6 +28,7 @@ Responsibilities:
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import logging
 import math
@@ -71,6 +72,7 @@ class WatchdogProcessLock:
     def __init__(self, path: Path):
         self.path = path
         self._handle = None
+        self._mutex_handle = None
 
     def __enter__(self) -> "WatchdogProcessLock":
         self.path.parent.mkdir(parents=True, exist_ok=True)
@@ -82,9 +84,39 @@ class WatchdogProcessLock:
                 handle.flush()
             handle.seek(0)
             if os.name == "nt":
-                import msvcrt
+                # ``msvcrt.locking`` is not reliable for this service on the
+                # current Windows/Python combination: two independently
+                # spawned watchdogs can both acquire the same byte range.
+                # A named kernel mutex gives the scheduler a real
+                # cross-process singleton while the marker file remains for
+                # diagnostics and POSIX keeps using flock below.
+                import ctypes
+                from ctypes import wintypes
 
-                msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
+                kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+                kernel32.CreateMutexW.argtypes = [
+                    wintypes.LPVOID,
+                    wintypes.BOOL,
+                    wintypes.LPCWSTR,
+                ]
+                kernel32.CreateMutexW.restype = wintypes.HANDLE
+                kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+                kernel32.CloseHandle.restype = wintypes.BOOL
+
+                mutex_name = (
+                    "Local\\AIProjectManagerWatchdog-"
+                    + hashlib.sha256(str(self.path.resolve()).lower().encode("utf-8")).hexdigest()
+                )
+                ctypes.set_last_error(0)
+                mutex = kernel32.CreateMutexW(None, True, mutex_name)
+                if not mutex:
+                    raise ctypes.WinError(ctypes.get_last_error())
+                if ctypes.get_last_error() == 183:  # ERROR_ALREADY_EXISTS
+                    kernel32.CloseHandle(mutex)
+                    raise WatchdogAlreadyRunning(
+                        f"another AI Project Manager watchdog already owns {self.path}"
+                    )
+                self._mutex_handle = (kernel32, mutex)
             else:
                 import fcntl
 
@@ -101,12 +133,18 @@ class WatchdogProcessLock:
         if self._handle is None:
             return
         try:
-            self._handle.seek(0)
-            if os.name == "nt":
-                import msvcrt
+            if os.name == "nt" and self._mutex_handle is not None:
+                import ctypes
+                from ctypes import wintypes
 
-                msvcrt.locking(self._handle.fileno(), msvcrt.LK_UNLCK, 1)
+                kernel32, mutex = self._mutex_handle
+                kernel32.ReleaseMutex.argtypes = [wintypes.HANDLE]
+                kernel32.ReleaseMutex.restype = wintypes.BOOL
+                kernel32.ReleaseMutex(mutex)
+                kernel32.CloseHandle(mutex)
+                self._mutex_handle = None
             else:
+                self._handle.seek(0)
                 import fcntl
 
                 fcntl.flock(self._handle.fileno(), fcntl.LOCK_UN)
