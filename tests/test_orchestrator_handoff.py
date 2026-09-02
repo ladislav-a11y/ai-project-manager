@@ -638,3 +638,26 @@ def test_build_orchestrator_task_extracts_inline_trello_definition_of_done_items
         "Trello waiting stav",
         "pokracovani z checkpointu",
     ]
+
+def test_accepted_audit_verdict_closes_previous_rejection_authoritatively():
+    project = ProjectRecord(
+        name="Demo",
+        status=ProjectStatus.TESTING,
+        dod=[DoDItem(text="implementation", checked=True)],
+        checkpoint={"completed_dod_indices": [0]},
+        open_feedback=[
+            "ai-orchestrator audit rejected DoD index(es) [0]: older evidence"
+        ],
+        next_step="Doplnit auditni dukaz a znovu provest nezavisly audit.",
+    )
+
+    apply_audit_verdict(
+        project,
+        "accepted",
+        evidence="independent audit accepted; tests passed; live evidence verified",
+    )
+
+    assert project.status == ProjectStatus.DONE
+    assert project.checkpoint["finalization"]["done"] is True
+    assert "independent audit accepted" in project.last_output.casefold()
+    assert project.next_step is None

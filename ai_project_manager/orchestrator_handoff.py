@@ -497,7 +497,15 @@ def apply_audit_verdict(
         project.extra_data.pop("return_reason", None)
         project.stop_reason = None
         project.blocked_by = None
-        project.last_output = evidence.strip()
+        project.next_step = None
+
+        checkpoint = dict(project.checkpoint or {})
+        finalization = dict(checkpoint.get("finalization") or {})
+        finalization["done"] = True
+        checkpoint["finalization"] = finalization
+        project.checkpoint = checkpoint
+
+        project.last_output = f"independent audit accepted. {evidence.strip()}"
         project.transition_to(ProjectStatus.DONE)
         return
 
