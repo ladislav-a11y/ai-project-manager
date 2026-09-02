@@ -1019,14 +1019,26 @@ def _repair_terminal_test_dod_routing(project: ProjectRecord, raw: dict) -> bool
     complete, preserve that evidence but rewrite only those items as explicit
     controller-owned audit evidence.
     """
-    if project.status != ProjectStatus.DONE:
+    if project.status not in {ProjectStatus.DONE, ProjectStatus.IN_PROGRESS, ProjectStatus.TESTING}:
+        return False
+    if project.status != ProjectStatus.DONE and raw.get("lifecycle_status") != ProjectStatus.DONE.value:
         return False
     changed = False
     for item in project.dod:
-        if item.phase != "implementation":
-            continue
         issues = dod_contract_issues([item])
-        if not any("requests test execution in implementation" in issue for issue in issues):
+        text = item.text.casefold()
+        test_text = any(marker in text for marker in ("test", "pytest", "syntaxe", "suite"))
+        if item.phase == "audit":
+            if not test_text or not any("phase='audit' but does not identify" in issue for issue in issues):
+                continue
+            item.text = f"Nezávislý audit ai-orchestratoru ověří, že {item.text[0].lower() + item.text[1:]}"
+            if "nový commit není" not in item.text.casefold():
+                item.text += "; nový commit není pro tento auditní bod vyžadován."
+            changed = True
+            continue
+        if item.phase != "implementation" or not any(
+            "requests test execution in implementation" in issue for issue in issues
+        ):
             continue
         item.phase = "audit"
         if "ai-orchestrator" not in item.text.casefold():
@@ -1149,12 +1161,15 @@ def maintain_board_contract(client) -> list[str]:
                         "card=%s name=%r",
                         card.get("id"), card.get("name"),
                     )
-                if _repair_terminal_audit_rejection(project, raw):
+                audit_rejection_repaired = _repair_terminal_audit_rejection(project, raw)
+                if audit_rejection_repaired:
                     logger.warning(
                         "reopening terminal card with unresolved audit rejection "
                         "card=%s name=%r status=%s",
                         card.get("id"), card.get("name"), project.status.value,
                     )
+                if _repair_terminal_test_dod_routing(project, raw):
+                    dod_routing_repaired = True
                 # A card already in Ready with all implementation work done
                 # and an outstanding audit belongs in Testování. Normalize
                 # that state before scheduling can ever move it to Pracuje se;
