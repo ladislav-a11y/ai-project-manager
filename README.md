@@ -231,6 +231,10 @@ AI Inbox intake ukládá u každého rozděleného podúkolu také `depends_on` 
 prováděcí pořadí. Závislosti mají přednost před prioritou: vyšší priorita
 řadí jen mezi podúkoly, jejichž předpoklady jsou v `Hotovo`; cyklický nebo
 neúplný plán se do workflow nepřijme.
+Všechny podúkoly jedné zdrojové Inbox karty mají společný `source_card_id`,
+v Trellu zůstávají v jednom souvislém batchi a jejich karta viditelně ukazuje
+pořadí i přímé závislosti. Planner nesmí spojit dvě projektové identity do
+jednoho batchu.
 
 ## Ověření
 

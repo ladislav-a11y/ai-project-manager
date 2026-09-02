@@ -339,6 +339,53 @@ def _workflow_visible_name(project: ProjectRecord) -> str:
     return _priority_prefixed_name(project)
 
 
+def _inbox_batch_metadata(project: ProjectRecord) -> Optional[dict]:
+    """Return validated split-batch metadata, if this is an Inbox child."""
+    metadata = (project.extra_data or {}).get("inbox_preparation")
+    if not isinstance(metadata, dict):
+        return None
+    source_id = str(metadata.get("source_card_id") or "").strip()
+    index = metadata.get("subtask_index")
+    count = metadata.get("subtask_count")
+    if not source_id or isinstance(index, bool) or not isinstance(index, int):
+        return None
+    if isinstance(count, bool) or not isinstance(count, int) or count <= 1:
+        return None
+    if not 0 <= index < count:
+        return None
+    execution_order = metadata.get("execution_order", index)
+    if isinstance(execution_order, bool) or not isinstance(execution_order, int):
+        execution_order = index
+    dependencies = metadata.get("depends_on_subtask_indices", [])
+    if not isinstance(dependencies, list) or any(
+        isinstance(value, bool) or not isinstance(value, int) for value in dependencies
+    ):
+        dependencies = []
+    return {
+        "source_id": source_id,
+        "index": index,
+        "count": count,
+        "execution_order": execution_order,
+        "dependencies": tuple(sorted(set(dependencies))),
+    }
+
+
+def _inbox_batch_visible_notes(project: ProjectRecord) -> str:
+    """Expose batch identity and dependency order above PM-DATA."""
+    batch = _inbox_batch_metadata(project)
+    if batch is None:
+        return ""
+    dependencies = ", ".join(str(value + 1) for value in batch["dependencies"]) or "žádné"
+    return (
+        "## Inbox batch\n"
+        f"- Zdrojová Inbox karta: `{batch['source_id']}`\n"
+        f"- Podúkol: `{batch['index'] + 1}/{batch['count']}`\n"
+        f"- Pořadí po splnění návazností: `{batch['execution_order'] + 1}/{batch['count']}`\n"
+        f"- Závisí na podúkolech: `{dependencies}`\n"
+        "- Karty tohoto batchu se nesmí míchat s jiným Inbox projektem."
+    )
+
+
 def status_from_list(list_id: Optional[str], list_id_to_name: dict[str, str]) -> ProjectStatus:
     name = list_id_to_name.get(list_id)
     if name not in LIST_NAME_TO_STATUS:
@@ -887,6 +934,10 @@ def card_updates_from_project(project: ProjectRecord, list_name_to_id: dict[str,
     elif project.status in {ProjectStatus.PAUSED, ProjectStatus.BLOCKED, ProjectStatus.ERROR}:
         visible_notes = _waiting_visible_notes(project)
 
+    batch_notes = _inbox_batch_visible_notes(project)
+    if batch_notes:
+        visible_notes = f"{batch_notes}\n\n{visible_notes}" if visible_notes else batch_notes
+
     data = _bound_contract_history(data)
     desc = _bounded_description(visible_notes, data)
 
@@ -1340,13 +1391,64 @@ def sort_list_cards(client, list_id: str, id_to_name: Optional[dict[str, str]] =
         except CardContractError as exc:
             logger.error("not sorting list %r because card %s is unsafe: %s", list_name, card.get("id"), exc)
             return
+
+    batch_members: dict[str, list[tuple[dict, ProjectRecord]]] = {}
+    for card, project in parsed:
+        batch = _inbox_batch_metadata(project)
+        if batch:
+            batch_members.setdefault(batch["source_id"], []).append((card, project))
+
     if list_name in {"Hotovo", "Done"}:
-        parsed.sort(
-            key=lambda pair: pair[1].completed_at or pair[0].get("last_activity_at") or "",
-            reverse=True,
-        )
+        # Completed children must remain together too.  Order whole batches
+        # by the newest completion in the batch, then use the dependency-safe
+        # order inside that batch.
+        def done_sort_key(pair: tuple[dict, ProjectRecord]) -> tuple:
+            card, project = pair
+            batch = _inbox_batch_metadata(project)
+            completion = project.completed_at or card.get("last_activity_at") or ""
+            if batch:
+                completion = max(
+                    member_project.completed_at
+                    or member_card.get("last_activity_at")
+                    or ""
+                    for member_card, member_project in batch_members[batch["source_id"]]
+                )
+                return (
+                    completion,
+                    1,
+                    batch["source_id"],
+                    -batch["execution_order"],
+                    -batch["index"],
+                    project.name.casefold(),
+                )
+            return (completion, 0, "", 0, 0, project.name.casefold())
+
+        parsed.sort(key=done_sort_key, reverse=True)
     else:
-        parsed.sort(key=lambda pair: (-pair[1].priority, pair[1].name.casefold()))
+        # A split Inbox request is one logical batch. Sorting every card only
+        # by priority used to interleave unrelated projects (for example CW
+        # and GNU Radio) and made the dependency graph invisible on the board.
+        # Keep each batch contiguous, then show its dependency-safe execution
+        # order. Priority still orders separate batches and non-batch work.
+        def batch_sort_key(pair: tuple[dict, ProjectRecord]) -> tuple:
+            _card, project = pair
+            batch = _inbox_batch_metadata(project)
+            if batch:
+                group_priority = max(
+                    member_project.priority
+                    for _member_card, member_project in batch_members[batch["source_id"]]
+                )
+                return (
+                    -group_priority,
+                    0,
+                    batch["source_id"],
+                    batch["execution_order"],
+                    batch["index"],
+                    project.name.casefold(),
+                )
+            return (-project.priority, 1, "", 0, 0, project.name.casefold())
+
+        parsed.sort(key=batch_sort_key)
     desired_ids = [card["id"] for card, _project in parsed]
     current_ids = [card["id"] for card in cards]
     if current_ids == desired_ids:

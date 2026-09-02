@@ -151,6 +151,48 @@ def test_every_workflow_card_name_exposes_label_priority():
     assert updates["name"] == "P2.01 — wrong stale title"
 
 
+def test_split_inbox_batch_is_visible_and_kept_contiguous_in_dependency_order():
+    client = InMemoryTrelloClient(("Připraveno", "Pracuje se", "Testování", "Hotovo"))
+    batch_a = "source-a"
+    batch_b = "source-b"
+
+    def project(name, source, index, priority, execution_order, dependencies=()):
+        return ProjectRecord(
+            name=name,
+            priority=priority,
+            status=ProjectStatus.READY,
+            main_task="implementace",
+            dod=[DoDItem(text="implementace", phase="implementation")],
+            extra_data={
+                "inbox_preparation": {
+                    "source_card_id": source,
+                    "subtask_index": index,
+                    "subtask_count": 2,
+                    "execution_order": execution_order,
+                    "depends_on_subtask_indices": list(dependencies),
+                }
+            },
+        )
+
+    # Add cards in an intentionally interleaved order.  The higher-priority
+    # batch must remain a separate group, while batch-a follows its dependency
+    # safe execution order rather than its decimal priority.
+    sync_project_to_trello(client, project("A step 2", batch_a, 1, 2.01, 1, (0,)))
+    sync_project_to_trello(client, project("B step 1", batch_b, 0, 2.9, 0))
+    sync_project_to_trello(client, project("A step 1", batch_a, 0, 2.02, 0))
+
+    ready = client.list_cards(client.get_list_id_by_name("Připraveno"))
+    assert [card["name"] for card in ready] == [
+        "P2.90 — B step 1",
+        "P2.02 — A step 1",
+        "P2.01 — A step 2",
+    ]
+    visible = ready[1]["desc"].split("<!-- PM-DATA", 1)[0]
+    assert "Podúkol: `1/2`" in visible
+    assert "Pořadí po splnění návazností: `1/2`" in visible
+    assert "Závisí na podúkolech: `žádné`" in visible
+
+
 def test_explicit_priority_label_wins_over_title_prefix():
     assert priority_from_card({"name": "P5 — title", "labels": [{"name": "P2"}]}) == 2
 

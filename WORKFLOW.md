@@ -107,6 +107,15 @@ samostatná pracovní karta ani jako duplicitní receipt. Při retry se identita
 smí obnovit jen z jednoznačně shodných již zapsaných podúkolů podle zdrojového
 ID, nikdy z podobnosti názvů.
 
+Všechny podúkoly vzniklé z jedné Inbox karty tvoří jeden nedělitelný Inbox
+batch. PM u každého podúkolu zachová `source_card_id`, `subtask_index`,
+`subtask_count`, `execution_order` a `depends_on_subtask_indices`. V každém
+workflow seznamu musí být celý batch fyzicky souvislý; řazení podle priority
+nesmí proložit kartu jiného Inbox projektu. Karta navíc viditelně uvádí číslo
+podúkolu a jeho přímé návaznosti. Planner nesmí do jednoho vstupu smíchat dvě
+projektové identity; při nejasnosti musí intake skončit v Inboxu s požadavkem
+na lidské upřesnění.
+
 Inbox planner je samostatná AI-planning fáze a Hermes je v ní vždy zakázaný;
 volí pouze z povolených dostupných providerů mimo Hermes. PM planneru ani
 implementaci/auditu nepředává `--model`: konkrétní model volí provider podle
