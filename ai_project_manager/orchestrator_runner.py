@@ -1298,7 +1298,15 @@ def build_audit_run_fn(
             else None
         )
         audit_protocol_error = bool(last_iteration.get("audit_protocol_error")) if isinstance(last_iteration, dict) else False
-        evidence = payload.get("last_output") or (last_iteration.get("test_output") if isinstance(last_iteration, dict) else None) or payload.get("evidence")
+        evidence = (
+            payload.get("last_output")
+            or (last_iteration.get("test_output") if isinstance(last_iteration, dict) else None)
+            or payload.get("evidence")
+            # Autonomous audit evidence is stored in the iteration note when
+            # no implementation-agent output exists (the normal Testování
+            # path). Do not discard that concrete provider/audit readback.
+            or (last_iteration.get("note") if isinstance(last_iteration, dict) else None)
+        )
 
         # A Testování pass audits the already-finalized implementation. A
         # controller-owned commit is therefore evidence from the preceding
