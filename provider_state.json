@@ -1,0 +1,38 @@
+{
+  "hermes": {
+    "state": "AVAILABLE",
+    "retry_after": null,
+    "last_error": null,
+    "checkpoint": {},
+    "models": ["upstage/solar-pro4:free"],
+    "selected_model": "upstage/solar-pro4:free",
+    "capability_limits": {}
+  },
+  "antigravity": {
+    "state": "LIMITED",
+    "retry_after": "2026-09-06T11:00:00+00:00",
+    "last_error": "Provider reported exhausted quota; do not retry before the conservative reset deadline.",
+    "checkpoint": {},
+    "models": [],
+    "selected_model": null,
+    "capability_limits": {}
+  },
+  "claude": {
+    "state": "AVAILABLE",
+    "retry_after": null,
+    "last_error": null,
+    "checkpoint": {},
+    "models": [],
+    "selected_model": null,
+    "capability_limits": {}
+  },
+  "codex": {
+    "state": "AVAILABLE",
+    "retry_after": null,
+    "last_error": null,
+    "checkpoint": {},
+    "models": [],
+    "selected_model": null,
+    "capability_limits": {}
+  }
+}
