@@ -250,6 +250,7 @@ def _capture_live_trello_readback(client, project: ProjectRecord) -> dict:
             "governance",
             "provider_selection",
             "provider_selection_history",
+            "provider_statuses",
         )
         contract_metadata = {
             key: live_project.extra_data[key]
@@ -359,6 +360,12 @@ def _apply_run_result(project: ProjectRecord, result: dict) -> None:
         project.stop_reason = result["stop_reason"]
     if "retry_after" in result:
         project.retry_after = result["retry_after"]
+    # Keep the complete AO per-provider receipt in PM-DATA/Trello. This is
+    # not a replacement for the persistent ProviderRegistry; it is the
+    # human-auditable copy showing every provider and its retry deadline.
+    provider_statuses = result.get("provider_statuses")
+    if isinstance(provider_statuses, dict):
+        project.extra_data["provider_statuses"] = provider_statuses
     if "status" in result:
         status = result["status"]
         if status == "waiting_for_provider":
@@ -745,6 +752,8 @@ def run_once_audit(
                         "audit orchestrator result must be a mapping, got "
                         f"{type(result).__name__}"
                     )
+                if isinstance(result.get("provider_statuses"), dict):
+                    project.extra_data["provider_statuses"] = result["provider_statuses"]
                 if _audit_capability_failure(result):
                     capability_key = audit_capability_key(project)
                     actual_provider = result.get("active_provider") or provider
@@ -851,6 +860,8 @@ def run_once_audit(
             project.extra_data["provider_selection"]["actual_provider"] = actual_provider
             project.extra_data["provider_selection"]["actual_model"] = actual_model
             project.extra_data["provider_selection"]["provider_reason"] = actual_provider_reason
+            if isinstance(result.get("provider_statuses"), dict):
+                project.extra_data["provider_selection"]["provider_statuses"] = result["provider_statuses"]
             sync_project_to_trello(client, project)
             logger.info(
                 "audit result project=%r provider=%s status=%s stop_reason=%s",

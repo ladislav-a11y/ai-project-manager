@@ -1,6 +1,7 @@
 import json
 import re
 import subprocess
+from datetime import timedelta
 
 import pytest
 
@@ -880,6 +881,106 @@ def test_production_failover_temporarily_gates_failed_hermes(tmp_path):
     assert status.state == ProviderState.ERROR
     assert status.retry_after is not None
     assert "failover" in status.last_error
+
+
+def test_production_failover_excludes_limited_providers_from_next_workflow_step(tmp_path):
+    registry = ProviderRegistry()
+    registry.mark_limited("hermes", timedelta(minutes=30))
+    registry.mark_available("antigravity")
+    registry.mark_limited("claude", timedelta(minutes=30))
+    registry.mark_available("codex")
+    seen = {}
+
+    def fake_subprocess_run(command):
+        seen["command"] = command
+        write_outbox_result(
+            tmp_path / "outbox",
+            "Demo",
+            {"status": "in_progress", "provider_sequence": ["codex"]},
+            run_id="fixed-run-id",
+        )
+        return completed()
+
+    project = ProjectRecord(
+        name="Demo", status=ProjectStatus.READY,
+        orchestrator_ready_task="Implement feature X",
+    )
+    run_fn, _, _ = make_run_fn(
+        tmp_path, registry, subprocess_run=fake_subprocess_run,
+        use_provider_failover=True,
+    )
+
+    run_fn(project, "antigravity")
+
+    order = seen["command"][seen["command"].index("--provider-order") + 1]
+    assert order == "antigravity,codex"
+    assert "hermes" not in order
+    assert "claude-code" not in order
+
+
+def test_production_waiting_receipt_gates_all_limited_providers_and_preserves_retry_at(tmp_path):
+    registry = ProviderRegistry()
+    for name in ("hermes", "antigravity", "claude", "codex"):
+        registry.mark_available(name)
+
+    def fake_subprocess_run(command):
+        write_outbox_result(
+            tmp_path / "outbox",
+            "Demo",
+            {
+                "status": "waiting_for_provider",
+                "error": "all providers limited",
+                "retry_after_seconds": 30,
+                "active_provider": "codex",
+                "provider_statuses": {
+                    "hermes": {
+                        "state": "LIMITED",
+                        "retry_after_seconds": 3600,
+                        "retry_at": "2026-09-02T12:00:00+00:00",
+                        "reason": "Nous quota",
+                    },
+                    "antigravity": {
+                        "state": "LIMITED",
+                        "retry_after_seconds": 120,
+                        "retry_at": "2026-09-02T11:02:00+00:00",
+                        "reason": "RESOURCE_EXHAUSTED",
+                    },
+                    "claude-code": {
+                        "state": "LIMITED",
+                        "retry_after_seconds": 900,
+                        "retry_at": "2026-09-02T11:15:00+00:00",
+                        "reason": "session limit",
+                    },
+                    "codex": {
+                        "state": "LIMITED",
+                        "retry_after_seconds": 30,
+                        "retry_at": "2026-09-02T11:00:30+00:00",
+                        "reason": "rate limit",
+                    },
+                },
+            },
+            run_id="fixed-run-id",
+        )
+        return completed()
+
+    project = ProjectRecord(
+        name="Demo", status=ProjectStatus.READY,
+        orchestrator_ready_task="Implement feature X",
+    )
+    run_fn, _, _ = make_run_fn(
+        tmp_path, registry, subprocess_run=fake_subprocess_run,
+        use_provider_failover=True,
+    )
+
+    result = run_fn(project, "hermes")
+
+    assert result["status"] == "paused"
+    assert result["provider_statuses"]["hermes"]["state"] == "LIMITED"
+    assert registry.get_status("hermes").retry_after.isoformat() == "2026-09-02T12:00:00+00:00"
+    assert registry.get_status("antigravity").retry_after.isoformat() == "2026-09-02T11:02:00+00:00"
+    assert registry.get_status("claude").retry_after.isoformat() == "2026-09-02T11:15:00+00:00"
+    assert registry.get_status("codex").retry_after.isoformat() == "2026-09-02T11:00:30+00:00"
+    assert all(not registry.is_available(name) for name in ("hermes", "antigravity", "claude", "codex"))
 
 
 def test_run_fn_preserves_model_identity_from_orchestrator_receipt(tmp_path):

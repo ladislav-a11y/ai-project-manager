@@ -129,6 +129,15 @@ typu úkolu a skutečně použitý model se bere až z AO outboxu. Hermes má mi
 Inbox pevný Nous-only free kontrakt `upstage/solar-pro4:free`; žádný free
 provider nesmí při nedostupnosti svého povoleného free modelu tiše zvolit
 placený LLM.
+Globální stav `LIMITED` nebo `ERROR` s `retry_after` je závazný pro všechny
+workflow fáze: PM takového providera nepředá ani do dalšího AO failover řetězce
+až do termínu revalidace. Do té doby se provider pouze lokálně přeskočí;
+po termínu proběhne právě jedna dostupnostní revalidace.
+AO musí v outboxu vracet `provider_statuses` pro všechny providery v daném
+failover pořadí. Každý `LIMITED` záznam nese absolutní UTC `retry_at`; PM
+zapíše všechny tyto termíny do persistentního stavu a do PM-DATA/Trella
+readbacku. `retry_after_seconds` je pouze zpětně kompatibilní fallback,
+nikdy se nesmí použít tak, že by se ostatní limity ztratily.
 
 Opravy, potvrzené chyby, regrese a rework mají vždy závaznou nejvyšší prioritu
 (`P5`); ani explicitní nižší štítek ze zdrojového Inboxu je nesmí snížit.

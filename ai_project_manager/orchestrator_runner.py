@@ -53,7 +53,7 @@ import math
 import re
 import subprocess
 import uuid
-from datetime import timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Callable, Optional
 
@@ -110,21 +110,92 @@ DEFAULT_PROVIDER_AGENT_MAP = {"claude": "claude-code"}
 PM_FAILOVER_PROVIDER_ORDER = ("hermes", "antigravity", "claude-code", "codex")
 
 
+def _pm_provider_name(
+    agent_name: Optional[str],
+    provider_registry: ProviderRegistry,
+    provider_agent_map: Optional[dict] = None,
+) -> Optional[str]:
+    """Map an AO agent name back to the canonical PM registry identity."""
+    if not agent_name:
+        return None
+    matches = [
+        name for name in provider_registry.registered_names()
+        if map_provider_to_agent(name, provider_agent_map) == agent_name
+    ]
+    return matches[0] if matches else agent_name
+
+
+def _retry_deadline_from_receipt(
+    receipt: dict,
+    *,
+    now: datetime,
+    fallback: timedelta,
+) -> datetime:
+    """Parse an AO retry deadline and always return aware UTC time.
+
+    Absolute ``retry_at`` is preferred. Relative seconds remain supported for
+    older AO versions. Missing or malformed values fail closed to a
+    conservative local backoff, never to an immediate retry.
+    """
+    raw_retry_at = receipt.get("retry_at")
+    if isinstance(raw_retry_at, str) and raw_retry_at.strip():
+        try:
+            parsed = datetime.fromisoformat(raw_retry_at)
+            if parsed.tzinfo is None:
+                parsed = parsed.replace(tzinfo=timezone.utc)
+            return parsed.astimezone(timezone.utc)
+        except (TypeError, ValueError, OverflowError):
+            pass
+    try:
+        seconds = float(receipt.get("retry_after_seconds"))
+        if math.isfinite(seconds) and seconds >= 0:
+            return now + timedelta(seconds=seconds)
+    except (TypeError, ValueError, OverflowError):
+        pass
+    return now + fallback
+
+
 def _tick_provider_order(
     provider: str,
     provider_registry: ProviderRegistry,
     project: Optional[ProjectRecord] = None,
     provider_agent_map: Optional[dict] = None,
 ) -> list[str]:
-    """Start AO with PM's selected provider and keep explicit failover visible."""
+    """Start AO with only providers currently allowed by PM.
+
+    A provider that is LIMITED/ERROR is a global cooldown.  It must not be
+    reintroduced into the AO failover chain for a later workflow step before
+    its persisted ``retry_after`` deadline.  The PM name ``claude`` is
+    translated to AO's ``claude-code`` agent while availability remains keyed
+    by the PM registry name.
+    """
     selected_agent = map_provider_to_agent(provider, provider_agent_map)
     order = [selected_agent, *[name for name in PM_FAILOVER_PROVIDER_ORDER if name != selected_agent]]
+    order = [
+        name for name in order
+        if _agent_is_available(name, provider_registry, provider_agent_map)
+    ]
     if project is not None:
         capability_key = audit_capability_key(project)
         order = [name for name in order if not provider_registry.is_capability_limited(name, capability_key)]
-        if selected_agent not in order:
-            order.insert(0, selected_agent)
     return order
+
+
+def _agent_is_available(
+    agent_name: str,
+    provider_registry: ProviderRegistry,
+    provider_agent_map: Optional[dict] = None,
+) -> bool:
+    """Check AO agent availability using PM provider identities."""
+    mapped_names = [
+        name for name in provider_registry.registered_names()
+        if map_provider_to_agent(name, provider_agent_map) == agent_name
+    ]
+    if mapped_names:
+        # The first configured PM identity is canonical when a legacy alias
+        # and the AO agent name are both present in the registry.
+        return provider_registry.is_available(mapped_names[0])
+    return provider_registry.is_available(agent_name)
 
 
 def map_provider_to_agent(provider: str, provider_agent_map: Optional[dict] = None) -> str:
@@ -638,17 +709,43 @@ def _mark_limited_result(
     active_model: Optional[str] = None,
     provider_sequence: Optional[list] = None,
     usage: Optional[dict] = None,
+    provider_statuses: Optional[dict] = None,
+    provider_agent_map: Optional[dict] = None,
 ) -> dict:
     # On a failover wait the selected provider is not necessarily the one
     # that produced the terminal limit. Preserve AO's receipt so PM does not
     # write the original Hermes selection back as the actual provider.
-    limited_provider = active_provider or provider
-    status = provider_registry.mark_limited(
-        limited_provider,
-        retry_after=retry_after,
-        checkpoint=checkpoint if checkpoint is not None else project.checkpoint,
-        reason=reason,
-    )
+    receipt_statuses = provider_statuses if isinstance(provider_statuses, dict) else {}
+    now = datetime.now(timezone.utc)
+    limited_names: list[str] = []
+    for agent_name, receipt in receipt_statuses.items():
+        if not isinstance(agent_name, str) or not isinstance(receipt, dict):
+            continue
+        if receipt.get("state") != "LIMITED":
+            continue
+        pm_name = _pm_provider_name(agent_name, provider_registry, provider_agent_map)
+        if pm_name is None:
+            continue
+        provider_registry.mark_limited(
+            pm_name,
+            retry_after=_retry_deadline_from_receipt(
+                receipt, now=now, fallback=_DEFAULT_LIMIT_BACKOFF
+            ),
+            checkpoint=checkpoint if checkpoint is not None else project.checkpoint,
+            reason=str(receipt.get("reason") or reason),
+        )
+        limited_names.append(pm_name)
+
+    limited_provider = _pm_provider_name(active_provider, provider_registry, provider_agent_map) or provider
+    if limited_provider not in limited_names:
+        # Backward-compatible path for AO receipts without the new snapshot.
+        provider_registry.mark_limited(
+            limited_provider,
+            retry_after=retry_after,
+            checkpoint=checkpoint if checkpoint is not None else project.checkpoint,
+            reason=reason,
+        )
+    status = provider_registry.get_status(limited_provider)
     # For an implementation run, a provider/session limit is a recoverable
     # workflow wait: persist the checkpoint and retry time in PAUSED so Trello
     # visibly moves to "Čeká na AI". The audit caller deliberately ignores
@@ -668,6 +765,8 @@ def _mark_limited_result(
         result["provider_sequence"] = provider_sequence
     if isinstance(usage, dict):
         result["usage"] = usage
+    if receipt_statuses:
+        result["provider_statuses"] = receipt_statuses
     return result
 
 
@@ -974,7 +1073,7 @@ def build_run_fn(
         if use_provider_failover:
             full_command += [
                 "--provider-order",
-                ",".join(_tick_provider_order(provider, provider_registry, provider_agent_map=provider_agent_map)),
+                ",".join(_tick_provider_order(provider, provider_registry, project, provider_agent_map)),
             ]
         full_command += [
             "--run-id", run_id,
@@ -1046,6 +1145,8 @@ def build_run_fn(
                 active_model=payload.get("active_model") or payload.get("model"),
                 provider_sequence=payload.get("provider_sequence"),
                 usage=payload.get("usage"),
+                provider_statuses=payload.get("provider_statuses"),
+                provider_agent_map=provider_agent_map,
             )
 
         result: dict = {}
@@ -1060,6 +1161,7 @@ def build_run_fn(
             "model",
             "provider_sequence",
             "usage",
+            "provider_statuses",
         ):
             if key in payload:
                 result[key] = payload[key]
@@ -1283,6 +1385,8 @@ def build_audit_run_fn(
                 active_model=payload.get("active_model") or payload.get("model"),
                 provider_sequence=payload.get("provider_sequence"),
                 usage=payload.get("usage"),
+                provider_statuses=payload.get("provider_statuses"),
+                provider_agent_map=provider_agent_map,
             )
 
         # ``orchestrator.py autonomous`` has no external verdict field. Its

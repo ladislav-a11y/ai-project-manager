@@ -161,6 +161,19 @@ def provider_route_detail(
     )
     detail += f" | model path: {model_path}"
 
+    provider_statuses = result.get("provider_statuses")
+    if isinstance(provider_statuses, dict):
+        status_path = []
+        for name, status in provider_statuses.items():
+            if not isinstance(name, str) or not isinstance(status, dict):
+                continue
+            state = status.get("state") or "UNKNOWN"
+            retry_at = status.get("retry_at")
+            suffix = f" do {retry_at}" if isinstance(retry_at, str) and retry_at else ""
+            status_path.append(f"{name}={state}{suffix}")
+        if status_path:
+            detail += " | provider status: " + "; ".join(status_path)
+
     if selected_model:
         model_text = str(selected_model).strip()
         if model_text:
