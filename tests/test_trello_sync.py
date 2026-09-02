@@ -544,6 +544,37 @@ def test_maintenance_reopens_terminal_card_with_explicit_audit_rejection():
     assert raw["checkpoint"]["completed_dod_indices"] == []
 
 
+def test_maintenance_preserves_terminal_card_with_later_finalization_evidence():
+    client = InMemoryTrelloClient()
+    project = ProjectRecord(
+        name="P5 — historical finalization with old rejection",
+        priority=5,
+        status=ProjectStatus.DONE,
+        completed_at="2026-09-01T20:00:00+00:00",
+        checkpoint={
+            "completed_dod_indices": [0],
+            "finalization": {"done": True},
+        },
+        open_feedback=[
+            "ai-orchestrator audit rejected DoD index(es) [0]: older evidence"
+        ],
+        last_output=(
+            "Controller finalization verified: commit abc; clean working tree; "
+            "tests passed; push passed; remote HEAD abc."
+        ),
+        dod=[DoDItem(text="implementation", checked=True)],
+    )
+    card = sync_project_to_trello(client, project)
+
+    assert maintain_board_contract(client) == []
+
+    preserved = client.get_card(card["id"])
+    raw = _parse_data_block(preserved["desc"])
+    assert preserved["list_id"] == client.get_list_id_by_name("Done")
+    assert raw["lifecycle_status"] == "done"
+    assert raw["dod"][0]["checked"] is True
+
+
 def test_maintenance_migrates_identity_governance_and_order_idempotently():
     client = InMemoryTrelloClient()
     ready = client.get_list_id_by_name("Ready")

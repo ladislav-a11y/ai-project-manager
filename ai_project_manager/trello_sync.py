@@ -946,6 +946,27 @@ _AUDIT_REJECTION_MARKERS = (
 _AUDIT_REJECTED_INDICES_RE = re.compile(
     r"DoD index(?:es|\(es\))?\s*\[([^\]]*)\]", re.IGNORECASE
 )
+_TERMINAL_ACCEPTANCE_MARKERS = (
+    "controller finalization verified:",
+    "independent audit accepted",
+    "audit accepted",
+)
+
+
+def _has_newer_terminal_acceptance(project: ProjectRecord, raw: dict) -> bool:
+    """Keep terminal cards whose later output explicitly proves completion.
+
+    ``open_feedback`` is retained as historical audit evidence.  It can still
+    contain an older rejection after a later controller finalization accepted
+    the same card, so its presence alone is not an unresolved rejection.
+    """
+    last_output = str(raw.get("last_output") or "").casefold()
+    if any(marker in last_output for marker in _AUDIT_REJECTION_MARKERS):
+        return False
+    if not any(marker in last_output for marker in _TERMINAL_ACCEPTANCE_MARKERS):
+        return False
+    finalization = (project.checkpoint or {}).get("finalization")
+    return isinstance(finalization, dict) and finalization.get("done") is True
 
 
 def _repair_terminal_audit_rejection(project: ProjectRecord, raw: dict) -> bool:
@@ -967,6 +988,8 @@ def _repair_terminal_audit_rejection(project: ProjectRecord, raw: dict) -> bool:
         return False
     combined = "\n".join(entries).casefold()
     if not any(marker in combined for marker in _AUDIT_REJECTION_MARKERS):
+        return False
+    if _has_newer_terminal_acceptance(project, raw):
         return False
 
     rejected_indices: list[int] = []
