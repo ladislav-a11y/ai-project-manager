@@ -632,15 +632,14 @@ def run_tick(
     nothing schedulable.
 
     A project sitting in Testování is never eligible for the normal
-    implementation dispatch below (see scheduler.NOT_SCHEDULABLE_STATUSES)
-    - when ``audit_run_fn`` is configured, this tick tries the audit-only
-    path first (``runner.run_once_audit``) so a card already awaiting an
-    ai-orchestrator verdict is not starved by unrelated implementation
-    priority; only when no audit work is currently pending does this tick
-    fall through to the normal ``run_once`` dispatch. Without
-    ``audit_run_fn`` (e.g. an embedder that has not wired up the audit
-    path yet) a Testování card simply stays put - never falling back into
-    ordinary implementation dispatch either way.
+    implementation dispatch below (see scheduler.NOT_SCHEDULABLE_STATUSES).
+    Each tick first resumes due ``Čeká na AI`` provider waits and gives a
+    resumed implementation card the first dispatch opportunity. Only when
+    no implementation wait was resumed does it drain one ``Testování``
+    audit-only card; normal ``Pracuje se`` dispatch follows only when the
+    audit gate is empty. Without ``audit_run_fn`` (e.g. an embedder that has
+    not wired up the audit path yet) a Testování card simply stays put - never
+    falling back into ordinary implementation dispatch either way.
     """
     # Provider availability may change before a later Trello operation
     # fails (most importantly, run_fn can mark a provider LIMITED and the
@@ -729,7 +728,29 @@ def run_tick(
         ]
 
         outcome = None
-        if audit_run_fn is not None:
+        resumed_implementation_projects = [
+            project
+            for project in dispatch_projects
+            if project.name in resumed_provider_waits
+            and project.status in {ProjectStatus.READY, ProjectStatus.IN_PROGRESS}
+        ]
+        if resumed_implementation_projects:
+            # A provider-limit wait is the first workflow phase. Once its
+            # retry deadline/failover is satisfied, resume that checkpoint
+            # before spending this tick on unrelated audit work.
+            outcome = run_once(
+                client,
+                resumed_implementation_projects,
+                provider_registry,
+                run_fn,
+                lock_manager=lock_manager,
+                guard=guard,
+                holder=holder,
+                providers_for_project=providers_for_project,
+                default_providers=default_providers,
+            )
+
+        if (outcome is None or not outcome.ran) and audit_run_fn is not None:
             # A provider wait is a state transition, not permission to spend
             # another AI call in the same tick. This guarantees the operator
             # can observe the requeued audit card before its next attempt.

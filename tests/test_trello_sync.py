@@ -544,6 +544,34 @@ def test_maintenance_reopens_terminal_card_with_explicit_audit_rejection():
     assert raw["checkpoint"]["completed_dod_indices"] == []
 
 
+def test_maintenance_reopens_terminal_card_with_structured_reject_feedback():
+    client = InMemoryTrelloClient()
+    project = ProjectRecord(
+        name="P5 — legacy structured audit rejection",
+        priority=5,
+        status=ProjectStatus.DONE,
+        completed_at="2026-09-01T20:00:00+00:00",
+        checkpoint={"completed_dod_indices": [0]},
+        open_feedback=[
+            "0:REJECT Live audit evidence is missing; card must return to Pracuje se."
+        ],
+        dod=[
+            DoDItem(text="implementovat opravu", checked=True),
+            DoDItem(text="nezávislý audit accepted / rejected", phase="audit", checked=True),
+        ],
+    )
+    card = sync_project_to_trello(client, project)
+
+    assert maintain_board_contract(client) == []
+
+    repaired = client.get_card(card["id"])
+    raw = _parse_data_block(repaired["desc"])
+    assert repaired["list_id"] == client.get_list_id_by_name("In Progress")
+    assert raw["lifecycle_status"] == "in_progress"
+    assert raw["dod"][0]["checked"] is False
+    assert raw["checkpoint"]["completed_dod_indices"] == []
+
+
 def test_maintenance_preserves_terminal_card_with_later_finalization_evidence():
     client = InMemoryTrelloClient()
     project = ProjectRecord(

@@ -957,6 +957,16 @@ _AUDIT_REJECTION_MARKERS = (
 _AUDIT_REJECTED_INDICES_RE = re.compile(
     r"DoD index(?:es|\(es\))?\s*\[([^\]]*)\]", re.IGNORECASE
 )
+_STRUCTURED_AUDIT_REJECTION_RE = re.compile(
+    r"(?:^|[;\n])\s*\d+\s*:\s*REJECT\b", re.IGNORECASE
+)
+_IMPLEMENTATION_REWORK_MARKERS = (
+    "card must return to pracuje se",
+    "return to in_progress",
+    "returned to in_progress",
+    "implementation rework",
+    "rework required",
+)
 _TERMINAL_ACCEPTANCE_MARKERS = (
     "independent audit accepted",
     "audit accepted",
@@ -1067,7 +1077,12 @@ def _repair_terminal_audit_rejection(project: ProjectRecord, raw: dict) -> bool:
     if not entries:
         return False
     combined = "\n".join(entries).casefold()
-    if not any(marker in combined for marker in _AUDIT_REJECTION_MARKERS):
+    explicit_rejection = (
+        any(marker in combined for marker in _AUDIT_REJECTION_MARKERS)
+        or raw.get("return_reason") == "audit_rejected"
+        or bool(_STRUCTURED_AUDIT_REJECTION_RE.search("\n".join(entries)))
+    )
+    if not explicit_rejection:
         return False
     if _has_newer_terminal_acceptance(project, raw):
         return False
@@ -1086,6 +1101,13 @@ def _repair_terminal_audit_rejection(project: ProjectRecord, raw: dict) -> bool:
         index for index in valid_indices
         if project.dod[index].phase == "implementation"
     ]
+    if not implementation_rejected and any(
+        marker in combined for marker in _IMPLEMENTATION_REWORK_MARKERS
+    ):
+        implementation_rejected = [
+            index for index, item in enumerate(project.dod)
+            if item.phase == "implementation"
+        ]
     if implementation_rejected:
         for index in implementation_rejected:
             project.dod[index].checked = False

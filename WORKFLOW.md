@@ -12,9 +12,15 @@ odmítnou fail-closed a do Trella se nesmí poslat poškozený popis.
 
 ## Pevné pořadí
 
-1. `Testování` — nejdříve se zpracuje karta, která čeká na nezávislý audit.
-2. `Čeká na AI` — karta čeká pouze na obnovení provideru nebo na lidské
-   rozhodnutí; provider-limit se po termínu vrací do původní fáze.
+Každý tick načte a podle nastavení provede Inbox intake; intake je samostatná
+fáze a nesmí obejít čekání, audit ani aktivní práci. Pořadí dispatch části je:
+
+1. `Čeká na AI` — nejdříve se zkontrolují provider-limitní čekání. Po termínu
+   nebo při dostupném failoveru se karta okamžitě vrátí do své návratové fáze a
+   obnovená implementace dostane první příležitost k práci z checkpointu.
+2. `Testování` — dokud existuje karta čekající na audit, zpracuje se audit-only
+   přes ai-orchestrator; audit je vždy nezávislý a používá AI. Při potřebě
+   dopracování se karta vrací do `Pracuje se` s konkrétním feedbackem.
 3. `Pracuje se` — agent provádí implementaci a postupně plní DoD.
 4. `Připraveno` — nový úkol smí být vybrán až po vyřešení předchozího řetězce.
 5. `Hotovo` — pouze po úspěšných testech, přijetí nezávislým auditem a úplném
@@ -27,6 +33,9 @@ odmítnou fail-closed a do Trella se nesmí poslat poškozený popis.
 ## Povinné přechody
 
 - `Připraveno → Pracuje se`: právě jeden aktivní implementační úkol.
+- Nový úkol z `Připraveno` nezačne, dokud je v `Pracuje se`, `Čeká na AI` nebo
+  `Testování` jiný úkol; čekající karta se nejprve obnoví a auditní fronta se
+  zpracuje před novou implementací.
 - `Pracuje se → Testování`: všechna implementační DoD jsou ověřena; tento
   přechod se zapíše ještě před spuštěním testů a auditu.
 - `Pracuje se → Čeká na AI`: provider-limit; checkpoint a návratová fáze se

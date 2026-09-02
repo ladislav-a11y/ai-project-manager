@@ -154,6 +154,18 @@ def test_paused_workflow_blocks_new_ready_work_until_it_resumes():
     assert decision is None
 
 
+def test_testing_workflow_blocks_new_ready_work_until_audit_finishes():
+    projects = [
+        ProjectRecord(name="Awaiting independent audit", priority=1, status=ProjectStatus.TESTING),
+        ProjectRecord(name="Fresh ready", priority=5, status=ProjectStatus.READY),
+    ]
+    registry = make_registry(claude="AVAILABLE")
+
+    decision = pick_next_project(projects, registry, default_providers=["claude"])
+
+    assert decision is None
+
+
 def test_returned_rework_may_repair_human_hold_but_not_open_ready_work():
     projects = [
         ProjectRecord(

@@ -83,6 +83,51 @@ def test_run_tick_does_no_ai_call_when_only_provider_is_limited():
     assert calls == []
 
 
+def test_run_tick_resumes_due_implementation_wait_before_testing():
+    clock = FakeClock(datetime(2026, 1, 1, tzinfo=timezone.utc))
+    waiting = ProjectRecord(
+        name="Resumed implementation",
+        priority=3,
+        status=ProjectStatus.PAUSED,
+        checkpoint={"step": 5},
+        provider="claude",
+        stop_reason="provider session limit hit",
+        retry_after=(clock.now - timedelta(minutes=1)).isoformat(),
+        dod=[DoDItem(text="implementation", checked=False)],
+    )
+    testing = ProjectRecord(
+        name="Pending audit",
+        priority=5,
+        status=ProjectStatus.TESTING,
+        dod=[DoDItem(text="implementation", checked=True)],
+    )
+    client = InMemoryTrelloClient()
+    sync_project_to_trello(client, waiting)
+    sync_project_to_trello(client, testing)
+    registry = ProviderRegistry(clock=clock)
+    registry.mark_available("claude")
+    calls = []
+
+    def run_fn(project, provider):
+        calls.append(("implementation", project.name, provider))
+        return {"status": "in_progress"}
+
+    def audit_run_fn(project, provider):
+        calls.append(("audit", project.name, provider))
+        return {"verdict": "accepted", "evidence": "audit passed"}
+
+    outcome = run_tick(
+        client,
+        registry,
+        run_fn,
+        audit_run_fn=audit_run_fn,
+        default_providers=["claude"],
+    )
+
+    assert outcome.ran is True
+    assert calls == [("implementation", "Resumed implementation", "claude")]
+
+
 def test_run_tick_promotes_completed_implementation_before_audit():
     project = ProjectRecord(
         name="Completed implementation",

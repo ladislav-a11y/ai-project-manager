@@ -3,8 +3,9 @@
 Autonomní řídicí vrstva nad Trello boardem a `ai-orchestrator`. Trello je
 zdroj pravdy pro projekty i jediný ruční vstup (`Inbox`). Jeden scheduler tick
 načte Inbox a projekty, připraví nové Inbox požadavky do `Připraveno` s prioritou
-v názvu a teprve potom vybere nejvýše prioritní neblokovanou práci, předá ji
-orchestrátoru a výsledek zapíše zpět do Trella.
+v názvu; při každém ticku nejdříve obnoví `Čeká na AI`, potom zpracuje auditní
+`Testování` a teprve po vyprázdnění těchto fází vybere práci v `Pracuje se` nebo
+`Připraveno`. Výsledek zapíše zpět do Trella.
 
 Pokud není práce nebo je provider dočasně omezený, tick nevolá AI. Stav
 providerů, `retry_after` a checkpointy se ukládají atomicky a po restartu se
