@@ -21,6 +21,7 @@ from .daemon import run_loop, run_maintenance_only
 from .orchestrator_runner import build_audit_run_fn, build_inbox_planner_fn, build_run_fn
 from .providers import ProviderRegistry
 from .provider_state import load_provider_state
+from .scheduler import AUTO_PROVIDER_ORDER
 from .self_update import RESTART_REQUIRED_EXIT_CODE
 from .slack_notify import notify, status_message
 from .trello_client import RealTrelloClient
@@ -127,7 +128,19 @@ def main(
         return 1 if issues else 0
 
     provider_registry = ProviderRegistry()
+    registry_names = []
     for name in config.providers:
+        if name.casefold() == "auto":
+            # ``auto`` is only a routing alias. Register the concrete PM
+            # identities so a restart cannot lose provider availability or
+            # retry state after a tick that used the alias.
+            names = [candidate for candidate in AUTO_PROVIDER_ORDER if candidate != "claude-code"]
+        else:
+            names = [name]
+        for candidate in names:
+            if candidate not in registry_names:
+                registry_names.append(candidate)
+    for name in registry_names:
         provider_registry.mark_available(name)
         provider_registry.configure_models(name, config.provider_models.get(name, []))
 

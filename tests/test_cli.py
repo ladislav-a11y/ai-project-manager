@@ -112,6 +112,24 @@ def test_main_once_runs_a_full_tick_through_the_real_entrypoint_wiring(monkeypat
     assert reloaded.provider == "claude"
 
 
+def test_main_auto_provider_alias_selects_hermes_without_persisting_literal_auto(monkeypatch):
+    _set_trello_env(monkeypatch)
+    monkeypatch.setenv("AI_PM_PROVIDERS", "auto")
+
+    project = ProjectRecord(name="Demo", priority=3, status=ProjectStatus.READY)
+    client = InMemoryTrelloClient()
+    created = sync_project_to_trello(client, project)
+    project.trello_card_id = created["id"]
+    calls = []
+
+    def fake_run_fn(project, provider):
+        calls.append((project.name, provider))
+        return {"status": "in_progress"}
+
+    assert main(["--once"], client=client, run_fn=fake_run_fn) == 0
+    assert calls == [("Demo", "hermes")]
+
+
 def test_main_maintain_only_migrates_and_notifies_without_ever_dispatching(monkeypatch):
     """DoD: a live migration/cleanup pass must go through the real
     ``main()`` entrypoint wiring, verifiably touch Trello (schema/identity
