@@ -575,6 +575,64 @@ def test_maintenance_preserves_terminal_card_with_later_finalization_evidence():
     assert raw["dod"][0]["checked"] is True
 
 
+def test_maintenance_repairs_terminal_test_dod_routing_without_reopening_card():
+    client = InMemoryTrelloClient()
+    project = ProjectRecord(
+        name="P5 — completed card with legacy test routing",
+        priority=5,
+        status=ProjectStatus.DONE,
+        completed_at="2026-09-01T20:00:00+00:00",
+        checkpoint={
+            "completed_dod_indices": [0, 1],
+            "finalization": {"done": True},
+        },
+        open_feedback=[
+            "ai-orchestrator audit rejected DoD index(es) [0]: older evidence"
+        ],
+        last_output="Controller finalization verified: commit abc; clean working tree.",
+        dod=[
+            DoDItem(text="syntaxe a cílené testy projdou", checked=True),
+            DoDItem(text="kompletní test suite projde", checked=True),
+        ],
+    )
+    card = sync_project_to_trello(client, project)
+
+    assert maintain_board_contract(client) == []
+
+    repaired = client.get_card(card["id"])
+    raw = _parse_data_block(repaired["desc"])
+    assert repaired["list_id"] == client.get_list_id_by_name("Done")
+    assert raw["lifecycle_status"] == "done"
+    assert [item["phase"] for item in raw["dod"]] == ["audit", "audit"]
+    assert all("ai-orchestrator" in item["text"] for item in raw["dod"])
+    assert all("nový commit není" in item["text"] for item in raw["dod"])
+
+
+def test_maintenance_reopens_terminal_card_with_incomplete_implementation_dod():
+    client = InMemoryTrelloClient()
+    project = ProjectRecord(
+        name="P5 — terminal card with unfinished implementation",
+        priority=5,
+        status=ProjectStatus.DONE,
+        completed_at="2026-09-01T20:00:00+00:00",
+        checkpoint={"completed_dod_indices": [1], "finalization": {"done": True}},
+        last_output="Controller finalization verified: commit abc; clean working tree.",
+        dod=[
+            DoDItem(text="implementovat opravu", checked=False),
+            DoDItem(text="nezávislý audit accepted / rejected", phase="audit", checked=True),
+        ],
+    )
+    card = sync_project_to_trello(client, project)
+
+    assert maintain_board_contract(client) == []
+
+    repaired = client.get_card(card["id"])
+    raw = _parse_data_block(repaired["desc"])
+    assert repaired["list_id"] == client.get_list_id_by_name("In Progress")
+    assert raw["lifecycle_status"] == "in_progress"
+    assert raw["next_step"].startswith("Dokončit nesplněné implementační body")
+
+
 def test_maintenance_migrates_identity_governance_and_order_idempotently():
     client = InMemoryTrelloClient()
     ready = client.get_list_id_by_name("Ready")
@@ -1013,7 +1071,7 @@ def test_done_card_visible_dod_reflects_each_items_actual_checked_state():
     assert "- [x] c" in visible
 
 
-def test_done_card_with_unverified_dod_is_returned_to_testing():
+def test_done_card_with_unverified_implementation_dod_is_returned_to_work():
     client = InMemoryTrelloClient()
     project = ProjectRecord(
         name="Demo",
@@ -1026,7 +1084,8 @@ def test_done_card_with_unverified_dod_is_returned_to_testing():
     id_to_name, _ = build_list_maps(client)
     reloaded = project_from_card(client.get_card(created["id"]), id_to_name)
 
-    assert reloaded.status == ProjectStatus.TESTING
+    assert reloaded.status == ProjectStatus.IN_PROGRESS
+    assert reloaded.next_step.startswith("Dokončit nesplněné implementační body")
     assert reloaded.completed_at is None
     assert [item.checked for item in reloaded.dod] == [True, False]
 

@@ -752,11 +752,22 @@ def project_from_card(card: dict, list_id_to_name: dict[str, str]) -> ProjectRec
         apply_dod_progress(ProjectRecord(name=card.get("name", ""), dod=dod), checkpoint)
         data["checkpoint"] = checkpoint
 
-    # A card in Hotovo with an incomplete DoD is corrupt workflow state. Send
-    # it to Testování for an explicit ai-orchestrator accepted/rejected audit;
-    # never expose it as done.
+    # A card in Hotovo with an incomplete DoD is corrupt workflow state. Keep
+    # unfinished implementation work in Pracuje se; audit-only incompletion
+    # belongs in Testování. Never expose either state as done.
     if status == ProjectStatus.DONE and dod and not all(item.checked for item in dod):
-        status = ProjectStatus.TESTING
+        incomplete_implementation = any(
+            item.phase == "implementation" and not item.checked for item in dod
+        )
+        status = ProjectStatus.IN_PROGRESS if incomplete_implementation else ProjectStatus.TESTING
+        if incomplete_implementation:
+            data["stop_reason"] = "terminal card had incomplete implementation DoD; rework required"
+            data["next_step"] = (
+                "Dokončit nesplněné implementační body a následně kartu znovu předat do Testování."
+            )
+        else:
+            data["stop_reason"] = "terminal card had incomplete audit DoD; awaiting ai-orchestrator audit"
+            data["next_step"] = "Doplnit auditní důkaz a znovu provést nezávislý audit."
 
     # Preserve the meaning of the PM-generated safety return across a
     # restart.  This is deliberately exact: free-form human stop reasons
@@ -966,7 +977,65 @@ def _has_newer_terminal_acceptance(project: ProjectRecord, raw: dict) -> bool:
     if not any(marker in last_output for marker in _TERMINAL_ACCEPTANCE_MARKERS):
         return False
     finalization = (project.checkpoint or {}).get("finalization")
-    return isinstance(finalization, dict) and finalization.get("done") is True
+    return (
+        isinstance(finalization, dict)
+        and finalization.get("done") is True
+        and bool(project.dod)
+        and all(item.checked for item in project.dod)
+    )
+
+
+def _repair_terminal_incomplete_dod(project: ProjectRecord) -> bool:
+    """Reopen a falsely terminal card when any DoD item is still open."""
+    if project.status != ProjectStatus.DONE:
+        return False
+    incomplete_implementation = [
+        item for item in project.dod
+        if item.phase == "implementation" and not item.checked
+    ]
+    incomplete_audit = [
+        item for item in project.dod
+        if item.phase == "audit" and not item.checked
+    ]
+    if incomplete_implementation:
+        project.stop_reason = "terminal card had incomplete implementation DoD; rework required"
+        project.next_step = (
+            "Dokončit nesplněné implementační body a následně kartu znovu předat do Testování."
+        )
+        project.transition_to(ProjectStatus.IN_PROGRESS)
+        return True
+    if incomplete_audit:
+        project.stop_reason = "terminal card had incomplete audit DoD; awaiting ai-orchestrator audit"
+        project.next_step = "Doplnit auditní důkaz a znovu provést nezávislý audit."
+        project.transition_to(ProjectStatus.TESTING)
+        return True
+    return False
+
+
+def _repair_terminal_test_dod_routing(project: ProjectRecord, raw: dict) -> bool:
+    """Migrate completed cards whose test execution was misclassified.
+
+    Historical cards may have completed implementation items that ask the
+    agent to run tests.  When a later controller finalization proves the card
+    complete, preserve that evidence but rewrite only those items as explicit
+    controller-owned audit evidence.
+    """
+    if project.status != ProjectStatus.DONE or not _has_newer_terminal_acceptance(project, raw):
+        return False
+    changed = False
+    for item in project.dod:
+        if item.phase != "implementation":
+            continue
+        issues = dod_contract_issues([item])
+        if not any("requests test execution in implementation" in issue for issue in issues):
+            continue
+        item.phase = "audit"
+        if "ai-orchestrator" not in item.text.casefold():
+            item.text = f"ai-orchestrator ověří, že {item.text[0].lower() + item.text[1:]}"
+        if "nový commit není" not in item.text.casefold():
+            item.text += "; nový commit není pro tento auditní bod vyžadován."
+        changed = True
+    return changed
 
 
 def _repair_terminal_audit_rejection(project: ProjectRecord, raw: dict) -> bool:
@@ -1068,6 +1137,19 @@ def maintain_board_contract(client) -> list[str]:
                         "repairing incomplete Card Contract for card %s (%r): %s",
                         card.get("id"), card.get("name"), ", ".join(repaired_fields),
                     )
+                incomplete_dod_repaired = _repair_terminal_incomplete_dod(project)
+                if incomplete_dod_repaired:
+                    logger.warning(
+                        "reopening terminal card with incomplete DoD card=%s name=%r",
+                        card.get("id"), card.get("name"),
+                    )
+                dod_routing_repaired = _repair_terminal_test_dod_routing(project, raw)
+                if dod_routing_repaired:
+                    logger.warning(
+                        "migrating terminal card test DoD to audit routing "
+                        "card=%s name=%r",
+                        card.get("id"), card.get("name"),
+                    )
                 if _repair_terminal_audit_rejection(project, raw):
                     logger.warning(
                         "reopening terminal card with unresolved audit rejection "
@@ -1152,7 +1234,7 @@ def maintain_board_contract(client) -> list[str]:
                 # must not rewrite its Trello description. Only a concrete
                 # lifecycle repair (for example missing completion evidence)
                 # makes a terminal write necessary.
-                needs_write = workflow_needs_write or (
+                needs_write = workflow_needs_write or incomplete_dod_repaired or dod_routing_repaired or (
                     project.status != ProjectStatus.DONE and migration_needs_write
                 )
                 if needs_write:
