@@ -90,10 +90,16 @@ Intake musí před implementačním dispatch oddělit přípravu od práce: kaž
 nová karta se nejprve zařadí do `Připraveno`, případně rozdělí na samostatné
 úkoly, dostane prioritu `P5` až `P0` a každý název workflow karty mimo Inbox ji
 musí viditelně obsahovat jako `P<n> — název`. Až další tick smí takovou kartu přesunout do
-`Pracuje se`. Při přípravě se používá pouze uživatelský text a název Inbox
-karty; strojový blok `PM-DATA` se nesmí považovat za nové zadání. Chybějící,
-nejasná nebo víceznačná identita existujícího projektu je fail-closed a karta
-zůstává v Inboxu s konkrétním požadavkem na člověka. U skutečně nového nápadu
+`Pracuje se`. Inbox intake přijme nejvýše jeden zdrojový projekt za tick;
+vybere nejvyšší připravenou prioritu a při shodě použije stabilní ID karty.
+Při přípravě se používá pouze uživatelský text a název Inbox
+karty; strojový blok `PM-DATA` se nesmí považovat za nové zadání. Známý
+projekt se nejdříve určí z explicitního mapování/štítku, případně z jediné
+projektové identity v titulku; titulek má přednost před pouhou zmínkou jiného
+projektu v popisu (např. původcem chyby). Jediná identita pouze v popisu je
+přípustná jen při jednoznačné shodě. Chybějící, nejasná nebo víceznačná
+identita existujícího projektu je fail-closed a karta zůstává v Inboxu s
+konkrétním požadavkem na člověka. U skutečně nového nápadu
 bez neprioritního štítku PM vytvoří stabilní izolovanou identitu ve tvaru
 `<název> [Inbox <zdrojové ID>]`, založí její adresář pod explicitně
 konfigurovaným `AI_PM_PROJECTS_ROOT` a připraví kartu stejně jako ostatní

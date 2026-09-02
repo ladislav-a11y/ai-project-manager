@@ -83,18 +83,22 @@ def test_preparation_splits_station_agent_card_and_assigns_each_scope_priority()
     assert dod_contract_issues(prepared.dod) == []
 
 
-def test_unidentified_station_agent_repair_requires_explicit_project_identity():
+def test_ambiguous_repair_requires_explicit_project_identity():
     card = {
         "id": "station-live-source",
-        "name": "oprava station agent",
+        "name": "oprava kritické aplikace",
         "desc": (
-            "dx cluster nefunguje na SSB stanice, před úpravou už běžel správně. "
-            "Dále si zjistit co je anténní rotátor a nepoužívej v aplikaci název rotor."
+            "Station Agent má regresi a AI Project Manager ji musí opravit; "
+            "nejdříve potvrdit, kterého projektu se karta týká."
         ),
     }
 
     prepared = prepare_inbox_card(
         card,
+        project_paths={
+            "Station Agent": "D:/station-agent",
+            "AI Project Manager": "D:/pm",
+        },
         projects_root="D:/orchestrator",
         allow_new_project=True,
     )
@@ -103,6 +107,29 @@ def test_unidentified_station_agent_repair_requires_explicit_project_identity():
     assert prepared.generated_project is False
     assert prepared.project_path is None
     assert prepared.human_required_reason
+
+
+def test_station_title_identity_wins_over_cause_mentioned_in_description():
+    card = {
+        "id": "station-repair-source",
+        "name": "P5 — Oprava Station Agenta – aplikace nejde spustit",
+        "desc": "Kvůli chybám AI Project Manageru se Station Agent rozbil.",
+    }
+
+    prepared = prepare_inbox_card(
+        card,
+        project_paths={
+            "Station Agent": "D:/station-agent",
+            "AI Project Manager": "D:/pm",
+        },
+        projects_root="D:/orchestrator",
+        allow_new_project=True,
+    )
+
+    assert prepared.project_key == "Station Agent"
+    assert prepared.generated_project is False
+    assert prepared.project_path is None
+    assert prepared.human_required_reason is None
 
 
 def test_large_inbox_split_uses_unique_decimal_subpriorities_without_flattening_bands():
@@ -353,7 +380,17 @@ def test_process_inbox_assigns_cards_to_projects_end_to_end():
     client.create_card(name_to_id["Inbox"], "Brand new weather widget idea", desc="Build a weather widget", labels=["Weather Widget"])
 
     projects = fetch_all_projects(client)
-    changed = process_inbox(client, projects)
+    first = process_inbox(
+        client,
+        projects,
+        persist_project=lambda project: sync_project_to_trello(client, project),
+    )
+    second = process_inbox(
+        client,
+        fetch_all_projects(client),
+        persist_project=lambda project: sync_project_to_trello(client, project),
+    )
+    changed = first + second
 
     names = {p.name for p in changed}
     assert "Orchestrator Dashboard" in names
@@ -365,6 +402,37 @@ def test_process_inbox_assigns_cards_to_projects_end_to_end():
     new_project = next(p for p in changed if p.name == "Brand new weather widget idea")
     assert new_project.status == ProjectStatus.NEW
     assert new_project.priority == 2
+
+
+def test_process_inbox_admits_only_highest_priority_source_card_per_tick():
+    client = InMemoryTrelloClient()
+    _, name_to_id = build_list_maps(client)
+    high = client.create_card(
+        name_to_id["Inbox"],
+        "P5 — Kritická oprava aplikace",
+        desc="Opravit potvrzenou regresi.",
+        labels=["Station Agent", "P5"],
+    )
+    low = client.create_card(
+        name_to_id["Inbox"],
+        "P2 — Budoucí nápad",
+        desc="Připravit budoucí rozšíření.",
+        labels=["Weather Widget", "P2"],
+    )
+
+    changed = process_inbox(
+        client,
+        [],
+        persist_project=lambda project: sync_project_to_trello(client, project),
+        project_paths={
+            "Station Agent": "D:/station-agent",
+            "Weather Widget": "D:/weather-widget",
+        },
+    )
+
+    assert changed
+    assert all(project.trello_card_id == high["id"] for project in changed)
+    assert [card["id"] for card in client.list_cards(name_to_id["Inbox"])] == [low["id"]]
 
 
 def test_persisted_new_inbox_project_reuses_created_card_on_next_sync():

@@ -25,6 +25,32 @@ _EXPLICIT_PRIORITY_RE = re.compile(r"^P([0-5](?:\.\d+)?)$", re.IGNORECASE)
 _SENTENCE_RE = re.compile(r"(?<=[.!?])\s+|\"(?=[A-ZÁČĎÉĚÍŇÓŘŠŤÚŮÝŽ])")
 _PM_DATA_BLOCK_RE = re.compile(r"<!--\s*PM-DATA.*?-->", re.DOTALL)
 
+# Explicit Czech inflection variants for stable production project names.
+# This is intentionally a small allowlist, not fuzzy matching.
+_PROJECT_IDENTITY_ALIASES = {
+    "Station Agent": (
+        "station agent",
+        "station agenta",
+        "station agentu",
+        "station agentovi",
+        "station agentem",
+        "station agentům",
+        "station agentů",
+    ),
+    "AI Project Manager": (
+        "ai project manager",
+        "ai project manageru",
+        "ai project managerem",
+    ),
+    "AI Orchestrator": (
+        "ai orchestrator",
+        "ai orchestratoru",
+        "ai orchestrátoru",
+        "ai-orchestrator",
+        "ai-orchestratoru",
+    ),
+}
+
 
 @dataclass(frozen=True)
 class PreparedTask:
@@ -320,10 +346,15 @@ def resolve_project_key(
     project_paths: Optional[Mapping[str, str]] = None,
     card_project_keys: Optional[Mapping[str, str]] = None,
 ) -> tuple[Optional[str], Optional[str]]:
-    """Resolve identity only from an explicit card mapping or identity label.
+    """Resolve an existing project without guessing across repositories.
 
-    Titles and descriptions are intentionally never used to infer a repository.
-    When an allowlist is supplied, unknown explicit identities fail closed too.
+    Explicit card mappings and identity labels remain authoritative.  If
+    neither is present, one configured identity in the title is accepted
+    (including the explicit Czech aliases above).  A body-only match is
+    accepted only when exactly one configured project is mentioned.  This
+    makes ``Oprava Station Agenta`` resolve to Station Agent even when the
+    description says that an AI Project Manager error caused it, while
+    multiple or absent matches still fail closed.
     """
     card_id = str(card.get("id") or "")
     title = str(card.get("name") or "")
@@ -348,7 +379,50 @@ def resolve_project_key(
     if len(identity_labels) > 1:
         return None, "Inbox karta má více projektových identit; vyžaduje lidské rozhodnutí."
 
+    if project_paths is not None:
+        title_matches = _configured_project_matches(title, project_paths)
+        if len(title_matches) == 1:
+            return title_matches[0], None
+        if len(title_matches) > 1:
+            return None, "Titulek Inbox karty obsahuje více projektových identit; vyžaduje lidské rozhodnutí."
+
+        body_matches = _configured_project_matches(text, project_paths)
+        if len(body_matches) == 1:
+            return body_matches[0], None
+        if len(body_matches) > 1:
+            return None, "Popis Inbox karty obsahuje více projektových identit; vyžaduje lidské rozhodnutí."
+
     return None, "Chybí explicitní projektová identita (neprioritní Trello štítek nebo schválená mapa karty)."
+
+
+def _configured_project_matches(text: str, project_paths: Mapping[str, str]) -> list[str]:
+    """Return configured identities explicitly named in *text*.
+
+    Matching is bounded phrase matching, never fuzzy.  A one-word project
+    key is ignored because ordinary prose would make it too easy to select
+    the wrong checkout accidentally.
+    """
+    haystack = str(text or "").casefold()
+    matches: list[str] = []
+    for identity in project_paths:
+        identity_text = str(identity or "").strip()
+        if not identity_text or _EXPLICIT_PRIORITY_RE.match(identity_text):
+            continue
+        phrases = _PROJECT_IDENTITY_ALIASES.get(identity_text, (identity_text,))
+        for phrase in phrases:
+            normalized = str(phrase).casefold().replace("-", " ")
+            words = re.findall(
+                r"[a-z0-9áčďéěíňóřšťúůýž]+", normalized, re.IGNORECASE
+            )
+            if len(words) < 2:
+                continue
+            pattern = r"(?<!\w)" + r"\s+".join(
+                re.escape(word) for word in words
+            ) + r"(?!\w)"
+            if re.search(pattern, haystack, flags=re.IGNORECASE):
+                matches.append(identity_text)
+                break
+    return matches
 
 
 _GROUPS = (

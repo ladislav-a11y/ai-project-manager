@@ -403,6 +403,23 @@ def process_inbox(
     cards = client.list_cards(inbox_list_id)
     batch_priorities = prioritize_inbox_cards(cards, default_priority=default_priority)
 
+    # Intake is deliberately one source project per tick.  This keeps the
+    # AI planning boundary small and observable, and prevents a long Inbox
+    # batch from making another project look selected in the same tick.  The
+    # highest-priority source card is the only one admitted; a failed-closed
+    # identity therefore also blocks lower-priority cards until the next
+    # controlled tick instead of silently bypassing the issue.
+    if cards:
+        cards = [
+            min(
+                cards,
+                key=lambda card: (
+                    -batch_priorities.get(str(card.get("id") or ""), (default_priority, ""))[0],
+                    str(card.get("id") or ""),
+                ),
+            )
+        ]
+
     for card in cards:
         if _is_processed(card) and persist_project is None:
             continue

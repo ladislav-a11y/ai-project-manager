@@ -69,9 +69,11 @@ ignorované Gitem.
 Karta, která existovala už před zavedením `project_key` labelu, nemá žádný
 label ani text, ze kterého by šlo identitu bezpečně odvodit (typicky terse
 provozní karta typu „P5 — Izolace testovacích Slack notifikací“, která
-nikde nezmiňuje název projektu). Pro takové karty automatická migrace podle
-obsahu (fráze v názvu/popisu) záměrně nic neuhodne - nikdy nenamapuje kartu
-na špatné repo jen proto, že se v textu objevila nejednoznačná shoda.
+nikde nezmiňuje název projektu). Karta s jedinou známou projektovou identitou
+v titulku se na tento checkout namapuje; titulek má přednost před pouhou
+zmínkou jiného projektu v popisu, například původcem chyby. Jediná identita
+jen v popisu je přípustná pouze při jednoznačné shodě. Nejednoznačná shoda se
+fail-closed nikdy nepřesměruje na špatné repo.
 
 Jednorázové, bezpečné řešení je `AI_PM_CARD_PROJECT_KEYS`: JSON mapa
 neměnného Trello card ID na jednu z identit již nakonfigurovaných v
