@@ -165,11 +165,31 @@ def _resume_due_provider_waits(
             ProjectStatus.TESTING.value,
         }:
             resume_status = ProjectStatus.READY.value
-        project.transition_to(ProjectStatus(resume_status))
         project.retry_after = None
         project.review_at = None
         if fallback_provider is not None and not current_provider_available:
             project.provider = fallback_provider
+        project.transition_to(ProjectStatus(resume_status))
+        project.stop_reason = (
+            f"čekání na providera skončilo; pokračování z checkpointu přes "
+            f"{project.provider or 'dostupného providera'}"
+        )
+        selection = project.extra_data.get("provider_selection")
+        if isinstance(selection, dict):
+            selection.update(
+                provider=project.provider,
+                selected_provider=project.provider,
+                selected_model=None,
+                model=None,
+                actual_provider=None,
+                actual_model=None,
+                stage="audit" if resume_status == ProjectStatus.TESTING.value else "implementation",
+                source="provider_default",
+                provider_reason=(
+                    f"provider {project.provider} pokračuje z checkpointu; "
+                    "model vybere podle typu úkolu a PM nepředává --model"
+                ),
+            )
         sync_project_to_trello(client, project)
         resumed.append(project.name)
         destination = (
@@ -665,13 +685,28 @@ def run_tick(
             if project.trello_card_id in prepared_this_tick_ids:
                 setattr(project, "_prepared_this_tick", True)
 
-        _resume_due_provider_waits(
+        resumed_provider_waits = set(_resume_due_provider_waits(
             client,
             projects,
             provider_registry,
             providers_for_project=providers_for_project,
             default_providers=default_providers,
-        )
+        ))
+
+        audit_waits_resumed = {
+            project.name for project in projects
+            if project.name in resumed_provider_waits
+            and project.extra_data.get("resume_status") is None
+            and project.status == ProjectStatus.TESTING
+        }
+        if audit_waits_resumed:
+            return RunOutcome(
+                ran=False,
+                reason=(
+                    "auditní čekání znovu zařazeno do Testování bez nového AI volání: "
+                    + ", ".join(sorted(audit_waits_resumed))
+                ),
+            )
 
         _run_recovery_pass(
             client,
@@ -695,9 +730,16 @@ def run_tick(
 
         outcome = None
         if audit_run_fn is not None:
+            # A provider wait is a state transition, not permission to spend
+            # another AI call in the same tick. This guarantees the operator
+            # can observe the requeued audit card before its next attempt.
+            audit_projects = [
+                project for project in projects
+                if project.name not in resumed_provider_waits
+            ]
             outcome = run_once_audit(
                 client,
-                projects,
+                audit_projects,
                 provider_registry,
                 audit_run_fn,
                 lock_manager=lock_manager,

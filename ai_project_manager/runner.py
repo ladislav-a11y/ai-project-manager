@@ -83,6 +83,14 @@ _REJECT_TARGET_MAP = {
 }
 
 DEFAULT_HOLDER = "project-manager"
+HERMES_FREE_MODEL = "upstage/solar-pro4:free"
+
+
+def _display_model(provider: str, model: Optional[str]) -> str:
+    """Render the model that the provider contract guarantees to use."""
+    if provider.casefold() == "hermes":
+        return HERMES_FREE_MODEL
+    return model or "provider default (nezjištěn)"
 
 
 def _task_type_label(task_type: str) -> str:
@@ -105,8 +113,8 @@ def _model_selection_reason(
     task_label = _task_type_label(task_type)
     if provider.casefold() == "hermes":
         return (
-            f"pro {task_label} se model nevybírá; "
-            "je pevně daný Hermes Nous-only kontraktem"
+            f"pro {task_label} je vždy použit pevný Hermes Nous free model "
+            f"`{HERMES_FREE_MODEL}`; platí stejně pro implementaci i audit"
         )
     if confirmed and model:
         return (
@@ -437,7 +445,7 @@ def run_once(
     project = decision.project
     provider = decision.provider
     selected_model = None
-    provider_detail = f"{provider} | model: {selected_model or 'provider default (nezjištěn)'}"
+    provider_detail = f"{provider} | model: {_display_model(provider, selected_model)}"
     provider_reason = _provider_selection_reason(
         project, provider, providers_for_project, default_providers, provider_registry, TASK_IMPLEMENTATION
     )
@@ -524,8 +532,10 @@ def run_once(
                 # existing catalog here would discard its audit-quality model
                 # before the subsequent implementation -> audit dispatch.
                 provider_registry.configure_models(actual_provider, [confirmed_model])
-            actual_model = confirmed_model
-            actual_model_detail = actual_model or "provider default (nezjištěn)"
+            actual_model = confirmed_model or (
+                HERMES_FREE_MODEL if actual_provider.casefold() == "hermes" else None
+            )
+            actual_model_detail = _display_model(actual_provider, actual_model)
             actual_provider_reason = _actual_provider_selection_reason(
                 project,
                 provider,
@@ -668,7 +678,7 @@ def run_once_audit(
     project = decision.project
     provider = decision.provider
     selected_model = None
-    provider_detail = f"{provider} | model: {selected_model or 'provider default (nezjištěn)'}"
+    provider_detail = f"{provider} | model: {_display_model(provider, selected_model)}"
     provider_reason = _provider_selection_reason(
         project, provider, providers_for_project, default_providers, provider_registry, TASK_AUDIT
     )
@@ -818,8 +828,10 @@ def run_once_audit(
             confirmed_model = result_model(result)
             if confirmed_model and not provider_registry.get_status(actual_provider).models:
                 provider_registry.configure_models(actual_provider, [confirmed_model])
-            actual_model = confirmed_model
-            actual_model_detail = actual_model or "provider default (nezjištěn)"
+            actual_model = confirmed_model or (
+                HERMES_FREE_MODEL if actual_provider.casefold() == "hermes" else None
+            )
+            actual_model_detail = _display_model(actual_provider, actual_model)
             actual_provider_reason = _actual_provider_selection_reason(
                 project,
                 provider,

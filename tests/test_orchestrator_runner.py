@@ -1126,6 +1126,50 @@ def test_run_fn_detects_limit_reported_explicitly_in_outbox_payload(tmp_path):
     assert result["status"] == "paused"
 
 
+def test_audit_wait_preserves_actual_failover_provider_from_outbox(tmp_path):
+    def fake_subprocess_run(command):
+        write_outbox_result(
+            tmp_path / "outbox",
+            "Demo",
+            {
+                "status": "waiting_for_provider",
+                "error": "all providers limited",
+                "retry_after_seconds": 120,
+                "active_provider": "codex",
+                "provider_sequence": ["codex"],
+                "checkpoint": {"completed_dod_indices": [0]},
+            },
+            run_id="audit-wait-run",
+        )
+        return completed()
+
+    project = ProjectRecord(
+        name="Demo",
+        status=ProjectStatus.TESTING,
+        main_task="Audit the implementation",
+        dod=[DoDItem(text="implemented", checked=True)],
+    )
+    registry = ProviderRegistry()
+    registry.mark_available("hermes")
+    audit_fn = build_audit_run_fn(
+        registry,
+        command=["ai-orchestrator", "autonomous"],
+        project_paths={"Demo": str(tmp_path / "demo-checkout")},
+        spec_dir=str(tmp_path / "specs"),
+        outbox_dir=str(tmp_path / "outbox"),
+        subprocess_run=fake_subprocess_run,
+        run_id_fn=lambda: "audit-wait-run",
+        use_provider_failover=True,
+    )
+
+    result = audit_fn(project, "hermes")
+
+    assert result["status"] == "paused"
+    assert result["active_provider"] == "codex"
+    assert result["provider_sequence"] == ["codex"]
+    assert registry.get_status("codex").state == ProviderState.LIMITED
+
+
 def test_run_fn_raises_on_non_limit_failure_without_touching_registry(tmp_path):
     def fake_subprocess_run(command):
         return completed(stderr="unexpected crash: NullPointerException", returncode=1)

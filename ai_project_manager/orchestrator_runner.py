@@ -633,9 +633,18 @@ def _mark_limited_result(
     retry_after: timedelta,
     reason: str,
     checkpoint: Optional[dict] = None,
+    *,
+    active_provider: Optional[str] = None,
+    active_model: Optional[str] = None,
+    provider_sequence: Optional[list] = None,
+    usage: Optional[dict] = None,
 ) -> dict:
+    # On a failover wait the selected provider is not necessarily the one
+    # that produced the terminal limit. Preserve AO's receipt so PM does not
+    # write the original Hermes selection back as the actual provider.
+    limited_provider = active_provider or provider
     status = provider_registry.mark_limited(
-        provider,
+        limited_provider,
         retry_after=retry_after,
         checkpoint=checkpoint if checkpoint is not None else project.checkpoint,
         reason=reason,
@@ -651,6 +660,14 @@ def _mark_limited_result(
     }
     if checkpoint is not None:
         result["checkpoint"] = checkpoint
+    if active_provider:
+        result["active_provider"] = active_provider
+    if active_model:
+        result["active_model"] = active_model
+    if isinstance(provider_sequence, list):
+        result["provider_sequence"] = provider_sequence
+    if isinstance(usage, dict):
+        result["usage"] = usage
     return result
 
 
@@ -1025,6 +1042,10 @@ def build_run_fn(
                 retry_after,
                 str(reported_limit),
                 checkpoint=payload.get("checkpoint", project.checkpoint),
+                active_provider=payload.get("active_provider"),
+                active_model=payload.get("active_model") or payload.get("model"),
+                provider_sequence=payload.get("provider_sequence"),
+                usage=payload.get("usage"),
             )
 
         result: dict = {}
@@ -1242,6 +1263,8 @@ def build_audit_run_fn(
             )
 
         reported_limit = payload.get("limit_hit") or payload.get("session_limit")
+        if payload.get("status") == "waiting_for_provider" and not reported_limit:
+            reported_limit = payload.get("error") or "all configured providers are limited"
         if reported_limit:
             retry_seconds = payload.get("retry_after_seconds")
             retry_after = (
@@ -1256,6 +1279,10 @@ def build_audit_run_fn(
                 retry_after,
                 str(reported_limit),
                 checkpoint=payload.get("checkpoint", project.checkpoint),
+                active_provider=payload.get("active_provider"),
+                active_model=payload.get("active_model") or payload.get("model"),
+                provider_sequence=payload.get("provider_sequence"),
+                usage=payload.get("usage"),
             )
 
         # ``orchestrator.py autonomous`` has no external verdict field. Its

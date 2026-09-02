@@ -5,7 +5,12 @@ from ai_project_manager.guard import OrchestratorGuard
 from ai_project_manager.lock import ProjectLockManager
 from ai_project_manager.models import DoDItem, ProjectRecord, ProjectStatus
 from ai_project_manager.providers import ProviderRegistry
-from ai_project_manager.runner import _capture_live_trello_readback, run_once, run_once_audit
+from ai_project_manager.runner import (
+    _capture_live_trello_readback,
+    _model_selection_reason,
+    run_once,
+    run_once_audit,
+)
 from ai_project_manager.trello_client import InMemoryTrelloClient
 from ai_project_manager.trello_sync import build_list_maps, project_from_card, sync_project_to_trello
 
@@ -474,8 +479,21 @@ def test_run_once_does_not_report_configured_model_for_provider_without_model_se
     )
 
     assert outcome.ran is True
-    assert project.extra_data["provider_selection"]["model"] is None
+    assert project.extra_data["provider_selection"]["model"] == "upstage/solar-pro4:free"
     assert "must-not-be-forwarded" not in project.extra_data["provider_selection"]["provider_reason"]
+
+
+def test_hermes_model_reason_explicitly_identifies_nous_free_model_for_all_task_types():
+    registry = ProviderRegistry()
+
+    for task_type, label in (("implementation", "implementaci"), ("audit", "audit")):
+        reason = _model_selection_reason("hermes", None, registry, task_type)
+
+        assert f"pro {label}" in reason
+        assert "Hermes Nous free model" in reason
+        assert "upstage/solar-pro4:free" in reason
+        assert "platí stejně pro implementaci i audit" in reason
+        assert "model nevybírá" not in reason
 
 
 def test_run_once_audit_is_the_only_path_to_hotovo():

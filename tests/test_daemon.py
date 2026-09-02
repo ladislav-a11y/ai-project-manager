@@ -474,6 +474,43 @@ def test_provider_wait_fails_over_to_available_provider_before_retry_deadline():
     assert "resume_status" not in project.extra_data
 
 
+def test_run_tick_only_requeues_resumed_audit_wait_without_same_tick_ai_call():
+    clock = FakeClock(datetime(2026, 1, 1, tzinfo=timezone.utc))
+    project = ProjectRecord(
+        name="Audit wait",
+        priority=3,
+        status=ProjectStatus.PAUSED,
+        checkpoint={"completed_dod_indices": [0]},
+        provider="hermes",
+        stop_reason="provider session limit hit",
+        retry_after=(clock.now + timedelta(days=1)).isoformat(),
+        extra_data={"resume_status": ProjectStatus.TESTING.value},
+        dod=[DoDItem(text="implemented", checked=True)],
+    )
+    client = make_client_with_project(project)
+    registry = ProviderRegistry(clock=clock)
+    registry.mark_limited("hermes", retry_after=timedelta(days=1), checkpoint=project.checkpoint)
+    registry.mark_available("antigravity")
+    calls = []
+
+    outcome = run_tick(
+        client,
+        registry,
+        lambda *_args: calls.append("implementation"),
+        default_providers=["hermes", "antigravity"],
+        audit_run_fn=lambda *_args: calls.append("audit"),
+    )
+
+    assert outcome.ran is False
+    assert calls == []
+    id_to_name, _ = build_list_maps(client)
+    reloaded = project_from_card(client.get_card(project.trello_card_id), id_to_name)
+    assert reloaded.status == ProjectStatus.TESTING
+    assert reloaded.provider == "antigravity"
+    assert reloaded.retry_after is None
+    assert "čekání na providera skončilo" in reloaded.stop_reason
+
+
 def test_recheck_due_providers_returns_names_that_resumed():
     clock = FakeClock(datetime(2026, 1, 1, tzinfo=timezone.utc))
     registry = ProviderRegistry(clock=clock)
