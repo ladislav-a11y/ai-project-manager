@@ -1280,12 +1280,28 @@ def maintain_board_contract(client) -> list[str]:
                 logger.error("board maintenance skipped unsafe %s", message)
                 issues.append(message)
 
-    # The workflow has one active implementation slot. Preserve corrective
-    # work first, then priority, and safely defer every other active card to
-    # Připraveno without altering its DoD or checkpoint.
+    # The workflow has one active implementation slot. Preserve the newest
+    # corrective return first: an audit may have just returned a card to
+    # Pracuje se while an older corrective card is still occupying the slot.
+    # The older card must be deferred, not the newly rejected work. For
+    # ordinary active cards, priority remains the tie-breaker.
     if len(active_projects) > 1:
+        def active_slot_key(project: ProjectRecord) -> tuple:
+            if project.returned_from_testing:
+                stamp = project.status_updated_at or ""
+                try:
+                    parsed_stamp = datetime.fromisoformat(stamp.replace("Z", "+00:00"))
+                    if parsed_stamp.tzinfo is None:
+                        parsed_stamp = parsed_stamp.replace(tzinfo=timezone.utc)
+                    return (0, -parsed_stamp.timestamp(), -project.priority, project.name.casefold())
+                except (TypeError, ValueError, OverflowError, OSError):
+                    # A legacy return without a valid timestamp still beats
+                    # normal work, but yields to timestamped corrective work.
+                    return (0, float("inf"), -project.priority, project.name.casefold())
+            return (1, 0, -project.priority, project.name.casefold())
+
         active_projects.sort(
-            key=lambda p: (0 if p.returned_from_testing else 1, -p.priority, p.name.casefold())
+            key=active_slot_key
         )
         keeper = active_projects[0]
         for project in active_projects[1:]:

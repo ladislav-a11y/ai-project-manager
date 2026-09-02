@@ -1122,6 +1122,41 @@ def test_done_card_with_unverified_implementation_dod_is_returned_to_work():
     assert [item.checked for item in reloaded.dod] == [True, False]
 
 
+def test_newer_audit_rework_wins_the_single_active_slot():
+    """A fresh audit return must not be deferred behind older active rework."""
+    client = InMemoryTrelloClient()
+    older = ProjectRecord(
+        name="Older corrective work",
+        priority=5,
+        status=ProjectStatus.IN_PROGRESS,
+        status_updated_at="2026-09-02T09:00:00+00:00",
+        extra_data={"returned_from_testing": True},
+        dod=[DoDItem(text="older implementation")],
+    )
+    newer = ProjectRecord(
+        name="Newer audit return",
+        priority=1,
+        status=ProjectStatus.IN_PROGRESS,
+        status_updated_at="2026-09-02T09:05:00+00:00",
+        extra_data={"returned_from_testing": True},
+        dod=[DoDItem(text="newer implementation")],
+    )
+    older_card = sync_project_to_trello(client, older)
+    newer_card = sync_project_to_trello(client, newer)
+
+    assert maintain_board_contract(client) == []
+
+    id_to_name, _ = build_list_maps(client)
+    older_reloaded = project_from_card(client.get_card(older_card["id"]), id_to_name)
+    newer_reloaded = project_from_card(client.get_card(newer_card["id"]), id_to_name)
+
+    assert older_reloaded.status == ProjectStatus.READY
+    assert newer_reloaded.status == ProjectStatus.IN_PROGRESS
+    assert newer_reloaded.returned_from_testing is True
+    assert older_reloaded.checkpoint == older.checkpoint
+    assert newer_reloaded.checkpoint == newer.checkpoint
+
+
 def test_fetch_all_projects_excludes_inbox():
     client = InMemoryTrelloClient()
     _, name_to_id = build_list_maps(client)
