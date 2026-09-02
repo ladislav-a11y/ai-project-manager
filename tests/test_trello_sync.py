@@ -559,8 +559,9 @@ def test_maintenance_preserves_terminal_card_with_later_finalization_evidence():
             "ai-orchestrator audit rejected DoD index(es) [0]: older evidence"
         ],
         last_output=(
-            "Controller finalization verified: commit abc; clean working tree; "
-            "tests passed; push passed; remote HEAD abc."
+            "independent audit accepted. Controller finalization verified: "
+            "commit abc; clean working tree; tests passed; push passed; "
+            "remote HEAD abc."
         ),
         dod=[DoDItem(text="implementation", checked=True)],
     )
@@ -589,7 +590,10 @@ def test_maintenance_repairs_terminal_test_dod_routing_without_reopening_card():
         open_feedback=[
             "ai-orchestrator audit rejected DoD index(es) [0]: older evidence"
         ],
-        last_output="Controller finalization verified: commit abc; clean working tree.",
+        last_output=(
+            "independent audit accepted. Controller finalization verified: "
+            "commit abc; clean working tree."
+        ),
         dod=[
             DoDItem(text="syntaxe a cílené testy projdou", checked=True),
             DoDItem(text="kompletní test suite projde", checked=True),

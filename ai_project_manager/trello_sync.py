@@ -958,7 +958,6 @@ _AUDIT_REJECTED_INDICES_RE = re.compile(
     r"DoD index(?:es|\(es\))?\s*\[([^\]]*)\]", re.IGNORECASE
 )
 _TERMINAL_ACCEPTANCE_MARKERS = (
-    "controller finalization verified:",
     "independent audit accepted",
     "audit accepted",
 )
@@ -1020,7 +1019,7 @@ def _repair_terminal_test_dod_routing(project: ProjectRecord, raw: dict) -> bool
     complete, preserve that evidence but rewrite only those items as explicit
     controller-owned audit evidence.
     """
-    if project.status != ProjectStatus.DONE or not _has_newer_terminal_acceptance(project, raw):
+    if project.status != ProjectStatus.DONE:
         return False
     changed = False
     for item in project.dod:
