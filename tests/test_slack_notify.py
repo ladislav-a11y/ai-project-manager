@@ -79,15 +79,29 @@ def test_provider_route_detail_makes_internal_failover_visible():
     assert slack_notify.provider_route_detail({
         "provider_sequence": ["hermes", "codex"],
         "active_provider": "codex",
-    }) == "provider path: hermes -> codex | failover: ano"
+    }) == "provider path: hermes -> codex | failover: ano | model path: hermes=nezjištěn -> codex=nezjištěn"
     assert slack_notify.provider_route_detail({
         "provider_sequence": ["codex"],
         "active_provider": "codex",
-    }) == "provider path: codex | failover: ne"
+    }) == "provider path: codex | failover: ne | model path: codex=nezjištěn"
     assert slack_notify.provider_route_detail(
         {"provider_sequence": ["codex"], "active_provider": "codex"},
         selected_provider="hermes",
-    ) == "provider path: hermes -> codex | failover: ano"
+    ) == "provider path: hermes -> codex | failover: ano | model path: hermes=nezjištěn -> codex=nezjištěn"
+
+
+def test_provider_route_detail_shows_model_for_each_provider():
+    rendered = slack_notify.provider_route_detail({
+        "provider_sequence": ["hermes", "claude-code"],
+        "active_provider": "claude-code",
+        "active_model": "claude-opus-4-1",
+        "usage": {"events": [
+            {"provider": "hermes", "model": "upstage/solar-pro4:free"},
+            {"provider": "claude-code", "model": "claude-opus-4-1"},
+        ]},
+    })
+    assert "provider path: hermes -> claude-code" in rendered
+    assert "model path: hermes=upstage/solar-pro4:free -> claude-code=claude-opus-4-1" in rendered
 
 
 def test_webhook_url_alone_does_not_enable_real_notifications(monkeypatch, caplog):

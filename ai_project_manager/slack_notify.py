@@ -131,6 +131,36 @@ def provider_route_detail(
     if active_text and active_text != names[-1]:
         detail += f" | aktivní provider: {active_text}"
 
+    # Keep the model for every provider in the route, not only for the final
+    # provider. This matters after an internal failover: the top-level
+    # ``active_model`` describes only the final provider, while AO usage
+    # events carry the model observed for each physical call.
+    model_by_provider: dict[str, str] = {}
+    usage = result.get("usage")
+    events = usage.get("events") if isinstance(usage, dict) else None
+    if isinstance(events, list):
+        for event in events:
+            if not isinstance(event, dict):
+                continue
+            provider_name = event.get("provider")
+            model_name = event.get("model")
+            if (
+                isinstance(provider_name, str)
+                and provider_name.strip()
+                and isinstance(model_name, str)
+                and model_name.strip()
+            ):
+                model_by_provider[provider_name.strip()] = model_name.strip()
+    final_model = result.get("active_model")
+    if active_text and isinstance(final_model, str) and final_model.strip():
+        model_by_provider[active_text] = final_model.strip()
+    if selected_text and isinstance(selected_model, str) and selected_model.strip():
+        model_by_provider.setdefault(selected_text, selected_model.strip())
+    model_path = " -> ".join(
+        f"{name}={model_by_provider.get(name, 'nezjištěn')}" for name in names
+    )
+    detail += f" | model path: {model_path}"
+
     if selected_model:
         model_text = str(selected_model).strip()
         if model_text:
