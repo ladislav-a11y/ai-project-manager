@@ -939,6 +939,80 @@ def fetch_all_projects(
     return projects
 
 
+_AUDIT_REJECTION_MARKERS = (
+    "ai-orchestrator audit rejected",
+    "auditor odmítl",
+)
+_AUDIT_REJECTED_INDICES_RE = re.compile(
+    r"DoD index(?:es|\(es\))?\s*\[([^\]]*)\]", re.IGNORECASE
+)
+
+
+def _repair_terminal_audit_rejection(project: ProjectRecord, raw: dict) -> bool:
+    """Reopen a terminal card carrying an explicit unresolved audit rejection.
+
+    A rejected audit is authoritative evidence from ai-orchestrator, not a
+    PM inference. Older PM runs could still write ``done`` after persisting
+    that rejection. Repair that impossible state before any terminal card
+    is treated as complete: reopen implementation rejections to ``Pracuje
+    se`` and keep audit-only rejections in ``Testování``.
+    """
+    if project.status != ProjectStatus.DONE:
+        return False
+    feedback = raw.get("open_feedback")
+    if not isinstance(feedback, list):
+        return False
+    entries = [str(item).strip() for item in feedback if str(item).strip()]
+    if not entries:
+        return False
+    combined = "\n".join(entries).casefold()
+    if not any(marker in combined for marker in _AUDIT_REJECTION_MARKERS):
+        return False
+
+    rejected_indices: list[int] = []
+    for match in _AUDIT_REJECTED_INDICES_RE.finditer("\n".join(entries)):
+        for value in match.group(1).split(","):
+            value = value.strip()
+            if value.isdigit() and int(value) not in rejected_indices:
+                rejected_indices.append(int(value))
+    valid_indices = [
+        index for index in rejected_indices
+        if 0 <= index < len(project.dod)
+    ]
+    implementation_rejected = [
+        index for index in valid_indices
+        if project.dod[index].phase == "implementation"
+    ]
+    if implementation_rejected:
+        for index in implementation_rejected:
+            project.dod[index].checked = False
+        checkpoint = dict(project.checkpoint or {})
+        if "completed_dod_indices" in checkpoint:
+            checkpoint["completed_dod_indices"] = [
+                index for index in checkpoint.get("completed_dod_indices", [])
+                if index not in implementation_rejected
+            ]
+        project.checkpoint = checkpoint
+        project.mark_returned_from_testing("audit_rejected")
+        project.stop_reason = (
+            "ai-orchestrator audit rejected implementation DoD; rework required"
+        )
+        project.next_step = (
+            "Provést nápravnou implementaci podle otevřeného auditního feedbacku "
+            "a následně znovu předat kartu do Testování."
+        )
+        project.transition_to(ProjectStatus.IN_PROGRESS)
+    else:
+        project.stop_reason = (
+            "ai-orchestrator audit rejected audit evidence; awaiting re-audit"
+        )
+        project.next_step = (
+            "Doplnit konkrétní auditní důkaz a znovu provést nezávislý audit."
+        )
+        project.transition_to(ProjectStatus.TESTING)
+    return True
+
+
 def maintain_board_contract(client) -> list[str]:
     """Idempotently migrate safe cards and enforce workflow/order.
 
@@ -970,6 +1044,12 @@ def maintain_board_contract(client) -> list[str]:
                     logger.warning(
                         "repairing incomplete Card Contract for card %s (%r): %s",
                         card.get("id"), card.get("name"), ", ".join(repaired_fields),
+                    )
+                if _repair_terminal_audit_rejection(project, raw):
+                    logger.warning(
+                        "reopening terminal card with unresolved audit rejection "
+                        "card=%s name=%r status=%s",
+                        card.get("id"), card.get("name"), project.status.value,
                     )
                 # A card already in Ready with all implementation work done
                 # and an outstanding audit belongs in Testování. Normalize

@@ -515,6 +515,35 @@ def test_maintenance_routes_completed_implementation_with_pending_audit_to_testi
     assert reloaded.stop_reason == "implementation DoD complete; awaiting ai-orchestrator audit"
 
 
+def test_maintenance_reopens_terminal_card_with_explicit_audit_rejection():
+    client = InMemoryTrelloClient()
+    project = ProjectRecord(
+        name="P5 — stale terminal audit rejection",
+        priority=5,
+        status=ProjectStatus.DONE,
+        completed_at="2026-09-01T20:00:00+00:00",
+        checkpoint={"completed_dod_indices": [0]},
+        open_feedback=[
+            "ai-orchestrator audit rejected DoD index(es) [0, 1]: "
+            "file/path evidence missing\nEvidence: audit readback"
+        ],
+        dod=[
+            DoDItem(text="implementation", checked=True),
+            DoDItem(text="independent audit evidence", phase="audit", checked=True),
+        ],
+    )
+    card = sync_project_to_trello(client, project)
+
+    assert maintain_board_contract(client) == []
+
+    repaired = client.get_card(card["id"])
+    raw = _parse_data_block(repaired["desc"])
+    assert repaired["list_id"] == client.get_list_id_by_name("In Progress")
+    assert raw["lifecycle_status"] == "in_progress"
+    assert raw["dod"][0]["checked"] is False
+    assert raw["checkpoint"]["completed_dod_indices"] == []
+
+
 def test_maintenance_migrates_identity_governance_and_order_idempotently():
     client = InMemoryTrelloClient()
     ready = client.get_list_id_by_name("Ready")
