@@ -1,24 +1,36 @@
 import pytest
+from pathlib import Path
 
 from ai_project_manager.inbox import (
     PROCESSED_MARKER,
     apply_classification,
     classify_inbox_card,
     find_inbox_receipt,
+    inbox_planner_providers,
     inbox_content_hash,
     inbox_source_reference,
     looks_like_feedback,
     process_inbox,
 )
 from ai_project_manager.inbox_preparation import (
+    PreparedTask,
     derive_priority,
     prepare_inbox_card,
     prioritize_inbox_cards,
+    task_execution_order,
 )
 from ai_project_manager.card_contract import dod_contract_issues
 from ai_project_manager.models import ProjectRecord, ProjectStatus
 from ai_project_manager.trello_client import InMemoryTrelloClient
 from ai_project_manager.trello_sync import build_list_maps, fetch_all_projects, sync_project_to_trello
+
+
+def test_inbox_planner_never_selects_retired_or_reserved_providers():
+    assert inbox_planner_providers(["hermes", "gemini", "antigravity", "claude", "codex"]) == (
+        "antigravity",
+        "claude",
+        "codex",
+    )
 
 
 def test_batch_prioritization_puts_pm_repairs_before_new_features():
@@ -31,7 +43,7 @@ def test_batch_prioritization_puts_pm_repairs_before_new_features():
 
     assert priorities["pm-bug"][0] == 5
     assert priorities["feature"][0] == 3
-    assert "oprava vlastního PM" in priorities["pm-bug"][1]
+    assert "závazná nejvyšší priorita" in priorities["pm-bug"][1]
 
 
 def test_priority_rubric_handles_pm_abbreviation_and_functional_display_change():
@@ -47,6 +59,7 @@ def test_priority_rubric_handles_pm_abbreviation_and_functional_display_change()
         {"labels": [{"name": "Station Agent"}]},
         "propagation: uvést debug info a průběžně vypočítat score",
     )[0] == 3
+    assert derive_priority({}, "filtrovat podle ceny, lokality a dopravy")[0] == 2
 
 
 def test_preparation_splits_station_agent_card_and_assigns_each_scope_priority():
@@ -61,13 +74,89 @@ def test_preparation_splits_station_agent_card_and_assigns_each_scope_priority()
 
     assert prepared.project_key == "Station Agent"
     assert len(prepared.tasks) == 3
-    assert any(task.scope == "auto tune a hold" and task.priority == 4 for task in prepared.tasks)
+    assert any(task.scope == "auto tune a hold" and task.priority == 5 for task in prepared.tasks)
     assert len({task.priority for task in prepared.tasks}) > 1
     assert all(item.phase in {"implementation", "audit"} for item in prepared.dod)
     assert sum(item.phase == "implementation" for item in prepared.dod) == 1
     assert sum(item.phase == "audit" for item in prepared.dod) == 3
     assert any(item.phase == "audit" for item in prepared.dod)
     assert dod_contract_issues(prepared.dod) == []
+
+
+def test_unidentified_station_agent_repair_requires_explicit_project_identity():
+    card = {
+        "id": "station-live-source",
+        "name": "oprava station agent",
+        "desc": (
+            "dx cluster nefunguje na SSB stanice, před úpravou už běžel správně. "
+            "Dále si zjistit co je anténní rotátor a nepoužívej v aplikaci název rotor."
+        ),
+    }
+
+    prepared = prepare_inbox_card(
+        card,
+        projects_root="D:/orchestrator",
+        allow_new_project=True,
+    )
+
+    assert prepared.project_key is None
+    assert prepared.generated_project is False
+    assert prepared.project_path is None
+    assert prepared.human_required_reason
+
+
+def test_large_inbox_split_uses_unique_decimal_subpriorities_without_flattening_bands():
+    card = {
+        "id": "large-source",
+        "name": "Budoucí projekt — katalog služeb",
+        "desc": (
+            "Cíl: katalog nabídek. Vyhledávání podle ceny. Deduplikace nabídek. "
+            "AI připraví popis. Publikace na více platformách. Upozornění přes Slack. "
+            "Budoucí technická rešerše."
+        ),
+    }
+
+    prepared = prepare_inbox_card(card, projects_root="D:/orchestrator", allow_new_project=True)
+
+    priorities = [task.priority for task in prepared.tasks]
+    assert len(priorities) == len(set(priorities))
+    assert any(priority != int(priority) for priority in priorities)
+    assert max(priorities) <= 5
+
+
+def test_task_execution_order_respects_dependencies_before_priority():
+    card = {
+        "id": "dependency-source",
+        "name": "Navazující Inbox práce",
+        "desc": "Základ. Závislá rozšířená část.",
+    }
+    prepared = prepare_inbox_card(
+        card,
+        projects_root="D:/orchestrator",
+        allow_new_project=True,
+        planned_tasks=(
+            PreparedTask(
+                title="základ", task="Připravit základ.", next_step="Prověřit základ.",
+                scope="základ", priority=1.0, depends_on=(),
+            ),
+            PreparedTask(
+                title="rozšíření", task="Provést rozšíření.", next_step="Navázat na základ.",
+                scope="rozšíření", priority=5.0, depends_on=(0,),
+            ),
+        ),
+    )
+    assert task_execution_order(prepared.tasks) == (0, 1)
+
+
+def test_task_execution_order_rejects_dependency_cycle():
+    from ai_project_manager.inbox_preparation import PreparedTask
+
+    tasks = (
+        PreparedTask("a", "a", "a", "a", priority=1, depends_on=(1,)),
+        PreparedTask("b", "b", "b", "b", priority=2, depends_on=(0,)),
+    )
+    with pytest.raises(ValueError, match="cycle"):
+        task_execution_order(tasks)
 
 
 def test_preparation_ignores_stale_pm_data_and_uses_visible_request():
@@ -144,7 +233,7 @@ def test_process_inbox_creates_multiple_ready_tasks_from_one_source_card():
         assert metadata["source_card_id"] == source["id"]
         assert metadata["content_sha256"] == inbox_content_hash(source)
         assert metadata["scope"]
-        assert metadata["source_priority"] == 4
+        assert metadata["source_priority"] == 5
         assert metadata["task_priority"] == project.priority
         assert metadata["dod"] == [item.to_dict() for item in project.dod]
 
@@ -178,6 +267,10 @@ def test_split_retry_keeps_source_until_children_persist_and_does_not_duplicate_
     assert [card["id"] for card in client.list_cards(name_to_id["Inbox"])] == [source["id"]]
     partial = fetch_all_projects(client, exclude_list_names=("Inbox",))
     assert len(partial) == 1
+    # The source may be restored/edited while a partial split is waiting for
+    # retry; the identity must be recovered from the already durable child,
+    # not guessed from title similarity.
+    client.update_card(source["id"], labels=[])
 
     changed = process_inbox(
         client,
@@ -303,6 +396,68 @@ def test_persisted_new_inbox_project_reuses_created_card_on_next_sync():
         if card["id"] == created_card_id
     ]
     assert [card["id"] for card in project_cards] == [created_card_id]
+
+
+def test_unlabelled_new_inbox_idea_is_prepared_as_isolated_prioritized_project(tmp_path):
+    client = InMemoryTrelloClient()
+    _, name_to_id = build_list_maps(client)
+    source = client.create_card(
+        name_to_id["Inbox"],
+        "Budoucí projekt — Bazar Scout a multi-inzerce [VYSOKÁ PRIORITA]",
+        desc="Získávat nabídky, rozdělit více inzerátů a ověřit export.",
+    )
+    project_paths = {}
+
+    changed = process_inbox(
+        client,
+        [],
+        persist_project=lambda project: sync_project_to_trello(client, project),
+        project_paths=project_paths,
+        projects_root=str(tmp_path / "projects"),
+    )
+
+    assert len(changed) >= 1
+    assert client.list_cards(name_to_id["Inbox"]) == []
+    ready_cards = client.list_cards(name_to_id["New"])
+    assert len(ready_cards) == len(changed)
+    assert all(card["name"].startswith("P") for card in ready_cards)
+    for project in changed:
+        metadata = project.extra_data["inbox_preparation"]
+        assert metadata["source_card_id"] == source["id"]
+        assert metadata["generated_project"] is True
+        assert Path(metadata["project_path"]).is_dir()
+        assert project.project_key in project_paths
+        assert project_paths[project.project_key] == metadata["project_path"]
+
+
+def test_generated_inbox_project_mapping_is_rehydrated_after_restart(tmp_path):
+    client = InMemoryTrelloClient()
+    _, name_to_id = build_list_maps(client)
+    client.create_card(name_to_id["Inbox"], "New isolated catalog idea", desc="Build a catalog export")
+    root = tmp_path / "projects"
+    first_paths = {}
+
+    process_inbox(
+        client,
+        [],
+        persist_project=lambda project: sync_project_to_trello(client, project),
+        project_paths=first_paths,
+        projects_root=str(root),
+    )
+    second_paths = {}
+    from ai_project_manager.daemon import load_projects_and_inbox
+
+    loaded = load_projects_and_inbox(
+        client,
+        project_paths=second_paths,
+        projects_root=str(root),
+    )
+
+    generated = next(project for project in loaded if project.extra_data.get("inbox_preparation", {}).get("generated_project"))
+    assert generated.project_key in second_paths
+    assert Path(second_paths[generated.project_key]).resolve() == Path(
+        generated.extra_data["inbox_preparation"]["project_path"]
+    ).resolve()
 
 
 def test_existing_project_feedback_moves_source_to_done_and_is_retry_idempotent():

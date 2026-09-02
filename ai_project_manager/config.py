@@ -67,8 +67,9 @@ class OrchestratorConfig:
     allowlist for ``--project``. Keys must match the card's stable
     ``project_key`` label (see ``trello_sync.project_key_from_labels``);
     titles, priority prefixes, descriptions, and slugs are never path
-    signals. ``projects_root`` remains parseable for configuration
-    compatibility but is not a repository-resolution fallback.
+    signals for existing projects. ``projects_root`` is not a fallback for
+    an existing ambiguous identity; it is the approved root under which
+    Inbox intake may create an isolated path for a genuinely new idea.
     ``spec_dir``
     holds the stable per-project spec file passed as ``--spec``, and
     ``outbox_dir`` is where the result JSON is read back from after a run.
@@ -130,6 +131,10 @@ class Config:
     # forces it to a human-required BLOCKED state - the loop guard that
     # keeps a persistently-blocked card from being requeued forever.
     recovery_max_attempts: int = 5
+    # Optional explicit root containing disposable pytest basetemp siblings.
+    # No root means no autonomous cleanup; this avoids guessing a workspace.
+    artifact_cleanup_root: Optional[str] = None
+    artifact_cleanup_retention_seconds: float = 86400.0
 
 
 def _require(env: Mapping[str, str], name: str) -> str:
@@ -224,7 +229,9 @@ def load_config(env: Optional[Mapping[str, str]] = None) -> Config:
       AI_ORCHESTRATOR_OUTBOX_DIR                   (default "outbox")
       AI_PM_PROVIDERS                              (default "auto")
       AI_PM_PROVIDERS_FOR_PROJECT                  (optional JSON object)
-      AI_PM_PROVIDER_MODELS                        (optional JSON provider -> ordered model list)
+      AI_PM_PROVIDER_MODELS                        (optional diagnostic/backwards-compatible JSON
+                                                     provider -> model catalog; PM never forwards
+                                                     these entries as --model)
       AI_PM_CARD_PROJECT_KEYS                      (optional JSON object: Trello card ID or exact title -> project identity)
       AI_PM_POLL_INTERVAL_SECONDS                  (default "300")
       AI_PM_HOLDER                                 (default "project-manager")
@@ -361,6 +368,17 @@ def load_config(env: Optional[Mapping[str, str]] = None) -> Config:
     if recovery_max_attempts < 1:
         raise ConfigError("AI_PM_RECOVERY_MAX_ATTEMPTS must be at least 1")
 
+    cleanup_retention_raw = env.get("AI_PM_ARTIFACT_RETENTION_HOURS", "24")
+    try:
+        cleanup_retention_seconds = float(cleanup_retention_raw) * 3600
+    except ValueError as exc:
+        raise ConfigError(
+            "AI_PM_ARTIFACT_RETENTION_HOURS must be a number, "
+            f"got {cleanup_retention_raw!r}"
+        ) from exc
+    if not math.isfinite(cleanup_retention_seconds) or cleanup_retention_seconds < 0:
+        raise ConfigError("AI_PM_ARTIFACT_RETENTION_HOURS must be finite and non-negative")
+
     return Config(
         trello=trello,
         orchestrator=orchestrator,
@@ -375,4 +393,10 @@ def load_config(env: Optional[Mapping[str, str]] = None) -> Config:
             env, "AI_PM_PROVIDER_STATE_PATH", "provider_state.json"
         ),
         recovery_max_attempts=recovery_max_attempts,
+        artifact_cleanup_root=(
+            _absolute_path_setting(env, "AI_PM_ARTIFACT_CLEANUP_ROOT", "")
+            if "AI_PM_ARTIFACT_CLEANUP_ROOT" in env
+            else None
+        ),
+        artifact_cleanup_retention_seconds=cleanup_retention_seconds,
     )

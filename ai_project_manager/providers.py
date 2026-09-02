@@ -49,6 +49,37 @@ class ProviderState:
     ERROR = "ERROR"
 
 
+# Providers whose CLI/agent contract offers no model selection at all - they
+# always run their own single preferred LLM internally (e.g. Hermes' stricter
+# Nous-only contract), so the PM must never pass an explicit --model for them
+# regardless of what AI_PM_PROVIDER_MODELS configures. Named as a single
+# generic allowlist rather than a per-callsite hardcoded provider-name check
+# so a future provider with the same constraint is added here once instead of
+# being missed at some dispatch sites.
+PROVIDERS_WITHOUT_MODEL_SELECTION = frozenset({"hermes"})
+
+
+def supports_model_selection(name: str) -> bool:
+    """Whether ``name`` has a fixed internal model contract.
+
+    This compatibility helper is retained for state/catalog diagnostics.
+    Production dispatch never forwards a PM-selected ``--model`` to any
+    provider. ``False`` identifies Hermes, whose actual model is enforced by
+    ai-orchestrator's Nous-only contract.
+    """
+    return name.casefold() not in PROVIDERS_WITHOUT_MODEL_SELECTION
+
+
+# The three distinct kinds of task the PM ever dispatches a provider for
+# (see PROJECT_AUDIT_ROADMAP.md section 8.1). Kept as an explicit, closed
+# set so an unknown/misspelled task type fails fast in ``model_for_task``
+# instead of silently guessing a model.
+TASK_INBOX_PLANNING = "inbox_planning"
+TASK_IMPLEMENTATION = "implementation"
+TASK_AUDIT = "audit"
+TASK_TYPES = (TASK_INBOX_PLANNING, TASK_IMPLEMENTATION, TASK_AUDIT)
+
+
 @dataclass
 class ProviderStatus:
     name: str
@@ -59,6 +90,10 @@ class ProviderStatus:
     updated_at: datetime = field(default_factory=_utcnow)
     models: tuple[str, ...] = ()
     selected_model: Optional[str] = None
+    # Durable per-task-family capability notes. These are intentionally
+    # separate from quota/error state: a provider may remain usable for other
+    # work while being unsuitable for one audit scope.
+    capability_limits: dict = field(default_factory=dict)
 
     def to_dict(self) -> dict:
         return {
@@ -70,6 +105,7 @@ class ProviderStatus:
             "updated_at": self.updated_at.isoformat(),
             "models": list(self.models),
             "selected_model": self.selected_model,
+            "capability_limits": dict(self.capability_limits),
         }
 
 
@@ -83,6 +119,7 @@ class ProviderRegistry:
     def __init__(self, clock: Callable[[], datetime] = _utcnow):
         self._clock = clock
         self._statuses: dict[str, ProviderStatus] = {}
+        self._configured_model_catalogs: set[str] = set()
 
     def register(self, name: str) -> ProviderStatus:
         if name not in self._statuses:
@@ -90,22 +127,60 @@ class ProviderRegistry:
         return self._statuses[name]
 
     def configure_models(self, name: str, models: list[str]) -> ProviderStatus:
-        """Record an ordered, provider-reported/configured model catalog.
+        """Record an ordered diagnostic/backwards-compatible model catalog.
 
-        Empty and duplicate values are discarded.  The first model is the
-        selected model; callers must supply the catalog explicitly so the PM
-        never guesses a model from a provider name.
+        Empty and duplicate values are discarded. The catalog is not used to
+        construct production argv; the provider owns model selection.
         """
         status = self.register(name)
+        self._configured_model_catalogs.add(name)
         normalized = tuple(dict.fromkeys(model.strip() for model in models if model.strip()))
         status.models = normalized
         status.selected_model = normalized[0] if normalized else None
         status.updated_at = self._clock()
         return status
 
+    def has_configured_model_catalog(self, name: str) -> bool:
+        """Whether the current process supplied a model catalog for ``name``.
+
+        This distinguishes an intentional empty catalog (the production
+        provider-owned selection policy) from a standalone registry that has
+        no current configuration and may still need to load legacy state.
+        """
+        return name in self._configured_model_catalogs
+
     def selected_model(self, name: str) -> Optional[str]:
         status = self._statuses.get(name)
         return status.selected_model if status is not None else None
+
+    def model_for_task(self, name: str, task_type: str) -> Optional[str]:
+        """Return the legacy catalog suggestion for diagnostics only.
+
+        Production dispatch does not call this helper. Providers with a fixed
+        internal LLM are deliberately outside this compatibility policy.
+        In particular, Hermes keeps its hard-coded model even if a stale
+        ``AI_PM_PROVIDER_MODELS`` entry exists for it.
+
+        A provider with zero or one configured models behaves exactly like
+        ``selected_model`` for every task type - this only differentiates
+        once an operator has actually configured more than one usable model
+        in ``AI_PM_PROVIDER_MODELS``, so it never changes behavior outside
+        that opt-in case. The ordered model list runs from the most
+        economical default (index 0 - Inbox planning and routine
+        implementation) to the highest-quality/most capable option (last
+        index - the independent audit gate, where correctness matters more
+        than throughput; see PROJECT_AUDIT_ROADMAP.md section 8.4).
+        """
+        if task_type not in TASK_TYPES:
+            raise ValueError(f"unknown task_type {task_type!r}; expected one of {TASK_TYPES}")
+        if not supports_model_selection(name):
+            return None
+        status = self._statuses.get(name)
+        if status is None or not status.models:
+            return None
+        if task_type == TASK_AUDIT:
+            return status.models[-1]
+        return status.models[0]
 
     def get_status(self, name: str) -> ProviderStatus:
         return self._statuses.setdefault(name, ProviderStatus(name=name, updated_at=self._clock()))
@@ -214,6 +289,20 @@ class ProviderRegistry:
     def available_providers(self, names: Optional[list[str]] = None) -> list[str]:
         candidates = names if names is not None else self.registered_names()
         return [n for n in candidates if self.is_available(n)]
+
+    def mark_capability_limited(self, name: str, capability_key: str, reason: str) -> ProviderStatus:
+        status = self.get_status(name)
+        status.capability_limits[capability_key] = {
+            "reason": reason,
+            "updated_at": self._clock().isoformat(),
+        }
+        status.updated_at = self._clock()
+        return status
+
+    def is_capability_limited(self, name: str, capability_key: Optional[str]) -> bool:
+        if not capability_key:
+            return False
+        return capability_key in self.get_status(name).capability_limits
 
     def registered_names(self) -> list[str]:
         return list(self._statuses.keys())

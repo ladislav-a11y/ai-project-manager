@@ -1,6 +1,9 @@
+from copy import deepcopy
+
 import pytest
 
 from ai_project_manager.card_contract import (
+    CURRENT_SCHEMA_VERSION,
     DOD_ROUTING_POLICY,
     GOVERNANCE_POLICY,
     KNOWN_FIELDS,
@@ -27,7 +30,7 @@ def test_repair_incomplete_contract_adds_only_safe_missing_fields():
 
     repaired, fields = repair_incomplete_contract(raw)
 
-    assert fields == ["open_feedback", "lifecycle_status", "dod_routing_policy"]
+    assert fields == ["open_feedback", "lifecycle_status", "dod_routing_policy", "schema_version"]
     assert repaired["open_feedback"] == []
     assert repaired["lifecycle_status"] is None
     assert repaired["checkpoint"] == raw["checkpoint"]
@@ -51,11 +54,38 @@ def test_repair_incomplete_contract_migrates_unversioned_card():
     ]
 
 
+@pytest.mark.parametrize("source_version", [0, 1])
+def test_every_compatible_schema_loads_through_the_current_migration_path(source_version):
+    raw = {"schema_version": source_version, "main_task": "preserve me"}
+
+    migrated = migrate_and_validate(raw)
+
+    assert migrated["schema_version"] == CURRENT_SCHEMA_VERSION
+    assert migrated["main_task"] == "preserve me"
+    assert migrated["checkpoint"] == {}
+    assert migrated["dod"] == []
+    assert migrated["open_feedback"] == []
+    assert migrated["lifecycle_status"] is None
+    assert raw == {"schema_version": source_version, "main_task": "preserve me"}
+
+
+def test_current_schema_is_validated_without_a_version_rewrite():
+    current = {
+        "schema_version": CURRENT_SCHEMA_VERSION,
+        "checkpoint": {},
+        "dod": [],
+        "open_feedback": [],
+        "lifecycle_status": None,
+    }
+
+    assert migrate_and_validate(current)["schema_version"] == CURRENT_SCHEMA_VERSION
+
+
 @pytest.mark.parametrize(
     "raw, error_type",
     [
         ({"schema_version": 1, "open_feedback": "not-a-list"}, CardContractError),
-        ({"schema_version": 2}, UnsupportedCardSchemaError),
+        ({"schema_version": CURRENT_SCHEMA_VERSION + 1}, UnsupportedCardSchemaError),
         ({"schema_version": 1, "governance": {"source_of_truth": "local"}}, CardContractError),
     ],
 )
@@ -119,6 +149,26 @@ def test_previous_routing_contract_migrates_to_current_contract():
         "dod_routing_policy": legacy,
     })
     assert migrated["dod_routing_policy"]["commit_rule"].startswith("agents never commit")
+
+
+def test_terminal_live_contract_without_test_execution_rule_migrates():
+    legacy = deepcopy(DOD_ROUTING_POLICY)
+    legacy.pop("test_execution_rule")
+    legacy["dispatch_requirements"] = [
+        "at least one implementation DoD item remains for Pracuje se",
+        "audit-only work is routed to Testování",
+        "audit rejection is persisted as feedback and consumed by the next tick",
+    ]
+    migrated = migrate_and_validate({
+        "schema_version": 1,
+        "checkpoint": {},
+        "dod": [],
+        "open_feedback": [],
+        "lifecycle_status": "done",
+        "governance": GOVERNANCE_POLICY,
+        "dod_routing_policy": legacy,
+    })
+    assert migrated["dod_routing_policy"] == DOD_ROUTING_POLICY
 
 
 def test_dod_contract_rejects_controller_verification_in_implementation_phase():

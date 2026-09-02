@@ -6,6 +6,15 @@ from datetime import datetime
 logger = logging.getLogger("ai_project_manager")
 
 _ENABLED_VALUES = {"1", "true", "yes", "on"}
+_MAX_SLACK_MESSAGE_CHARS = 4000
+
+
+def _bounded_message(message: str) -> str:
+    """Keep operational Slack alerts readable and out of raw trace territory."""
+    text = str(message or "")
+    if len(text) <= _MAX_SLACK_MESSAGE_CHARS:
+        return text
+    return text[:_MAX_SLACK_MESSAGE_CHARS - 80].rstrip() + "\n[detail zkrácen; úplný trace zůstává pouze v lokálním logu]"
 
 
 def status_message(
@@ -85,12 +94,18 @@ def provider_route_detail(
     result: dict | None,
     *,
     selected_provider: str | None = None,
+    selected_model: str | None = None,
+    provider_description: str | None = None,
 ) -> str:
     """Render the provider route so failover is visible in Slack.
 
     The selected provider and the provider that finished a run are not always
     the same: ai-orchestrator may fail over internally.  A final Slack status
     must expose that route without including prompts or raw provider output.
+
+    When model information is available it is surfaced alongside the provider
+    path so operators can see which provider received the run, which model was
+    selected for it, and why both decisions were made.
     """
     if not isinstance(result, dict):
         return "provider path: n/a | failover: n/a"
@@ -115,6 +130,15 @@ def provider_route_detail(
     detail = f"provider path: {' -> '.join(names)} | failover: {'ano' if failed_over else 'ne'}"
     if active_text and active_text != names[-1]:
         detail += f" | aktivní provider: {active_text}"
+
+    if selected_model:
+        model_text = str(selected_model).strip()
+        if model_text:
+            detail += f" | model: {model_text}"
+    if provider_description:
+        desc_text = str(provider_description).strip()
+        if desc_text:
+            detail += f" | proč: {desc_text}"
     return detail
 
 
@@ -141,6 +165,7 @@ def notify(message: str) -> bool:
     # A webhook URL is a credential, not an instruction to emit messages.
     # Developer shells and test runners can inherit the production URL, so
     # keep enablement separate to prevent local runs from notifying Slack.
+    message = _bounded_message(message)
     webhook = os.environ.get("SLACK_WEBHOOK_URL")
 
     if not _notifications_enabled():

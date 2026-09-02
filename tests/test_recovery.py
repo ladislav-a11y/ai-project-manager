@@ -69,6 +69,25 @@ def test_recoverable_error_is_requeued_without_losing_checkpoint():
     assert project.checkpoint == {"run_id": "keep-me"}
 
 
+def test_missing_inbox_request_definition_stays_human_required_with_actionable_reason():
+    project = _blocked(
+        blocked_by="orchestrator returned generic blocked",
+        stop_reason="orchestrator returned generic blocked without an actionable cause",
+        last_output=(
+            "inbox/ obsahuje pouze README.md, požadavek 18 nebyl vložen. "
+            "Bez definice obsahu úkolu nelze implementovat."
+        ),
+    )
+
+    outcome = recover_project(project, NOW)
+
+    assert outcome.action == "human_required"
+    assert outcome.cause == BlockCause.HUMAN_REQUIRED
+    assert "požadavek 18 nebyl vložen" in outcome.reason
+    assert "Doplňte definici požadavku 18" in outcome.step
+    assert project.status == ProjectStatus.BLOCKED
+
+
 # ---- review_at gating (backoff) ----------------------------------------
 
 

@@ -65,34 +65,79 @@ před výběrem nového úkolu. U úkolů ve stejné fázi rozhoduje priorita `P
 Scheduler musí být idempotentní a při absenci bezpečně zpracovatelné práce
 nesmí volat AI.
 
+Dočasné testovací artefakty mají samostatný fail-closed lifecycle. Pytest
+vytváří unikátní `.pytest-basetemp-*` pro konkrétní session a po jejím
+dokončení smaže pouze tento vlastní adresář. Trvalý scheduler smí mezi tick-y,
+tedy až po návratu implementačního nebo auditního subprocessu, odstranit jen
+expirované přímé `.pytest-basetemp-*` potomky explicitního
+`AI_PM_ARTIFACT_CLEANUP_ROOT`. Symlinky, soubory, čerstvé adresáře, jiné názvy,
+zdroje, runtime data a pracovní změny nejsou kandidáty; bez explicitního
+kořene je autonomní cleanup vypnutý.
+
 ### Inbox intake
 
 `INBOX / Nápady` je hlavní boardový vstup PM; osobní Inbox se nikdy nemění.
 Intake musí před implementačním dispatch oddělit přípravu od práce: každá
 nová karta se nejprve zařadí do `Připraveno`, případně rozdělí na samostatné
-úkoly, dostane prioritu `P5` až `P0` a každý připravený název ji musí viditelně
-obsahovat jako `P<n> — název`. Až další tick smí takovou kartu přesunout do
+úkoly, dostane prioritu `P5` až `P0` a každý název workflow karty mimo Inbox ji
+musí viditelně obsahovat jako `P<n> — název`. Až další tick smí takovou kartu přesunout do
 `Pracuje se`. Při přípravě se používá pouze uživatelský text a název Inbox
 karty; strojový blok `PM-DATA` se nesmí považovat za nové zadání. Chybějící,
-nejasná nebo víceznačná projektová identita je fail-closed a karta zůstává v
-Inboxu s konkrétním požadavkem na člověka.
+nejasná nebo víceznačná identita existujícího projektu je fail-closed a karta
+zůstává v Inboxu s konkrétním požadavkem na člověka. U skutečně nového nápadu
+bez neprioritního štítku PM vytvoří stabilní izolovanou identitu ve tvaru
+`<název> [Inbox <zdrojové ID>]`, založí její adresář pod explicitně
+konfigurovaným `AI_PM_PROJECTS_ROOT` a připraví kartu stejně jako ostatní
+úkoly. Tím se nový nápad nesmí sloučit s podobným existujícím projektem;
+neznámý nebo konfliktní štítek se naopak nikdy nepřepisuje odhadem.
 
+Při rozdělení se zdrojová Inbox karta smí dočasně ponechat pouze do okamžiku,
+než jsou bezpečně zapsány všechny podúkoly. Po dokončení splitu se zdroj stane
+prvním kanonickým podúkolem a musí opustit Inbox; nesmí být současně veden jako
+samostatná pracovní karta ani jako duplicitní receipt. Při retry se identita
+smí obnovit jen z jednoznačně shodných již zapsaných podúkolů podle zdrojového
+ID, nikdy z podobnosti názvů.
+
+Inbox planner je samostatná AI-planning fáze a Hermes je v ní vždy zakázaný;
+volí pouze z povolených dostupných providerů mimo Hermes. PM planneru ani
+implementaci/auditu nepředává `--model`: konkrétní model volí provider podle
+typu úkolu a skutečně použitý model se bere až z AO outboxu. Hermes má mimo
+Inbox pevný Nous-only free kontrakt `upstage/solar-pro4:free`; žádný free
+provider nesmí při nedostupnosti svého povoleného free modelu tiše zvolit
+placený LLM.
+
+Opravy, potvrzené chyby, regrese a rework mají vždy závaznou nejvyšší prioritu
+(`P5`); ani explicitní nižší štítek ze zdrojového Inboxu je nesmí snížit.
 Přednost mají opravy PM/orchestrátoru (`P5`), bezpečnostní, produkční nebo
 blokující dopady (`P5`), potvrzené live regrese (`P4`), běžné opravné požadavky
 (`P4`), realizovatelné změny funkcionality (`P3`) a teprve potom běžná,
 budoucí nebo rešeršní práce (`P2` až `P0`). Výsledná priorita se posuzuje pro
 každý rozdělený podúkol zvlášť podle jeho obsahu; zděděné `P0` nesmí všechny
-podúkoly sloučit do stejné priority. Stejná priorita je přípustná jen tehdy,
-když mají úkoly skutečně stejnou naléhavost. Rozsah `P5` až `P0` je pro tuto
-rubu dostatečný a nemá se svévolně rozšiřovat. Priorita je součástí názvu i
-Card Contractu. Intake musí být idempotentní podle neměnného ID zdrojové karty
+podúkoly sloučit do stejné priority. V jedné dávce se priorita nesmí
+opakovat: při kolizi PM použije desetinné podpriority (`P2.01`, `P2.02`),
+které zůstávají pod další celočíselnou úrovní; vždy platí, že vyšší číslo má
+vyšší prioritu. Pokud by ani tato rozšířená škála nestačila, PM ji rozšíří
+stejným monotónním pravidlem, nikdy však nesníží význam vyšší celočíselné
+úrovně. Toto pravidlo platí při Inbox intake do `Připraveno`. Priorita je
+součástí názvu i Card Contractu. Po zařazení je priorita neměnná: PM ji nesmí
+re-rankingem přidělit znovu ani odvozovat z aktuálního listu, fáze, providera
+nebo textu karty. Intake musí být
+idempotentní podle neměnného ID zdrojové karty
 a nesmí vytvořit duplicitní pracovní kartu.
+
+AI planner současně určuje posloupnost podúkolů pomocí zero-based
+`depends_on` indexů. Každý index musí odkazovat na jiný podúkol stejné Inbox
+dávky; cyklus, chybějící index nebo duplicitní priorita znamená fail-closed a
+zdroj zůstane v Inboxu. Scheduler smí mezi dependency-ready podúkoly použít
+prioritu jako pořadí, ale nikdy nesmí spustit podúkol před dokončením jeho
+závislostí. Toto pořadí a návaznosti se ukládají do Card Contractu, aby
+pozdější tick nepracoval proti zdrojové posloupnosti.
 
 Při načtení starší připravené karty PM nejdříve provede bezpečnou in-memory
 migraci známého PM-DATA: opraví historický auditní text na explicitní
-nezávislý audit ai-orchestratoru a srovná `inbox_preparation.task_priority` s
-prioritním štítkem. Teprve potom se karta validuje a synchronizuje běžnou PM
-cestou. Neznámé, konfliktní nebo poškozené hodnoty se neopravují odhadem a
+nezávislý audit ai-orchestratoru, ale prioritu ani její pořadí už nemění.
+Prioritní štítek a titul jsou po intake autoritativní stav Trella. Neznámé,
+konfliktní nebo poškozené hodnoty se neopravují odhadem a
 zůstávají fail-closed. Ruční konektorový limit 2048 znaků není důvod ke
 zkracování kontraktu; PM používá interní synchronizaci s bounded PM-DATA.
 
@@ -149,12 +194,16 @@ Při aktivním Hermesu se dávka omezuje na jeden konkrétní DoD bod a krátké
 ověření; celé testovací sady a široké dávky patří až do orchestratorového
 auditu nebo do provideru po failoveru.
 
-Inbox planning/intake je samostatná fáze před worker dispatch. Běžný PM
-intake používá deterministickou lokální přípravu bez AI tokenů. Pokud bude
-zapojen AI planner pro dlouhý Inbox vstup, smí vybrat pouze prvního dostupného
-providera z pořadí `antigravity → claude → codex`; `hermes` je v této fázi
-explicitně zakázán. Hermes se smí použít až na již rozdělené, prioritou
-opatřené a atomické pracovní kartě.
+Inbox planning/intake je samostatná AI fáze před worker dispatch. Produkční PM
+musí lidský vstup nejprve předat prvnímu dostupnému provideru z pořadí
+`gemini → antigravity → claude → codex`; `hermes` je v této fázi explicitně
+zakázán a pravidlo je vynucené konstantou `INBOX_PLANNING_FORBIDDEN_PROVIDERS`
+i samostatným read-only `plan-inbox` handoffem přes ai-orchestrator. AI planner
+musí vrátit validní atomické úkoly s různými prioritami, jinak zdroj zůstane v
+Inboxu fail-closed. PM uloží skutečný intake provider a model do Card Contractu
+a oznámí je ve Slacku. Hermes se smí použít až na již rozdělené, prioritou
+opatřené a atomické pracovní kartě. Deterministické heuristiky jsou pouze
+testovací/fallback knihovna, nikoli produkční vlastník intake rozhodnutí.
 Handoff je úspěšný teprve po ověření postcondition orchestrátorem: exit code,
 provider/model z usage, povolený rozsah změn a skutečný filesystem/Git diff.
 Přesun karty jiným providerem Hermese neodstraňuje z pořadí: při dalším ticku

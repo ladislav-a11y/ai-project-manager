@@ -124,6 +124,75 @@ def test_save_then_load_round_trips_available_state(tmp_path):
     assert reloaded_status.checkpoint == {"step": 4, "resume": "tests"}
 
 
+def test_save_then_load_round_trips_capability_limits(tmp_path):
+    path = tmp_path / "state.json"
+    registry = ProviderRegistry()
+    registry.mark_available("hermes")
+    registry.mark_capability_limited(
+        "hermes",
+        "audit:station agent:propagation a scoring",
+        "audit plan without evidence",
+    )
+
+    save_provider_state(path, registry)
+
+    reloaded = ProviderRegistry()
+    load_provider_state(path, reloaded)
+
+    status = reloaded.get_status("hermes")
+    assert status.capability_limits["audit:station agent:propagation a scoring"]["reason"] == (
+        "audit plan without evidence"
+    )
+
+
+def test_save_then_load_round_trips_selected_provider_model(tmp_path):
+    path = tmp_path / "state.json"
+    registry = ProviderRegistry()
+    registry.mark_available("codex")
+    registry.configure_models("codex", ["gpt-5.6-luna", "gpt-5.4"])
+
+    save_provider_state(path, registry)
+
+    reloaded = ProviderRegistry()
+    load_provider_state(path, reloaded)
+
+    status = reloaded.get_status("codex")
+    assert status.models == ("gpt-5.6-luna", "gpt-5.4")
+    assert status.selected_model == "gpt-5.6-luna"
+
+
+def test_legacy_provider_state_keeps_models_from_current_configuration(tmp_path):
+    path = tmp_path / "state.json"
+    path.write_text(
+        '{"codex":{"state":"AVAILABLE","retry_after":null,"checkpoint":{}}}',
+        encoding="utf-8",
+    )
+    registry = ProviderRegistry()
+    registry.configure_models("codex", ["gpt-5.6"])
+
+    load_provider_state(path, registry)
+
+    assert registry.selected_model("codex") == "gpt-5.6"
+
+
+def test_current_empty_model_catalog_does_not_restore_stale_persisted_model(tmp_path):
+    path = tmp_path / "state.json"
+    path.write_text(
+        '{"antigravity":{"state":"ERROR","retry_after":null,'
+        '"checkpoint":{},"models":["gemini-2.5-pro"],'
+        '"selected_model":"gemini-2.5-pro"}}',
+        encoding="utf-8",
+    )
+    registry = ProviderRegistry()
+    registry.configure_models("antigravity", [])
+
+    load_provider_state(path, registry)
+
+    status = registry.get_status("antigravity")
+    assert status.models == ()
+    assert status.selected_model is None
+
+
 def test_save_creates_parent_directories(tmp_path):
     path = tmp_path / "nested" / "dir" / "state.json"
     registry = ProviderRegistry()

@@ -40,9 +40,11 @@ Nejdůležitější volitelné proměnné:
 | `AI_ORCHESTRATOR_CMD` | `ai-orchestrator` | Příkaz orchestrátoru; předávají se další argumenty |
 | `AI_PM_PROVIDERS` | `auto` | Čárkou oddělené providery |
 | `AI_PM_POLL_INTERVAL_SECONDS` | `300` | Maximální prodleva mezi polling tick-y |
+| `AI_PM_ARTIFACT_CLEANUP_ROOT` | vypnuto | Explicitní kořen, v němž se mezi běhy mažou pouze expirované `.pytest-basetemp-*` adresáře |
+| `AI_PM_ARTIFACT_RETENTION_HOURS` | `24` | Minimální stáří testovacího artefaktu před cleanupem; nezáporné číslo |
 | `AI_ORCHESTRATOR_TIMEOUT_SECONDS` | bez limitu | Timeout jednoho běhu orchestrátoru |
 | `AI_PM_PROJECT_PATHS` | `{}` | JSON mapa stabilního project key/názvu na checkout |
-| `AI_PM_PROJECTS_ROOT` | prázdné | Společný adresář checkoutů jako fallback; při startu se ukotví na absolutní cestu |
+| `AI_PM_PROJECTS_ROOT` | prázdné | Schválený kořen pro izolované checkouty nových Inbox nápadů; není fallbackem pro nejasnou identitu existujícího projektu |
 | `AI_PM_CARD_PROJECT_KEYS` | `{}` | JSON mapa Trello card ID -> stabilní project identita (jednorázová migrace starých karet, viz níže) |
 | `AI_PM_PROVIDERS_FOR_PROJECT` | `{}` | JSON mapa projektu na seřazený seznam providerů |
 | `AI_ORCHESTRATOR_SPEC_DIR` | `specs` | Adresář generovaných specifikací |
@@ -214,12 +216,20 @@ Přesná pravidla pořadí, povolených přechodů a důkazů dokončení jsou v
 [`WORKFLOW.md`](WORKFLOW.md). Implementace je musí dodržovat i v režimu
 jednorázového `--once` ticku; trvalý scheduler pouze opakuje stejný tick.
 
-Priorita projektu je `P0` až `P5` (vyšší číslo má přednost). Blokované nebo
+Priorita projektu je `P0` až `P5` (vyšší číslo má přednost); při rozdělení
+jedné Inbox karty se kolize rozlišují desetinnými podúrovněmi, například
+`P2.01` a `P2.02`. Každá workflow karta mimo Inbox má tuto aktuální prioritu
+také přímo v názvu. Blokované nebo
 zamčené projekty se nepouštějí. Session/quota limit přepne provider na
 `LIMITED`, uloží checkpoint a `retry_after`; do deadline probíhá jen lokální
 polling. Po deadline se provider bez zvláštního AI požadavku znovu povolí a
 práce pokračuje z checkpointu. Opakované identické chyby zastavuje guard, aby
 daemon nevytvářel nekonečnou smyčku permission/test pokusů.
+
+AI Inbox intake ukládá u každého rozděleného podúkolu také `depends_on` a
+prováděcí pořadí. Závislosti mají přednost před prioritou: vyšší priorita
+řadí jen mezi podúkoly, jejichž předpoklady jsou v `Hotovo`; cyklický nebo
+neúplný plán se do workflow nepřijme.
 
 ## Ověření
 
@@ -231,14 +241,20 @@ Testy jsou plně lokální; produkční Trello ani orchestrátor nevolají.
 
 # Provider model selection
 
-`AI_PM_PROVIDER_MODELS` is an optional JSON mapping from every configured
-provider to an ordered, non-empty model list. The first entry is the selected
-model and is passed to ai-orchestrator as `--model` for both implementation and
-audit dispatches. The PM persists that selection with the Trello run evidence and includes
-the provider and model in Slack start/result messages. If ai-orchestrator
-returns `active_model`, `model`, or `usage.total.model`, the confirmed runtime
-model replaces the configured selection in result messages. Missing model
-information is reported explicitly as an unknown provider default; it is never
-guessed from the provider name.
+PM selects the provider and task family, but never forces a concrete LLM model.
+The provider receives the task prompt and chooses its model according to that
+task type. `AI_PM_PROVIDER_MODELS` is retained only as a diagnostic/backwards-
+compatibility catalog; PM does not translate its entries into `--model`.
+After the run, PM records the actual `active_model`/`model`/`usage.total.model`
+returned by ai-orchestrator, or explicitly records that the provider default
+was not reported. It never guesses a model from the provider name.
+
+Inbox planning follows the same model-ownership rule, but has a separate
+provider allowlist that permanently excludes Hermes. Hermes is reserved for
+already-prepared work and, wherever it is used, ai-orchestrator enforces the
+exact Nous-only free model `upstage/solar-pro4:free`. A free-tier provider must
+remain free-only and fail closed when no permitted free model is available; it
+must never silently fall back to a paid LLM. These rules apply equally to
+Inbox intake, implementation and independent audit.
 
 Example: `{"claude":["claude-opus-4-1","claude-sonnet-4"],"codex":["gpt-5.6"]}`.

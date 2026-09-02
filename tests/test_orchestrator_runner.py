@@ -8,10 +8,12 @@ from ai_project_manager.models import DoDItem, ProjectRecord as _ProjectRecord, 
 from ai_project_manager.orchestrator_handoff import InvalidTaskError
 from ai_project_manager.orchestrator_runner import (
     DEFAULT_PROVIDER_AGENT_MAP,
+    INBOX_PLANNER_PROVIDERS,
     NO_COMMIT_INSTRUCTION,
     OrchestratorProcessError,
     ProjectPathError,
     build_audit_run_fn,
+    build_inbox_planner_fn,
     build_run_fn,
     _controller_finalization_is_verified,
     _finalization_needs_refresh,
@@ -29,6 +31,11 @@ def ProjectRecord(*args, **kwargs):
     if kwargs.get("name") == "Demo" and "project_key" not in kwargs:
         kwargs["project_key"] = "Demo"
     return _ProjectRecord(*args, **kwargs)
+
+
+def test_inbox_planner_provider_allowlist_never_contains_hermes():
+    assert INBOX_PLANNER_PROVIDERS == ("antigravity", "claude", "codex")
+    assert "hermes" not in INBOX_PLANNER_PROVIDERS
 
 
 @pytest.fixture(autouse=True)
@@ -348,11 +355,113 @@ def test_audit_run_fn_uses_supported_autonomous_cli_and_reads_internal_audit(tmp
 
     assert result["verdict"] == "accepted"
     assert "--mode" not in seen["command"]
-    assert seen["command"][seen["command"].index("--model") + 1] == "claude-opus-4-1"
+    assert "--model" not in seen["command"]
     assert seen["command"][seen["command"].index("--max-iterations") + 1] == "1"
     assert seen["command"][-1] == "--no-commit"
     assert result["active_provider"] == "anthropic"
     assert result["active_model"] == "claude-opus-4-1"
+
+
+def test_audit_and_implementation_delegate_model_selection_to_provider(tmp_path):
+    """PM passes task type/context, never a stale provider model override."""
+    registry = ProviderRegistry()
+    registry.mark_available("claude")
+    registry.configure_models("claude", ["claude-sonnet-4", "claude-opus-4-1"])
+
+    implementation_project = ProjectRecord(
+        name="Demo",
+        status=ProjectStatus.READY,
+        orchestrator_ready_task="Implement feature X",
+    )
+    implementation_seen = {}
+
+    def fake_impl_subprocess_run(command):
+        implementation_seen["command"] = command
+        write_outbox_result(
+            tmp_path / "outbox", "Demo",
+            {"checkpoint": {}, "status": "in_progress"},
+            run_id="fixed-run-id",
+        )
+        return completed()
+
+    run_fn, _, _ = make_run_fn(tmp_path, registry, subprocess_run=fake_impl_subprocess_run)
+    run_fn(implementation_project, "claude")
+    assert "--model" not in implementation_seen["command"]
+
+    audit_project = ProjectRecord(
+        name="Demo",
+        status=ProjectStatus.TESTING,
+        orchestrator_ready_task="Verify the feature",
+        dod=[DoDItem(text="implemented", checked=True)],
+        checkpoint={"completed_dod_indices": [0]},
+    )
+    audit_seen = {}
+
+    def fake_audit_subprocess_run(command):
+        audit_seen["command"] = command
+        write_outbox_result(
+            tmp_path / "outbox", "Demo",
+            {"status": "completed", "last_output": "audit passed", "iterations": [{
+                "audit_performed": True, "audit_rejected_indices": [], "audit_protocol_error": False,
+                "test_output": "1 passed",
+            }]},
+            run_id="audit-run",
+        )
+        return completed()
+
+    build_audit_run_fn(
+        registry,
+        command=["ai-orchestrator"],
+        project_paths={"Demo": str(tmp_path / "demo-checkout")},
+        spec_dir=str(tmp_path / "specs"),
+        outbox_dir=str(tmp_path / "outbox"),
+        subprocess_run=fake_audit_subprocess_run,
+        run_id_fn=lambda: "audit-run",
+    )(audit_project, "claude")
+
+    assert "--model" not in audit_seen["command"]
+
+
+def test_production_audit_starts_with_pm_selected_provider_and_skips_capability_limited_hermes(tmp_path):
+    registry = ProviderRegistry()
+    for name in ("hermes", "antigravity", "claude", "codex"):
+        registry.mark_available(name)
+    registry.mark_capability_limited(
+        "hermes", "audit:station agent:propagation a scoring", "review plan without verdict"
+    )
+    project = ProjectRecord(
+        name="Station audit", project_key="Station Agent", status=ProjectStatus.TESTING,
+        orchestrator_ready_task="Verify propagation a scoring",
+        dod=[DoDItem(text="implemented", checked=True)],
+        extra_data={"inbox_preparation": {"scope": "propagation a scoring"}},
+    )
+    seen = {}
+
+    def fake_subprocess_run(command):
+        seen["command"] = command
+        write_outbox_result(
+            tmp_path / "outbox", "Station audit",
+            {"status": "completed", "iterations": [{
+                "audit_performed": True, "audit_rejected_indices": [],
+                "audit_protocol_error": False, "test_output": "1 passed",
+            }]},
+            run_id="audit-run",
+        )
+        return completed()
+
+    result = build_audit_run_fn(
+        registry, command=["ai-orchestrator"],
+        project_paths={"Station Agent": str(tmp_path / "demo-checkout")},
+        spec_dir=str(tmp_path / "specs"), outbox_dir=str(tmp_path / "outbox"),
+        subprocess_run=fake_subprocess_run, run_id_fn=lambda: "audit-run",
+        use_provider_failover=True,
+    )(project, "codex")
+
+    assert result["verdict"] == "accepted"
+    assert seen["command"][seen["command"].index("--agent") + 1] == "auto"
+    assert seen["command"][seen["command"].index("--provider-order") + 1] == (
+        "codex,antigravity,claude-code"
+    )
 
 
 def test_audit_run_fn_reads_internal_audit_rejection_with_concrete_reason(tmp_path):
@@ -399,6 +508,53 @@ def test_audit_run_fn_reads_internal_audit_rejection_with_concrete_reason(tmp_pa
     assert "export still times out on large accounts" in result["reason"]
     assert result["reject_target"] == "in_progress"
     assert result["rejected_indices"] == [0]
+
+
+def test_audit_run_fn_routes_audit_only_rejection_back_to_testing(tmp_path):
+    registry = ProviderRegistry()
+    registry.mark_available("claude")
+    project = ProjectRecord(
+        name="Demo",
+        status=ProjectStatus.TESTING,
+        orchestrator_ready_task="Verify the live endpoint",
+        dod=[
+            DoDItem(text="implemented", checked=True),
+            DoDItem(text="independent audit", phase="audit", checked=False),
+        ],
+        checkpoint={"completed_dod_indices": [0]},
+    )
+
+    def fake_subprocess_run(command):
+        write_outbox_result(
+            tmp_path / "outbox",
+            "Demo",
+            {
+                "status": "completed",
+                "iterations": [{
+                    "audit_performed": True,
+                    "audit_rejected_indices": [1],
+                    "audit_protocol_error": False,
+                    "note": "live endpoint evidence is missing",
+                    "test_output": "1 passed",
+                }],
+            },
+            run_id="audit-only-run",
+        )
+        return completed()
+
+    result = build_audit_run_fn(
+        registry,
+        command=["ai-orchestrator"],
+        project_paths={"Demo": str(tmp_path / "demo-checkout")},
+        spec_dir=str(tmp_path / "specs"),
+        outbox_dir=str(tmp_path / "outbox"),
+        subprocess_run=fake_subprocess_run,
+        run_id_fn=lambda: "audit-only-run",
+    )(project, "claude")
+
+    assert result["verdict"] == "rejected"
+    assert result["reject_target"] == "testing"
+    assert result["rejected_indices"] == [1]
 
 
 # ---- resolving a project's local path (item 1) ------------------------
@@ -600,7 +756,7 @@ def test_run_fn_invokes_real_cli_with_project_goal_spec_and_agent(tmp_path):
     # provider "claude" is Project Manager's own name; the ai-orchestrator
     # CLI expects its agent identifier, "claude-code" (item 5).
     assert command[command.index("--agent") + 1] == "claude-code"
-    assert command[command.index("--model") + 1] == "claude-opus-4-1"
+    assert "--model" not in command
     assert command[command.index("--run-id") + 1] == "fixed-run-id"
 
     spec_path = command[command.index("--spec") + 1]
@@ -647,6 +803,44 @@ def test_production_run_fn_dispatches_auto_for_same_tick_provider_failover(tmp_p
     )
 
     run_fn(project, "hermes")
+
+    assert seen["command"][seen["command"].index("--agent") + 1] == "auto"
+    assert seen["command"][seen["command"].index("--provider-order") + 1] == "hermes,antigravity,claude-code,codex"
+    assert "gemini" not in seen["command"][seen["command"].index("--provider-order") + 1]
+    assert "--model" not in seen["command"]
+
+
+def test_production_failover_suppresses_pm_selected_model_for_non_hermes_provider(tmp_path):
+    # Same-tick failover hands the whole provider chain to ai-orchestrator,
+    # so a single PM-selected model can never apply across it - this must
+    # hold for every provider, not just Hermes (see the sibling failover
+    # dispatch test above, which asserts the same for the default provider).
+    registry = ProviderRegistry()
+    for name in ("hermes", "antigravity", "claude", "codex"):
+        registry.mark_available(name)
+    registry.configure_models("codex", ["gpt-5.6", "gpt-5.4"])
+    seen = {}
+
+    def fake_subprocess_run(command):
+        seen["command"] = command
+        write_outbox_result(
+            tmp_path / "outbox", "Demo",
+            {"status": "in_progress", "active_provider": "codex", "active_model": "gpt-5.6"},
+            run_id="model-run",
+        )
+        return completed()
+
+    project = ProjectRecord(name="Demo", project_key="Demo", orchestrator_ready_task="Implement")
+    build_run_fn(
+        registry,
+        command=["ai-orchestrator", "autonomous"],
+        project_paths={"Demo": str(tmp_path / "demo-checkout")},
+        spec_dir=str(tmp_path / "specs"),
+        outbox_dir=str(tmp_path / "outbox"),
+        subprocess_run=fake_subprocess_run,
+        run_id_fn=lambda: "model-run",
+        use_provider_failover=True,
+    )(project, "codex")
 
     assert seen["command"][seen["command"].index("--agent") + 1] == "auto"
     assert "--model" not in seen["command"]
@@ -1425,6 +1619,70 @@ def test_map_provider_to_agent_translates_claude_to_claude_code():
 def test_map_provider_to_agent_passes_through_unknown_providers():
     assert map_provider_to_agent("gpt") == "gpt"
     assert map_provider_to_agent("gemini") == "gemini"
+
+
+def test_inbox_planner_excludes_retired_gemini_and_hermes_and_returns_validated_ai_tasks():
+    registry = ProviderRegistry()
+    for name in ("hermes", "gemini", "antigravity", "codex"):
+        registry.mark_available(name)
+    registry.configure_models("antigravity", ["Gemini 3.7 Flash (High)"])
+    calls = []
+
+    def fake_subprocess(command, **kwargs):
+        calls.append((command, kwargs))
+        return completed(
+            json.dumps(
+                {
+                    "success": True,
+                    "provider": "antigravity",
+                    "model": "Gemini 3.7 Flash (High)",
+                    "output": json.dumps(
+                        {
+                            "tasks": [
+                                {
+                                    "scope": "regrese",
+                                    "task": "Opravit potvrzenou regresi.",
+                                    "next_step": "Reprodukovat regresi.",
+                                    "priority": 4.01,
+                                }
+                            ]
+                        }
+                    ),
+                }
+            )
+        )
+
+    planner = build_inbox_planner_fn(
+        registry,
+        ["python", "orchestrator.py", "autonomous", "--no-commit"],
+        subprocess_run=fake_subprocess,
+    )
+    result = planner({"id": "source", "name": "Regrese", "desc": "Opravit regresi"}, [])
+
+    assert result["provider"] == "antigravity"
+    assert result["tasks"][0].priority == 4.01
+    assert calls[0][0] == ["python", "orchestrator.py", "plan-inbox", "--agent", "antigravity"]
+    assert "gemini" not in calls[0][0]
+    assert "hermes" not in calls[0][0]
+
+
+def test_inbox_planner_does_not_fallback_to_hermes_when_it_is_the_only_provider():
+    registry = ProviderRegistry()
+    registry.mark_available("hermes")
+    calls = []
+
+    def fake_subprocess(command, **kwargs):
+        calls.append(command)
+        return completed()
+
+    planner = build_inbox_planner_fn(
+        registry,
+        ["python", "orchestrator.py", "autonomous", "--no-commit"],
+        subprocess_run=fake_subprocess,
+    )
+
+    assert planner({"id": "source", "name": "Nápad", "desc": "Úkol"}, []) is None
+    assert calls == []
 
 
 def test_run_fn_keeps_pm_side_provider_name_for_registry_while_mapping_agent_for_cli(tmp_path):

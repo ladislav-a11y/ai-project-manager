@@ -1,4 +1,5 @@
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -143,6 +144,52 @@ def test_main_maintain_only_migrates_and_notifies_without_ever_dispatching(monke
     assert data["governance"] == GOVERNANCE_POLICY
 
     assert any("Živá údržba" in message for message in messages)
+
+
+def test_main_maintain_only_applies_explicit_source_identity_migration(monkeypatch):
+    """Maintenance must repair a stale generated Inbox identity without
+    dispatching a provider or changing the card's priority/list."""
+    _set_trello_env(monkeypatch)
+    monkeypatch.setenv(
+        "AI_PM_PROJECT_PATHS",
+        json.dumps({"Station Agent": "D:/station-agent"}),
+    )
+    monkeypatch.setenv(
+        "AI_PM_CARD_PROJECT_KEYS",
+        json.dumps({"source-1": "Station Agent"}),
+    )
+
+    client = InMemoryTrelloClient()
+    ready = client.get_list_id_by_name("Ready")
+    card = client.create_card(
+        ready,
+        "P5.40 — oprava station agent [Inbox source-1]",
+        desc="<!-- PM-DATA\n"
+        + json.dumps(
+            {
+                "schema_version": CURRENT_SCHEMA_VERSION,
+                "main_task": "station_agent auto tune",
+                "project_key": "oprava station agent [Inbox source-1]",
+                "inbox_preparation": {
+                    "source_card_id": "source-1",
+                    "generated_project": True,
+                    "project_path": "D:/scratch/source-1",
+                },
+                "dod": [],
+                "open_feedback": [],
+                "checkpoint": {},
+            }
+        )
+        + "\n-->",
+        labels=["P5.40", "oprava station agent [Inbox source-1]"],
+    )
+
+    monkeypatch.setattr("ai_project_manager.daemon.notify", lambda message: None)
+    assert main(["--maintain-only"], client=client, run_fn=lambda *_: (_ for _ in ()).throw(AssertionError())) == 0
+
+    migrated = client.get_card(card["id"])
+    assert [label["name"] for label in migrated["labels"]] == ["P5.40", "Station Agent"]
+    assert migrated["list_id"] == ready
 
 
 def test_main_maintain_only_reports_unsafe_card_without_overwriting_it(monkeypatch):
@@ -529,6 +576,31 @@ def test_main_wires_configured_orchestrator_timeout_into_build_run_fn(monkeypatc
 
     assert exit_code == 0
     assert seen["timeout_seconds"] == 42.0
+
+
+def test_main_wires_configured_artifact_cleanup_policy_into_run_loop(monkeypatch):
+    """AI_PM_ARTIFACT_CLEANUP_ROOT/AI_PM_ARTIFACT_RETENTION_HOURS must
+    actually reach run_loop when main() wires the real config - mirrors
+    the AI_ORCHESTRATOR_TIMEOUT_SECONDS regression above, where a parsed
+    Config field was silently dropped before reaching its consumer."""
+    _set_trello_env(monkeypatch)
+    monkeypatch.setenv("AI_PM_ARTIFACT_CLEANUP_ROOT", "test-artifacts")
+    monkeypatch.setenv("AI_PM_ARTIFACT_RETENTION_HOURS", "2.5")
+
+    seen = {}
+
+    def fake_run_loop(*args, **kwargs):
+        seen.update(kwargs)
+        from ai_project_manager.runner import RunOutcome
+        return RunOutcome(ran=False, reason="idle")
+
+    monkeypatch.setattr("ai_project_manager.cli.run_loop", fake_run_loop)
+
+    exit_code = main(["--once"], client=InMemoryTrelloClient(), run_fn=lambda project, provider: {})
+
+    assert exit_code == 0
+    assert seen["artifact_cleanup_root"] == os.path.abspath("test-artifacts")
+    assert seen["artifact_cleanup_retention_seconds"] == 2.5 * 3600
 
 
 def test_main_once_does_nothing_and_never_calls_run_fn_when_no_work(monkeypatch):

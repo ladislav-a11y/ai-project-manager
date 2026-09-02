@@ -5,7 +5,7 @@ from ai_project_manager.guard import OrchestratorGuard
 from ai_project_manager.lock import ProjectLockManager
 from ai_project_manager.models import DoDItem, ProjectRecord, ProjectStatus
 from ai_project_manager.providers import ProviderRegistry
-from ai_project_manager.runner import run_once, run_once_audit
+from ai_project_manager.runner import _capture_live_trello_readback, run_once, run_once_audit
 from ai_project_manager.trello_client import InMemoryTrelloClient
 from ai_project_manager.trello_sync import build_list_maps, project_from_card, sync_project_to_trello
 
@@ -401,6 +401,7 @@ def test_run_once_notifies_slack_start_and_done_when_explicitly_enabled(monkeypa
     client = make_client_with_project(project)
     registry = ProviderRegistry()
     registry.mark_available("claude")
+    registry.configure_models("claude", ["claude-opus-4-1", "claude-sonnet-4"])
 
     outcome = run_once(
         client, [project], registry, lambda _p, _pr: {"status": "done"}, default_providers=["claude"]
@@ -409,9 +410,72 @@ def test_run_once_notifies_slack_start_and_done_when_explicitly_enabled(monkeypa
     assert outcome.ran is True
     assert len(calls) == 2
     assert "PM zahajuje práci" in calls[0] and "Demo" in calls[0]
-    assert "proč: první dostupný" in calls[0]
+    assert "proč: provider je první dostupný" in calls[0]
+    assert "provider si model pro implementaci vybere podle typu úkolu" in calls[0]
     assert "Průběžný stav: PM ukončil tick" in calls[1] and "audit" in calls[1].lower()
     assert "total=n/a" in calls[1]
+
+
+def test_run_once_slack_explains_actual_model_after_provider_failover(monkeypatch):
+    monkeypatch.setenv("SLACK_WEBHOOK_URL", "https://hooks.slack.invalid/prod")
+    monkeypatch.setenv("AI_PM_SLACK_ENABLED", "1")
+    calls = []
+
+    class FakeResponse:
+        status_code = 200
+
+    def fake_post(*args, **kwargs):
+        calls.append(kwargs.get("json", {}).get("text", ""))
+        return FakeResponse()
+
+    monkeypatch.setattr(slack_notify.requests, "post", fake_post)
+
+    project = ProjectRecord(name="Demo", priority=3, status=ProjectStatus.READY)
+    client = make_client_with_project(project)
+    registry = ProviderRegistry()
+    registry.mark_available("hermes")
+    registry.configure_models("hermes", ["upstage/solar-pro4:free"])
+
+    outcome = run_once(
+        client,
+        [project],
+        registry,
+        lambda _project, _provider: {
+            "status": "done",
+            "active_provider": "codex",
+            "active_model": "gpt-5.6-luna",
+            "provider_sequence": ["hermes", "codex"],
+        },
+        default_providers=["hermes", "codex"],
+    )
+
+    assert outcome.ran is True
+    assert len(calls) == 2
+    assert "codex | model: gpt-5.6-luna" in calls[1]
+    assert "provider codex byl použit po failoveru z hermes" in calls[1]
+    assert "model gpt-5.6-luna je pro implementaci skutečně použitý model providera" in calls[1]
+    assert "Hermes Nous-only kontraktem" not in calls[1]
+    assert project.extra_data["provider_selection"]["provider_reason"] in calls[1]
+
+
+def test_run_once_does_not_report_configured_model_for_provider_without_model_selection():
+    project = ProjectRecord(name="Demo", priority=3, status=ProjectStatus.READY)
+    client = make_client_with_project(project)
+    registry = ProviderRegistry()
+    registry.mark_available("hermes")
+    registry.configure_models("hermes", ["must-not-be-forwarded"])
+
+    outcome = run_once(
+        client,
+        [project],
+        registry,
+        lambda _project, _provider: {"status": "done"},
+        default_providers=["hermes"],
+    )
+
+    assert outcome.ran is True
+    assert project.extra_data["provider_selection"]["model"] is None
+    assert "must-not-be-forwarded" not in project.extra_data["provider_selection"]["provider_reason"]
 
 
 def test_run_once_audit_is_the_only_path_to_hotovo():
@@ -444,6 +508,90 @@ def test_run_once_audit_is_the_only_path_to_hotovo():
     assert reloaded.status == ProjectStatus.DONE
     assert "ai-orchestrator verified" in reloaded.last_output
     assert reloaded.returned_from_testing is False
+
+
+def test_run_once_audit_leaves_model_selection_to_provider():
+    """A configured catalog is diagnostic only; the provider selects per task."""
+    project = ProjectRecord(
+        name="Demo",
+        priority=3,
+        status=ProjectStatus.TESTING,
+        main_task="Implement and verify the feature",
+        dod=[DoDItem(text="implementation", checked=True)],
+    )
+    client = make_client_with_project(project)
+    registry = ProviderRegistry()
+    registry.mark_available("claude")
+    registry.configure_models("claude", ["claude-sonnet-4", "claude-opus-4-1"])
+
+    outcome = run_once_audit(
+        client,
+        [project],
+        registry,
+        lambda _project, _provider: {
+            "verdict": "accepted",
+            "evidence": "ai-orchestrator verified the implementation",
+        },
+        default_providers=["claude"],
+    )
+
+    assert outcome.ran is True
+    assert project.extra_data["provider_selection"]["model"] is None
+    assert "provider si model pro audit vybere podle typu úkolu" in project.extra_data["provider_selection"]["provider_reason"]
+
+
+def test_implementation_receipt_preserves_catalog_for_following_audit_dispatch():
+    project = ProjectRecord(
+        name="Demo",
+        priority=3,
+        status=ProjectStatus.READY,
+        main_task="Implement and verify the feature",
+        dod=[DoDItem(text="implementation", checked=False)],
+    )
+    client = make_client_with_project(project)
+    registry = ProviderRegistry()
+    registry.mark_available("claude")
+    registry.configure_models("claude", ["claude-sonnet-4", "claude-opus-4-1"])
+
+    implementation = run_once(
+        client,
+        [project],
+        registry,
+        lambda _project, _provider: {
+            "status": "done",
+            "active_provider": "claude",
+            "active_model": "claude-sonnet-4",
+            "checkpoint": {"completed_dod_indices": [0]},
+        },
+        default_providers=["claude"],
+    )
+
+    assert implementation.ran is True
+    assert project.status == ProjectStatus.TESTING
+    assert registry.get_status("claude").models == (
+        "claude-sonnet-4",
+        "claude-opus-4-1",
+    )
+
+    dispatched = []
+    audit = run_once_audit(
+        client,
+        [project],
+        registry,
+        lambda audit_project, provider: dispatched.append(
+            (audit_project.extra_data["provider_selection"]["model"], provider)
+        )
+        or {
+            "verdict": "accepted",
+            "evidence": "ai-orchestrator verified the implementation",
+            "active_provider": "claude",
+            "active_model": "claude-opus-4-1",
+        },
+        default_providers=["claude"],
+    )
+
+    assert audit.ran is True
+    assert dispatched == [(None, "claude")]
 
 
 def test_run_once_audit_rejected_returns_concrete_feedback_to_pracuje_se():
@@ -479,6 +627,38 @@ def test_run_once_audit_rejected_returns_concrete_feedback_to_pracuje_se():
     assert reloaded.status == ProjectStatus.IN_PROGRESS
     assert any("export still times out" in item for item in reloaded.open_feedback)
     assert any("Evidence:" in item for item in reloaded.open_feedback)
+
+
+def test_run_once_audit_records_provider_capability_limit_for_plan_without_verdict():
+    project = ProjectRecord(
+        name="P5.04 — propagation a scoring",
+        project_key="Station Agent",
+        priority=5.04,
+        status=ProjectStatus.TESTING,
+        main_task="Implement and verify the feature",
+        dod=[DoDItem(text="implementation", checked=True)],
+        extra_data={"inbox_preparation": {"scope": "propagation a scoring"}},
+    )
+    client = make_client_with_project(project)
+    registry = ProviderRegistry()
+    registry.mark_available("hermes")
+
+    outcome = run_once_audit(
+        client,
+        [project],
+        registry,
+        lambda _project, _provider: {
+            "verdict": "rejected",
+            "reason": "needs verification",
+            "evidence": "pending audit verdict; no live verification was performed",
+        },
+        default_providers=["hermes"],
+    )
+
+    assert outcome.ran is True
+    assert registry.is_capability_limited(
+        "hermes", "audit:station agent:propagation a scoring"
+    )
 
 
 def test_run_once_audit_rejected_with_explicit_reject_target_ready():
@@ -554,6 +734,165 @@ def test_run_once_audit_rejected_audit_only_stays_in_testing_and_persists_readba
     assert seen["readback"]["dod"][1]["phase"] == "audit"
     assert "fresh live readback was not accepted" in project.stop_reason
     assert "live_trello_readback" in project.extra_data
+
+
+def test_audit_readback_preserves_live_provider_model_and_slack_receipt():
+    project = ProjectRecord(
+        name="P5.01 — oprava PM model selection",
+        priority=5.01,
+        status=ProjectStatus.READY,
+        main_task="Implement and verify model selection",
+        dod=[DoDItem(text="implementation", checked=True)],
+    )
+    client = make_client_with_project(project)
+    registry = ProviderRegistry()
+    registry.mark_available("codex")
+
+    implementation = run_once(
+        client,
+        [project],
+        registry,
+        lambda _project, _provider: {
+            "status": "done",
+            "run_id": "implementation-live-run",
+            "active_provider": "codex",
+            "active_model": "gpt-5.6-luna",
+            "provider_sequence": ["codex"],
+        },
+        default_providers=["codex"],
+    )
+    assert implementation.ran is True
+    assert project.status == ProjectStatus.TESTING
+
+    seen = {}
+
+    def audit_run(audit_project, _provider):
+        seen["readback"] = audit_project.extra_data["live_trello_readback"]
+        return {
+            "verdict": "rejected",
+            "reason": "audit evidence intentionally withheld by test",
+            "evidence": "readback was inspected",
+            "reject_target": "testing",
+        }
+
+    outcome = run_once_audit(
+        client,
+        [project],
+        registry,
+        audit_run,
+        default_providers=["codex"],
+    )
+
+    assert outcome.ran is True
+    metadata = seen["readback"]["contract_metadata"]
+    evidence = metadata["provider_selection_history"][0]["live_evidence"]
+    assert evidence["active_model"] == "gpt-5.6-luna"
+    assert evidence["active_provider"] == "codex"
+    assert evidence["run_id"] == "implementation-live-run"
+
+
+def test_audit_readback_preserves_inbox_split_priority_identity_dependency_and_workflow_state():
+    inbox_preparation = {
+        "source_card_id": "source-card-1",
+        "source_card_url": "https://trello.example/c/source-card-1",
+        "content_sha256": "a" * 64,
+        "subtask_index": 1,
+        "subtask_count": 2,
+        "scope": "rozšíření",
+        "source_priority": 3,
+        "task_priority": 5,
+        "depends_on_subtask_indices": [0],
+        "execution_order": 1,
+        "project_path": "/repo/demo",
+        "generated_project": False,
+    }
+    project = ProjectRecord(
+        name="Demo — požadavek 2",
+        priority=5,
+        status=ProjectStatus.TESTING,
+        main_task="Implement and verify the split subtask",
+        dod=[DoDItem(text="implementation", checked=True)],
+        extra_data={"inbox_preparation": dict(inbox_preparation)},
+    )
+    client = make_client_with_project(project)
+    registry = ProviderRegistry()
+    registry.mark_available("claude")
+    seen = {}
+
+    def audit_run(audit_project, _provider):
+        seen["readback"] = audit_project.extra_data["live_trello_readback"]
+        return {
+            "verdict": "rejected",
+            "reason": "audit evidence intentionally withheld by test",
+            "evidence": "readback was inspected",
+            "reject_target": "testing",
+        }
+
+    outcome = run_once_audit(
+        client,
+        [project],
+        registry,
+        audit_run,
+        default_providers=["claude"],
+    )
+
+    assert outcome.ran is True
+    # The readback is captured fresh from the live Trello card, i.e. after a
+    # full sync-to-Trello -> project_from_card round trip and Card Contract
+    # migration, not merely echoed from the in-memory ProjectRecord.
+    assert seen["readback"]["contract_metadata"]["inbox_preparation"] == inbox_preparation
+
+
+def test_capture_live_trello_readback_reflects_persisted_card_not_stale_in_memory_claim():
+    """An auditor must never have to trust the agent's in-memory claim.
+
+    Write the correct priority/identity/dependency/workflow-state data to
+    Trello, then corrupt the in-memory ProjectRecord *after* that write (as a
+    stale snapshot or a bug would). The readback handed to the audit must
+    still match what is actually persisted on the card - proving it is
+    produced by fetching and re-parsing the live card, not by echoing
+    ``project.extra_data``/``project.dod``/``project.checkpoint``.
+    """
+    inbox_preparation = {
+        "source_card_id": "source-card-9",
+        "source_card_url": "https://trello.example/c/source-card-9",
+        "content_sha256": "b" * 64,
+        "subtask_index": 2,
+        "subtask_count": 3,
+        "scope": "rozšíření",
+        "source_priority": 4,
+        "task_priority": 2,
+        "depends_on_subtask_indices": [0, 1],
+        "execution_order": 2,
+        "project_path": "/repo/demo2",
+        "generated_project": False,
+    }
+    project = ProjectRecord(
+        name="Demo — požadavek 4",
+        priority=2,
+        status=ProjectStatus.TESTING,
+        main_task="Implement and verify the split subtask",
+        dod=[DoDItem(text="implementation", checked=True)],
+        checkpoint={"step": 3},
+        extra_data={"inbox_preparation": dict(inbox_preparation)},
+    )
+    client = make_client_with_project(project)
+
+    # Tamper with the in-memory claim only - the persisted card is untouched.
+    project.extra_data["inbox_preparation"] = {
+        **inbox_preparation,
+        "depends_on_subtask_indices": [],
+        "task_priority": 999,
+    }
+    project.priority = 999
+    project.checkpoint = {"step": 999}
+
+    readback = _capture_live_trello_readback(client, project)
+
+    assert readback["status"] == "ok"
+    assert readback["contract_metadata"]["inbox_preparation"] == inbox_preparation
+    assert readback["priority"] == 2
+    assert readback["checkpoint"] == {"step": 3}
 
 
 def test_run_once_audit_moves_provider_limit_to_waiting_phase():

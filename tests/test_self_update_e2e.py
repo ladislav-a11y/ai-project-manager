@@ -384,5 +384,5 @@ def test_live_e2e_real_entrypoint_restart_preserves_provider_and_trello_state(tm
     final_trello = json.loads(trello_snapshot_path.read_text(encoding="utf-8"))
     assert len(final_trello["cards"]) == 1
     (card,) = final_trello["cards"].values()
-    assert card["name"] == "Demo"
+    assert card["name"] == "P3 — Demo"
     assert card["desc"] and "dispatch" in card["desc"]

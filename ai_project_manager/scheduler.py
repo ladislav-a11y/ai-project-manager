@@ -75,6 +75,26 @@ def is_schedulable(project: ProjectRecord) -> bool:
     return True
 
 
+def _dependencies_satisfied(project: ProjectRecord, projects: list[ProjectRecord]) -> bool:
+    """Prevent an Inbox child from overtaking an unfinished sibling."""
+    metadata = (project.extra_data or {}).get("inbox_preparation")
+    if not isinstance(metadata, dict):
+        return True
+    dependencies = metadata.get("depends_on_subtask_indices", [])
+    if not dependencies:
+        return True
+    source_id = metadata.get("source_card_id")
+    if not source_id:
+        return False
+    siblings = {
+        (child.extra_data or {}).get("inbox_preparation", {}).get("subtask_index"): child
+        for child in projects
+        if isinstance((child.extra_data or {}).get("inbox_preparation"), dict)
+        and (child.extra_data or {}).get("inbox_preparation", {}).get("source_card_id") == source_id
+    }
+    return all(siblings.get(index) is not None and siblings[index].status == ProjectStatus.DONE for index in dependencies)
+
+
 def pick_next_project(
     projects: list[ProjectRecord],
     provider_registry: ProviderRegistry,
@@ -108,7 +128,7 @@ def pick_next_project(
         if not corrective or hard_wait:
             return None
 
-    candidates = [p for p in projects if is_schedulable(p)]
+    candidates = [p for p in projects if is_schedulable(p) and _dependencies_satisfied(p, projects)]
     # Continue the work already visible in ``Pracuje se`` before admitting a
     # new card from ``Připraveno``.  Priority is a tie-break *within* a
     # workflow phase, not a reason to preempt an active checkpoint.  Testing
@@ -177,8 +197,23 @@ def pick_next_audit_project(
 
     for project in candidates:
         allowed_providers = (providers_for_project or {}).get(project.name, fallback_providers)
+        capability_key = audit_capability_key(project)
         for provider_name in allowed_providers:
-            if provider_registry.is_available(provider_name):
+            if (
+                provider_registry.is_available(provider_name)
+                and not provider_registry.is_capability_limited(provider_name, capability_key)
+            ):
                 return SchedulingDecision(project=project, provider=provider_name)
 
     return None
+
+
+def audit_capability_key(project: ProjectRecord) -> Optional[str]:
+    """Stable audit task-family key used by the provider capability ledger."""
+    preparation = (project.extra_data or {}).get("inbox_preparation")
+    scope = preparation.get("scope") if isinstance(preparation, dict) else None
+    scope = str(scope or project.name).strip().casefold()
+    project_key = str(project.project_key or "unknown").strip().casefold()
+    if not scope:
+        return None
+    return f"audit:{project_key}:{scope}"

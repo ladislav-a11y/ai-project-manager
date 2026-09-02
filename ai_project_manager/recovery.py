@@ -121,12 +121,55 @@ _TRANSIENT_EXTERNAL_PATTERNS = re.compile(
     re.IGNORECASE,
 )
 
+# ai-orchestrator can only implement an Inbox request after the request
+# definition has actually been materialized in the target checkout.  This is
+# a human-input block, not a provider retry: retrying the same empty inbox
+# would only spend tokens and recreate the same ``Čeká na AI`` card state.
+_MISSING_INBOX_INPUT_PATTERNS = (
+    re.compile(
+        r"inbox[/\\].*?\b(?:požadavek|request)\s+#?\d+\s+"
+        r"(?:nebyl vložen|není vložen|was not inserted|was not provided)",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"bez definice obsahu úkolu nelze implementovat[^.]*\.",
+        re.IGNORECASE,
+    ),
+)
+
 _PLACEHOLDER_TASK_PATTERNS = re.compile(r"^(?:tbd|todo|wip|\?+|tba|xxx|n/?a)$", re.IGNORECASE)
 
 
 def _is_placeholder(text: Optional[str]) -> bool:
     stripped = (text or "").strip()
     return not stripped or bool(_PLACEHOLDER_TASK_PATTERNS.match(stripped))
+
+
+def _missing_inbox_input_detail(project: ProjectRecord) -> Optional[str]:
+    """Extract the bounded AO diagnosis for an unmaterialized Inbox request.
+
+    The raw outbox text is retained in ``last_output`` for auditability, but
+    Trello/Slack need a short stable reason.  Return only the matching
+    sentence(s), never a fabricated task definition.
+    """
+    sources = (
+        project.last_output,
+        project.stop_reason,
+        project.blocked_by,
+        project.next_step,
+    )
+    for source in sources:
+        text = re.sub(r"\s+", " ", str(source or "")).strip()
+        if not text:
+            continue
+        matches = []
+        for pattern in _MISSING_INBOX_INPUT_PATTERNS:
+            match = pattern.search(text)
+            if match:
+                matches.append(match.group(0).strip())
+        if matches:
+            return " ".join(dict.fromkeys(matches))
+    return None
 
 
 # One-time repair for reasons corrupted by a previous version of this module
@@ -377,6 +420,25 @@ def recover_project(
     reason_text = " ".join(
         dict.fromkeys(part for part in (project.blocked_by, project.stop_reason) if part)
     )
+
+    missing_inbox_detail = _missing_inbox_input_detail(project)
+    if missing_inbox_detail:
+        # The AO outbox has already proven that the implementation input is
+        # absent.  Do not requeue or ask another provider to guess it.
+        request_match = re.search(r"(?:požadavek|request)\s+#?(\d+)", missing_inbox_detail, re.IGNORECASE)
+        request_label = f" požadavku {request_match.group(1)}" if request_match else " požadavku"
+        return _mark_human_required(
+            project,
+            now,
+            backoff,
+            BlockCause.HUMAN_REQUIRED,
+            missing_inbox_detail,
+            step=(
+                f"Doplňte definici{request_label} do inbox/ cílového projektu; "
+                "AO našel pouze README.md a bez definice nelze implementovat. "
+                "Poté kartu ručně vraťte do zpracování."
+            ),
+        )
 
     # The loop guard: once this many auto-recovery cycles have been spent
     # without the project staying unblocked, stop attempting more and

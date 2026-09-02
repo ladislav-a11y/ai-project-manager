@@ -13,7 +13,10 @@ def test_status_messages_are_timestamped_clear_and_provider_block_is_standalone(
         "PM zahajuje práci",
         project="Demo",
         provider="hermes | model: solar",
-        provider_reason="první dostupný v pořadí hermes, codex",
+        provider_reason=(
+            "provider je první dostupný v pořadí hermes, codex; "
+            "pro implementaci se model nevybírá; je pevně daný Hermes Nous-only kontraktem"
+        ),
         now=now,
     )
     blocked = slack_notify.provider_blocked_message(
@@ -24,7 +27,8 @@ def test_status_messages_are_timestamped_clear_and_provider_block_is_standalone(
     assert "PM zahajuje práci" in status
     assert "projekt: Demo" in status
     assert "provider: hermes | model: solar" in status
-    assert "proč: první dostupný" in status
+    assert "proč: provider je první dostupný" in status
+    assert "pro implementaci se model nevybírá" in status
     assert "Provider blokován" in blocked
     assert "blokován do: 2026-08-31T17:00:00+00:00" in blocked
     assert "důvod: quota" in blocked

@@ -120,6 +120,42 @@ def test_run_tick_promotes_completed_implementation_before_audit():
     assert project_from_card(client.get_card(project.trello_card_id), id_to_name).status == ProjectStatus.DONE
 
 
+def test_run_tick_promotes_complete_implementation_with_stale_return_marker():
+    project = ProjectRecord(
+        name="Historical audit return",
+        priority=5,
+        status=ProjectStatus.IN_PROGRESS,
+        main_task="Implement and verify the feature",
+        dod=[DoDItem(text="implementation", checked=True)],
+        extra_data={"returned_from_testing": True},
+    )
+    client = make_client_with_project(project)
+    registry = ProviderRegistry()
+    registry.mark_available("claude")
+    implementation_calls = []
+    audit_phases = []
+
+    def run_fn(*_args):
+        implementation_calls.append(True)
+        return {"status": "in_progress"}
+
+    def audit_run_fn(project, _provider):
+        audit_phases.append(project.status)
+        return {"verdict": "accepted", "evidence": "audit passed"}
+
+    outcome = run_tick(
+        client,
+        registry,
+        run_fn,
+        audit_run_fn=audit_run_fn,
+        default_providers=["claude"],
+    )
+
+    assert outcome.ran is True
+    assert implementation_calls == []
+    assert audit_phases == [ProjectStatus.TESTING]
+
+
 def test_run_tick_loads_real_projects_and_processes_inbox_only_when_explicitly_enabled():
     client = InMemoryTrelloClient()
     _, name_to_id = build_list_maps(client)
@@ -161,7 +197,7 @@ def test_run_tick_loads_real_projects_and_processes_inbox_only_when_explicitly_e
     assert client.list_cards(name_to_id["Inbox"]) == []
     receipts = client.list_cards(name_to_id["Done"])
     assert len(receipts) == 1
-    assert receipts[0]["name"].startswith("Zpracováno")
+    assert receipts[0]["name"].startswith("P2 — Zpracováno")
 
 
 def test_run_tick_keeps_new_inbox_task_in_ready_until_next_tick():

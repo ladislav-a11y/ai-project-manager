@@ -1,5 +1,6 @@
 from pathlib import Path
 from uuid import uuid4
+import shutil
 
 import pytest
 
@@ -17,6 +18,29 @@ def pytest_configure(config):
         config.option.basetemp = str(
             Path.cwd() / f".pytest-basetemp-{uuid4().hex}"
         )
+        # Remember ownership: an explicitly supplied --basetemp belongs to
+        # the caller and must never be deleted by this suite.
+        config._ai_pm_owned_basetemp = True
+
+
+@pytest.hookimpl(trylast=True)
+def pytest_sessionfinish(session, exitstatus):
+    """Remove only the fresh basetemp created by this completed test run."""
+    config = session.config
+    if not getattr(config, "_ai_pm_owned_basetemp", False):
+        return
+    path = Path(config.option.basetemp)
+    expected_parent = Path.cwd().resolve()
+    try:
+        if (
+            path.parent.resolve() == expected_parent
+            and path.name.startswith(".pytest-basetemp-")
+            and not path.is_symlink()
+        ):
+            shutil.rmtree(path, ignore_errors=True)
+    except OSError:
+        # Cleanup must never replace the test result with a teardown failure.
+        pass
 
 
 @pytest.fixture(autouse=True)

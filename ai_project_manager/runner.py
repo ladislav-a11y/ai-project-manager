@@ -30,9 +30,9 @@ from .orchestrator_handoff import (
     implementation_dod,
     materialize_project_dod,
 )
-from .providers import ProviderRegistry
-from .scheduler import pick_next_audit_project, pick_next_project
-from .trello_sync import sync_project_to_trello
+from .providers import ProviderRegistry, TASK_AUDIT, TASK_IMPLEMENTATION, supports_model_selection
+from .scheduler import audit_capability_key, pick_next_audit_project, pick_next_project
+from .trello_sync import project_from_card, sync_project_to_trello
 from .slack_notify import (
     notify,
     provider_blocked_message,
@@ -43,6 +43,25 @@ from .slack_notify import (
 )
 
 logger = logging.getLogger("ai_project_manager")
+
+_AUDIT_CAPABILITY_LIMIT_MARKERS = (
+    "needs verification",
+    "pending audit verdict",
+    "audit nebyl proveden",
+    "nelze samostatně potvrdit",
+    "nelze samostatne potvrdit",
+    "agent nemá přístup",
+    "agent nema pristup",
+    "no live verification",
+)
+
+
+def _audit_capability_failure(result: dict) -> bool:
+    """Recognize a plan-without-evidence rejection, not an ordinary bug finding."""
+    if result.get("verdict") != "rejected":
+        return False
+    text = " ".join(str(result.get(key) or "") for key in ("reason", "evidence", "stop_reason")).casefold()
+    return sum(marker in text for marker in _AUDIT_CAPABILITY_LIMIT_MARKERS) >= 2
 
 # run_fn performs the actual provider/orchestrator call for one project
 # and returns a result dict with any of: checkpoint, last_output,
@@ -66,28 +85,107 @@ _REJECT_TARGET_MAP = {
 DEFAULT_HOLDER = "project-manager"
 
 
+def _task_type_label(task_type: str) -> str:
+    """Return the human-facing task family used in Slack explanations."""
+    return {
+        TASK_IMPLEMENTATION: "implementaci",
+        TASK_AUDIT: "audit",
+    }[task_type]
+
+
+def _model_selection_reason(
+    provider: str,
+    model: Optional[str],
+    provider_registry: ProviderRegistry,
+    task_type: str,
+    *,
+    confirmed: bool = False,
+) -> str:
+    """Explain the LLM choice independently from the provider choice."""
+    task_label = _task_type_label(task_type)
+    if provider.casefold() == "hermes":
+        return (
+            f"pro {task_label} se model nevybírá; "
+            "je pevně daný Hermes Nous-only kontraktem"
+        )
+    if confirmed and model:
+        return (
+            f"model {model} je pro {task_label} skutečně použitý model providera "
+            "potvrzený ai-orchestrátorem"
+        )
+    return (
+        f"provider si model pro {task_label} vybere podle typu úkolu; "
+        "PM nepředává --model"
+    )
+
+
 def _provider_selection_reason(
     project: ProjectRecord,
     provider: str,
     providers_for_project: Optional[dict],
     default_providers: Optional[list],
     provider_registry: ProviderRegistry,
+    task_type: str,
 ) -> str:
     ordered = (providers_for_project or {}).get(
         project.name,
         default_providers or provider_registry.registered_names(),
     )
-    return f"první dostupný v pořadí {', '.join(ordered)}"
+    provider_reason = f"provider je první dostupný v pořadí {', '.join(ordered)}"
+    model_reason = _model_selection_reason(
+        provider, None, provider_registry, task_type
+    )
+    return f"{provider_reason}; {model_reason}"
+
+
+def _actual_provider_selection_reason(
+    project: ProjectRecord,
+    selected_provider: str,
+    actual_provider: str,
+    actual_model: Optional[str],
+    confirmed_model: Optional[str],
+    providers_for_project: Optional[dict],
+    default_providers: Optional[list],
+    provider_registry: ProviderRegistry,
+    task_type: str,
+) -> str:
+    """Explain the provider and model that the orchestrator actually used."""
+    if actual_provider == selected_provider:
+        return _provider_selection_reason(
+            project,
+            actual_provider,
+            providers_for_project,
+            default_providers,
+            provider_registry,
+            task_type,
+        )
+
+    provider_reason = (
+        f"provider {actual_provider} byl použit po failoveru z {selected_provider}"
+    )
+    model_reason = _model_selection_reason(
+        actual_provider,
+        actual_model,
+        provider_registry,
+        task_type,
+        confirmed=bool(confirmed_model),
+    )
+    return f"{provider_reason}; {model_reason}"
 
 
 def _capture_live_trello_readback(client, project: ProjectRecord) -> dict:
     """Capture compact, fresh Trello evidence immediately before an audit.
 
     The audit must be able to verify the card that is actually on the board,
-    not only the ProjectRecord snapshot selected earlier in the tick. Keep
-    the payload bounded and focused on lifecycle, identity, DoD, checkpoint,
-    and Inbox/contract fields; the full card description is intentionally not
-    copied into PM-DATA.
+    not only the ProjectRecord snapshot selected earlier in the tick. Every
+    fact below (priority, lifecycle status, DoD, checkpoint, contract
+    metadata) is re-derived by fetching the live card and re-parsing it with
+    ``project_from_card`` - the same read path a fresh scheduler tick would
+    use - so the evidence proves the round trip through Trello, never an
+    unverified echo of the agent's in-memory claim. Keep the payload bounded
+    and focused on lifecycle, identity, DoD, checkpoint, and Inbox/contract
+    fields; the full card description is intentionally not copied into
+    PM-DATA.
     """
     captured_at = datetime.now(timezone.utc).isoformat()
     if not project.trello_card_id:
@@ -101,20 +199,27 @@ def _capture_live_trello_readback(client, project: ProjectRecord) -> dict:
         card = client.get_card(project.trello_card_id)
         list_name = None
         list_lookup_error = None
+        id_to_name: dict = {}
         try:
             lists = client.list_lists()
-            list_name = next(
-                (
-                    item.get("name")
-                    for item in lists
-                    if isinstance(item, dict) and item.get("id") == card.get("list_id")
-                ),
-                None,
-            )
+            id_to_name = {
+                item.get("id"): item.get("name")
+                for item in lists
+                if isinstance(item, dict) and item.get("id")
+            }
+            list_name = id_to_name.get(card.get("list_id"))
             if list_name is None:
                 list_lookup_error = f"unknown list id {card.get('list_id')!r}"
         except Exception as exc:  # noqa: BLE001 - evidence records lookup failure
             list_lookup_error = str(exc)
+
+        # Re-derive every DoD/checkpoint/contract fact from the card that was
+        # just fetched, instead of echoing ``project`` (the pre-sync in-memory
+        # claim). This is the only way the evidence proves the write -> Trello
+        # -> project_from_card round trip and Card Contract migration actually
+        # preserved priority, identity, dependency and workflow-state data,
+        # rather than merely repeating what the agent asserted before sync.
+        live_project = project_from_card(card, id_to_name)
 
         contract_keys = (
             "schema_version",
@@ -127,13 +232,21 @@ def _capture_live_trello_readback(client, project: ProjectRecord) -> dict:
             "scope",
             "inbox_receipts",
             "processed_inbox_card_ids",
+            # Carries the Inbox split's priority, identity (source card id/
+            # url/content hash, subtask index), dependency
+            # (depends_on_subtask_indices) and workflow-state (execution_order,
+            # project_path) metadata, so the pre-audit evidence can prove that
+            # migration/readback never dropped or reordered it.
+            "inbox_preparation",
             "dod_routing_policy",
             "governance",
+            "provider_selection",
+            "provider_selection_history",
         )
         contract_metadata = {
-            key: project.extra_data[key]
+            key: live_project.extra_data[key]
             for key in contract_keys
-            if key in project.extra_data
+            if key in live_project.extra_data
         }
         readback = {
             "status": "ok",
@@ -151,7 +264,8 @@ def _capture_live_trello_readback(client, project: ProjectRecord) -> dict:
             ],
             "last_activity_at": card.get("last_activity_at"),
             "pm_data_present": "PM-DATA" in (card.get("desc") or ""),
-            "lifecycle_status": project.status.value,
+            "priority": live_project.priority,
+            "lifecycle_status": live_project.status.value,
             "dod": [
                 {
                     "index": index,
@@ -159,9 +273,9 @@ def _capture_live_trello_readback(client, project: ProjectRecord) -> dict:
                     "checked": item.checked,
                     "phase": item.phase,
                 }
-                for index, item in enumerate(project.dod)
+                for index, item in enumerate(live_project.dod)
             ],
-            "checkpoint": dict(project.checkpoint or {}),
+            "checkpoint": dict(live_project.checkpoint or {}),
             "contract_metadata": contract_metadata,
         }
         if list_lookup_error:
@@ -174,6 +288,30 @@ def _capture_live_trello_readback(client, project: ProjectRecord) -> dict:
             "card_id": project.trello_card_id,
             "error": str(exc),
         }
+
+
+def _remember_provider_selection(project: ProjectRecord) -> None:
+    """Keep bounded, secret-free implementation handoff receipts for audit.
+
+    The audit phase temporarily selects its own provider and must not erase
+    the implementation provider/model evidence that the preceding PM run
+    produced. Receipts contain only routing metadata and are persisted in
+    Trello's PM-DATA block; prompts, credentials, and raw provider output are
+    never copied.
+    """
+    selection = project.extra_data.get("provider_selection")
+    if not isinstance(selection, dict) or selection.get("stage") == "audit":
+        return
+    history = project.extra_data.get("provider_selection_history")
+    if not isinstance(history, list):
+        history = []
+    run_id = selection.get("run_id")
+    if run_id and any(
+        isinstance(item, dict) and item.get("run_id") == run_id for item in history
+    ):
+        return
+    history.append(dict(selection))
+    project.extra_data["provider_selection_history"] = history[-8:]
 
 
 @dataclass
@@ -298,10 +436,10 @@ def run_once(
 
     project = decision.project
     provider = decision.provider
-    selected_model = provider_registry.selected_model(provider)
+    selected_model = None
     provider_detail = f"{provider} | model: {selected_model or 'provider default (nezjištěn)'}"
     provider_reason = _provider_selection_reason(
-        project, provider, providers_for_project, default_providers, provider_registry
+        project, provider, providers_for_project, default_providers, provider_registry, TASK_IMPLEMENTATION
     )
     logger.info("selected project=%r provider=%s", project.name, provider)
 
@@ -319,6 +457,7 @@ def run_once(
             project.extra_data["provider_selection"] = {
                 "provider": provider,
                 "model": selected_model,
+                "stage": "implementation",
                 "source": "AI_PM_PROVIDER_MODELS" if selected_model else "provider_default",
             }
             # The Trello board must show the real flow while the provider is
@@ -378,12 +517,26 @@ def run_once(
             )
             actual_provider = result.get("active_provider") or provider
             confirmed_model = result_model(result)
-            if confirmed_model:
+            if confirmed_model and not provider_registry.get_status(actual_provider).models:
                 # Learn the model actually used from ai-orchestrator's receipt;
-                # this becomes the preferred model shown on the next dispatch.
+                # this becomes the preferred model shown on the next dispatch
+                # only when no operator-configured catalog exists. Replacing an
+                # existing catalog here would discard its audit-quality model
+                # before the subsequent implementation -> audit dispatch.
                 provider_registry.configure_models(actual_provider, [confirmed_model])
-            actual_selected_model = provider_registry.selected_model(actual_provider)
-            actual_model = confirmed_model or actual_selected_model or "provider default (nezjištěn)"
+            actual_model = confirmed_model
+            actual_model_detail = actual_model or "provider default (nezjištěn)"
+            actual_provider_reason = _actual_provider_selection_reason(
+                project,
+                provider,
+                actual_provider,
+                actual_model,
+                confirmed_model,
+                providers_for_project,
+                default_providers,
+                provider_registry,
+                TASK_IMPLEMENTATION,
+            )
             project.provider = actual_provider
             project.extra_data["provider_selection"]["selected_provider"] = provider
             project.extra_data["provider_selection"]["selected_model"] = selected_model
@@ -391,15 +544,30 @@ def run_once(
             project.extra_data["provider_selection"]["model"] = actual_model
             project.extra_data["provider_selection"]["actual_provider"] = actual_provider
             project.extra_data["provider_selection"]["actual_model"] = actual_model
-            sync_project_to_trello(client, project)
-            logger.info("synced project=%r state to trello (card=%s)", project.name, project.trello_card_id)
+            project.extra_data["provider_selection"]["provider_sequence"] = [
+                item for item in (result.get("provider_sequence") or [])
+                if isinstance(item, str) and item.strip()
+            ]
+            project.extra_data["provider_selection"]["run_id"] = result.get("run_id")
+            project.extra_data["provider_selection"]["recorded_at"] = datetime.now(
+                timezone.utc
+            ).isoformat()
+            project.extra_data["provider_selection"]["provider_reason"] = actual_provider_reason
+            project.extra_data["provider_selection"]["live_evidence"] = {
+                "source": "ai-orchestrator outbox",
+                "active_provider": actual_provider,
+                "active_model": actual_model,
+                "provider_sequence": project.extra_data["provider_selection"]["provider_sequence"],
+                "run_id": result.get("run_id"),
+            }
+            status_messages: list[str] = []
             if project.status == ProjectStatus.DONE:
-                notify(
+                status_messages.append(
                     status_message(
                         "PM dokončil práci",
                         project=project.name,
-                        provider=f"{actual_provider} | model: {actual_model}",
-                        provider_reason=provider_reason,
+                        provider=f"{actual_provider} | model: {actual_model_detail}",
+                        provider_reason=actual_provider_reason,
                         detail=(
                             "výsledek zapsán do Trella | "
                             + provider_route_detail(result, selected_provider=provider)
@@ -408,29 +576,31 @@ def run_once(
                     + usage_suffix(result)
                 )
             elif project.retry_after:
-                notify(provider_blocked_message(
-                    actual_provider,
-                    project.retry_after,
-                    reason=project.stop_reason,
-                ))
-                notify(status_message(
-                    "PM ukončil tick a čeká",
-                    project=project.name,
-                    provider=f"{actual_provider} | model: {actual_model}",
-                    provider_reason=provider_reason,
-                    detail=(
-                        f"další pokus: {project.retry_after} | "
-                        + provider_route_detail(result, selected_provider=provider)
+                status_messages.extend([
+                    provider_blocked_message(
+                        actual_provider,
+                        project.retry_after,
+                        reason=project.stop_reason,
                     ),
-                ) + usage_suffix(result))
+                    status_message(
+                        "PM ukončil tick a čeká",
+                        project=project.name,
+                        provider=f"{actual_provider} | model: {actual_model_detail}",
+                        provider_reason=actual_provider_reason,
+                        detail=(
+                            f"další pokus: {project.retry_after} | "
+                            + provider_route_detail(result, selected_provider=provider)
+                        ),
+                    ) + usage_suffix(result),
+                ])
             else:
                 next_step = project.next_step or project.stop_reason or "pokračování v dalším běhu"
-                notify(
+                status_messages.append(
                     status_message(
                         "Průběžný stav: PM ukončil tick",
                         project=project.name,
-                        provider=f"{actual_provider} | model: {actual_model}",
-                        provider_reason=provider_reason,
+                        provider=f"{actual_provider} | model: {actual_model_detail}",
+                        provider_reason=actual_provider_reason,
                         detail=(
                             f"další krok: {next_step} | "
                             f"{provider_route_detail(result, selected_provider=provider)}"
@@ -438,6 +608,12 @@ def run_once(
                     )
                     + usage_suffix(result)
                 )
+            deliveries = []
+            for message in status_messages:
+                deliveries.append({"message": message, "delivered": notify(message)})
+            project.extra_data["provider_selection"]["slack_notifications"] = deliveries
+            sync_project_to_trello(client, project)
+            logger.info("synced project=%r state to trello (card=%s)", project.name, project.trello_card_id)
             return RunOutcome(
                 ran=True,
                 project_name=project.name,
@@ -491,10 +667,10 @@ def run_once_audit(
 
     project = decision.project
     provider = decision.provider
-    selected_model = provider_registry.selected_model(provider)
+    selected_model = None
     provider_detail = f"{provider} | model: {selected_model or 'provider default (nezjištěn)'}"
     provider_reason = _provider_selection_reason(
-        project, provider, providers_for_project, default_providers, provider_registry
+        project, provider, providers_for_project, default_providers, provider_registry, TASK_AUDIT
     )
     logger.info("selected project=%r provider=%s for audit", project.name, provider)
 
@@ -532,9 +708,11 @@ def run_once_audit(
                 provider_reason=provider_reason,
             ))
             project.provider = provider
+            _remember_provider_selection(project)
             project.extra_data["provider_selection"] = {
                 "provider": provider,
                 "model": selected_model,
+                "stage": "audit",
                 "source": "AI_PM_PROVIDER_MODELS" if selected_model else "provider_default",
             }
             sync_project_to_trello(client, project)
@@ -557,6 +735,15 @@ def run_once_audit(
                         "audit orchestrator result must be a mapping, got "
                         f"{type(result).__name__}"
                     )
+                if _audit_capability_failure(result):
+                    capability_key = audit_capability_key(project)
+                    actual_provider = result.get("active_provider") or provider
+                    if capability_key:
+                        provider_registry.mark_capability_limited(
+                            actual_provider,
+                            capability_key,
+                            "audit returned a review plan without concrete evidence or an independent verdict",
+                        )
                 verdict = result.get("verdict")
                 if verdict is not None:
                     reject_target = None
@@ -629,10 +816,21 @@ def run_once_audit(
             guard.reset(project.name)
             actual_provider = result.get("active_provider") or provider
             confirmed_model = result_model(result)
-            if confirmed_model:
+            if confirmed_model and not provider_registry.get_status(actual_provider).models:
                 provider_registry.configure_models(actual_provider, [confirmed_model])
-            actual_selected_model = provider_registry.selected_model(actual_provider)
-            actual_model = confirmed_model or actual_selected_model or "provider default (nezjištěn)"
+            actual_model = confirmed_model
+            actual_model_detail = actual_model or "provider default (nezjištěn)"
+            actual_provider_reason = _actual_provider_selection_reason(
+                project,
+                provider,
+                actual_provider,
+                actual_model,
+                confirmed_model,
+                providers_for_project,
+                default_providers,
+                provider_registry,
+                TASK_AUDIT,
+            )
             project.provider = actual_provider
             project.extra_data["provider_selection"]["selected_provider"] = provider
             project.extra_data["provider_selection"]["selected_model"] = selected_model
@@ -640,6 +838,7 @@ def run_once_audit(
             project.extra_data["provider_selection"]["model"] = actual_model
             project.extra_data["provider_selection"]["actual_provider"] = actual_provider
             project.extra_data["provider_selection"]["actual_model"] = actual_model
+            project.extra_data["provider_selection"]["provider_reason"] = actual_provider_reason
             sync_project_to_trello(client, project)
             logger.info(
                 "audit result project=%r provider=%s status=%s stop_reason=%s",
@@ -650,8 +849,8 @@ def run_once_audit(
                     status_message(
                         "PM dokončil audit: přijato",
                         project=project.name,
-                        provider=f"{actual_provider} | model: {actual_model}",
-                        provider_reason=provider_reason,
+                        provider=f"{actual_provider} | model: {actual_model_detail}",
+                        provider_reason=actual_provider_reason,
                         detail=(
                             "přesunuto do Hotovo | "
                             + provider_route_detail(result, selected_provider=provider)
@@ -668,8 +867,8 @@ def run_once_audit(
                 notify(status_message(
                     "PM ukončil auditní tick a čeká",
                     project=project.name,
-                    provider=f"{actual_provider} | model: {actual_model}",
-                    provider_reason=provider_reason,
+                    provider=f"{actual_provider} | model: {actual_model_detail}",
+                    provider_reason=actual_provider_reason,
                     detail=(
                         f"další pokus: {project.retry_after} | "
                         + provider_route_detail(result, selected_provider=provider)
@@ -680,8 +879,8 @@ def run_once_audit(
                     status_message(
                         "PM dokončil audit: odmítnuto",
                         project=project.name,
-                        provider=f"{actual_provider} | model: {actual_model}",
-                        provider_reason=provider_reason,
+                        provider=f"{actual_provider} | model: {actual_model_detail}",
+                        provider_reason=actual_provider_reason,
                         detail=(
                             f"vráceno do {project.status.value} | "
                             f"důvod: {project.stop_reason} | "

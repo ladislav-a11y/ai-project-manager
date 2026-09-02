@@ -18,7 +18,7 @@ from typing import Optional, Sequence
 
 from .config import ConfigError, load_config
 from .daemon import run_loop, run_maintenance_only
-from .orchestrator_runner import build_audit_run_fn, build_run_fn
+from .orchestrator_runner import build_audit_run_fn, build_inbox_planner_fn, build_run_fn
 from .providers import ProviderRegistry
 from .provider_state import load_provider_state
 from .self_update import RESTART_REQUIRED_EXIT_CODE
@@ -117,7 +117,12 @@ def main(
         )
 
     if args.maintain_only:
-        issues = run_maintenance_only(client)
+        issues = run_maintenance_only(
+            client,
+            project_paths=config.orchestrator.project_paths,
+            card_project_keys=config.card_project_keys,
+            projects_root=config.orchestrator.projects_root,
+        )
         logger.info("maintenance-only pass complete: %d issue(s)", len(issues))
         return 1 if issues else 0
 
@@ -156,6 +161,12 @@ def main(
             use_provider_failover=True,
         )
 
+    inbox_planner = build_inbox_planner_fn(
+        provider_registry,
+        command=config.orchestrator.command,
+        timeout_seconds=180,
+    )
+
     logger.info(
         "starting ai-project-manager (once=%s, providers=%s, poll_interval=%ss, inbox_enabled=%s, inbox_list=%r)",
         args.once,
@@ -180,9 +191,15 @@ def main(
         project_paths=(
             config.orchestrator.project_paths if validate_repository_paths else None
         ),
+        projects_root=(
+            config.orchestrator.projects_root if validate_repository_paths else None
+        ),
         card_project_keys=config.card_project_keys,
         recovery_max_attempts=config.recovery_max_attempts,
         audit_run_fn=audit_run_fn,
+        inbox_planner=inbox_planner,
+        artifact_cleanup_root=config.artifact_cleanup_root,
+        artifact_cleanup_retention_seconds=config.artifact_cleanup_retention_seconds,
     )
 
     if outcome.restart_required:

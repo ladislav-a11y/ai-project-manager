@@ -19,7 +19,8 @@ from pathlib import Path
 from typing import Callable, Optional, Sequence
 
 from .guard import OrchestratorGuard
-from .inbox import process_inbox
+from .artifact_cleanup import cleanup_test_artifacts
+from .inbox import InboxPlannerFn, process_inbox
 from .lock import ProjectLockManager
 from .providers import ProviderRegistry, ProviderState
 from .provider_state import save_provider_state
@@ -194,9 +195,11 @@ def _promote_completed_implementations_to_testing(client, projects: list) -> lis
     for project in projects:
         if project.status != ProjectStatus.IN_PROGRESS:
             continue
-        # A rejected audit may leave the prior implementation DoD checked;
-        # its feedback must be handled as implementation work first.
-        if project.returned_from_testing or not project.dod:
+        # A stale return marker from an older audit must not force another
+        # implementation dispatch once every implementation item is already
+        # checked. A real implementation rejection is kept in this phase by
+        # apply_audit_verdict reopening the rejected item.
+        if not project.dod:
             continue
         implementation_items = [item for item in project.dod if item.phase == "implementation"]
         if not implementation_items or not all(item.checked for item in implementation_items):
@@ -324,7 +327,7 @@ def _bootstrap_project_keys(
     projects: list,
     project_paths: Optional[dict] = None,
     card_project_keys: Optional[dict] = None,
-) -> None:
+) -> list:
     """Assign missing identities only from an explicit card migration map.
 
     Root cause of the real production failure: ``project_key_from_labels``
@@ -355,24 +358,103 @@ def _bootstrap_project_keys(
     """
     project_paths = project_paths or {}
     card_project_keys = card_project_keys or {}
+    migrated = []
     stable_keys = [
         key for key in project_paths
         if key and not _PRIORITY_PREFIX_RE.match(key)
     ]
+    # ``ProjectRecord.name`` deliberately excludes the visible P<n> prefix,
+    # but the one-time migration map may be keyed by the exact current
+    # Trello title. Keep that raw title separately so title-keyed migrations
+    # remain exact after priority prefixes became mandatory.
     title_counts: dict[str, int] = {}
+    raw_titles: dict[str, str] = {}
     for project in projects:
-        title_counts[project.name] = title_counts.get(project.name, 0) + 1
+        raw_title = project.name
+        if project.trello_card_id:
+            try:
+                raw_title = str(client.get_card(project.trello_card_id).get("name") or project.name)
+            except Exception:
+                raw_title = project.name
+        raw_titles[project.trello_card_id] = raw_title
+        title_counts[raw_title] = title_counts.get(raw_title, 0) + 1
 
     for project in projects:
-        if project.project_key:
-            continue
-
+        preparation = (project.extra_data or {}).get("inbox_preparation")
+        source_card_id = (
+            preparation.get("source_card_id")
+            if isinstance(preparation, dict)
+            else None
+        )
         override = card_project_keys.get(project.trello_card_id)
-        if not override and title_counts.get(project.name) == 1:
-            override = card_project_keys.get(project.name)
+        if not override and source_card_id:
+            override = card_project_keys.get(source_card_id)
+        raw_title = raw_titles.get(project.trello_card_id, project.name)
+        if not override and title_counts.get(raw_title) == 1:
+            override = card_project_keys.get(raw_title)
+        # An explicit migration may repair a stale generated identity, but
+        # cards without a matching migration keep their persisted identity.
+        if not override and project.project_key:
+            continue
         if override and override in stable_keys:
-            project.project_key = override
-            sync_project_to_trello(client, project)
+            configured_path = project_paths.get(override)
+            preparation_path = (
+                preparation.get("project_path")
+                if isinstance(preparation, dict)
+                else None
+            )
+            generated_path_is_stale = bool(
+                isinstance(preparation, dict)
+                and preparation.get("generated_project")
+                and configured_path
+                and preparation_path
+                and Path(str(configured_path)).expanduser().resolve()
+                != Path(str(preparation_path)).expanduser().resolve()
+            )
+            identity_changed = project.project_key != override
+            blocked_stale_path = bool(
+                project.status == ProjectStatus.BLOCKED
+                and generated_path_is_stale
+                and not preparation.get("identity_migration")
+            )
+            if identity_changed:
+                project.project_key = override
+            if identity_changed or blocked_stale_path:
+                if blocked_stale_path:
+                    preparation["identity_migration"] = {
+                        "from_project_path": preparation_path,
+                        "to_project_key": override,
+                        "reason": "stale generated checkout replaced by explicit stable checkout",
+                    }
+                    project.extra_data["inbox_preparation"] = preparation
+                sync_project_to_trello(client, project)
+                migrated.append(project)
+    return migrated
+
+
+def _register_generated_project_paths(
+    projects: list,
+    project_paths: Optional[dict],
+    projects_root: Optional[str],
+) -> None:
+    """Rehydrate safe auto-created Inbox project mappings after restart."""
+    if project_paths is None or not projects_root:
+        return
+    root = Path(projects_root).expanduser().resolve()
+    for project in projects:
+        preparation = (project.extra_data or {}).get("inbox_preparation")
+        if not isinstance(preparation, dict) or not preparation.get("generated_project"):
+            continue
+        key = project.project_key
+        raw_path = preparation.get("project_path")
+        if not key or not raw_path:
+            continue
+        candidate = Path(str(raw_path)).expanduser().resolve()
+        if candidate == root or root not in candidate.parents:
+            continue
+        configured = project_paths.get(key)
+        if configured is None or Path(str(configured)).expanduser().resolve() == candidate:
+            project_paths[key] = str(candidate)
 
 
 def load_projects_and_inbox(
@@ -382,6 +464,8 @@ def load_projects_and_inbox(
     project_paths: Optional[dict] = None,
     card_project_keys: Optional[dict] = None,
     process_inbox_enabled: bool = False,
+    projects_root: Optional[str] = None,
+    planner: Optional[InboxPlannerFn] = None,
 ) -> list:
     """Pull workflow project records from Trello.
 
@@ -392,6 +476,7 @@ def load_projects_and_inbox(
     _bootstrap_project_keys(
         client, projects, project_paths=project_paths, card_project_keys=card_project_keys
     )
+    _register_generated_project_paths(projects, project_paths, projects_root)
 
     if not process_inbox_enabled:
         return projects
@@ -417,7 +502,40 @@ def load_projects_and_inbox(
         persist_project=persist_inbox_project,
         project_paths=project_paths,
         card_project_keys=card_project_keys,
+        projects_root=projects_root,
+        planner=planner,
     )
+    if changed:
+        # Emit one compact Slack event per source card. The intake provider is
+        # persisted in each child Card Contract so this event names the AI
+        # that actually planned the human request; Hermes must never appear.
+        by_source: dict[str, list] = {}
+        for project in changed:
+            metadata = (project.extra_data or {}).get("inbox_preparation", {})
+            source_id = str(metadata.get("source_card_id") or project.trello_card_id or "unknown")
+            by_source.setdefault(source_id, []).append(project)
+        for source_id, prepared in by_source.items():
+            priorities = ", ".join(
+                f"P{project.priority:g}" for project in sorted(prepared, key=lambda item: -item.priority)
+            )
+            providers = sorted({
+                str((project.extra_data or {}).get("inbox_preparation", {}).get("intake_provider") or "local-deterministic")
+                for project in prepared
+            })
+            models = sorted({
+                str((project.extra_data or {}).get("inbox_preparation", {}).get("intake_model") or "n/a")
+                for project in prepared
+            })
+            message = (
+                "[AI Project Manager] Inbox intake: "
+                f"intake_provider={','.join(providers)}; intake_model={','.join(models)}; "
+                f"source_card_id={source_id}; prepared_tasks={len(prepared)}; priorities=[{priorities}]; "
+                "worker_provider=not_selected_in_intake"
+            )
+            # Keep the exact compact event in the local log as well as Slack;
+            # HTTP 200 alone does not make the provider/model observable.
+            logger.info("Inbox intake notification: %s", message)
+            notify(message)
     known_card_ids = {p.trello_card_id for p in projects if p.trello_card_id is not None}
     for project in changed:
         # Intake admission and implementation dispatch are separate phases.
@@ -426,7 +544,7 @@ def load_projects_and_inbox(
         # scheduler pass can immediately move a brand-new Inbox task to
         # Pracuje se and spend provider tokens before the user can inspect it.
         preparation = (project.extra_data or {}).get("inbox_preparation")
-        if project.status == ProjectStatus.NEW and isinstance(preparation, dict):
+        if isinstance(preparation, dict) and preparation.get("source_card_id"):
             setattr(project, "_prepared_this_tick", True)
         # Existing classifications are mutated in place by process_inbox.
         # Append only genuinely new cards, without ever deduplicating by the
@@ -480,9 +598,11 @@ def run_tick(
     guard: Optional[OrchestratorGuard] = None,
     project_paths: Optional[dict] = None,
     card_project_keys: Optional[dict] = None,
+    projects_root: Optional[str] = None,
     recovery_max_attempts: int = DEFAULT_MAX_ATTEMPTS,
     recovery_backoff: Callable[[int], timedelta] = default_backoff,
     audit_run_fn: Optional[AuditRunFn] = None,
+    inbox_planner: Optional[InboxPlannerFn] = None,
 ) -> RunOutcome:
     """Run exactly one scheduler tick: recheck due providers, load real
     Trello state, revisit any blocked project that is due for an
@@ -517,6 +637,8 @@ def run_tick(
             process_inbox_enabled=process_inbox_enabled,
             project_paths=project_paths,
             card_project_keys=card_project_keys,
+            projects_root=projects_root,
+            planner=inbox_planner,
         )
         # ``run_tick`` is also a generic scheduler primitive used with
         # non-repository run functions. The production CLI supplies the
@@ -528,6 +650,20 @@ def run_tick(
         contract_issues = maintain_board_contract(client)
         for issue in contract_issues:
             notify(f"[AI Project Manager] Trello Card Contract vyžaduje zásah: {issue}")
+
+        # Board maintenance writes migrations through its own strict
+        # read/write pass. Refresh the scheduler snapshot afterward so a
+        # stale in-memory ProjectRecord cannot immediately overwrite a newly
+        # migrated dependency/order field during the same tick.
+        prepared_this_tick_ids = {
+            project.trello_card_id
+            for project in projects
+            if getattr(project, "_prepared_this_tick", False)
+        }
+        projects = fetch_all_projects(client, exclude_list_names=(inbox_list_name,))
+        for project in projects:
+            if project.trello_card_id in prepared_this_tick_ids:
+                setattr(project, "_prepared_this_tick", True)
 
         _resume_due_provider_waits(
             client,
@@ -598,7 +734,13 @@ def run_tick(
         save_provider_state(provider_state_path, provider_registry)
 
 
-def run_maintenance_only(client) -> list[str]:
+def run_maintenance_only(
+    client,
+    *,
+    project_paths: Optional[dict] = None,
+    card_project_keys: Optional[dict] = None,
+    projects_root: Optional[str] = None,
+) -> list[str]:
     """One-shot live Trello Card Contract migration/cleanup, independent of
     the scheduler - which stays on HOLD (see the fixed governance
     invariant): this never calls ``run_once``/dispatches a project to the
@@ -613,6 +755,44 @@ def run_maintenance_only(client) -> list[str]:
     result is checkable directly on the Trello board and in Slack,
     without needing to trust this process's own logs.
     """
+    # Apply only explicit, stable identity migrations before the generic
+    # contract pass. This repairs older Inbox children whose free-form label
+    # pointed at an empty generated checkout, without dispatching any AI work
+    # or changing priority/order after intake.
+    projects = fetch_all_projects(
+        client,
+        exclude_list_names=("Inbox", "INBOX / Nápady"),
+    )
+    migrated = _bootstrap_project_keys(
+        client,
+        projects,
+        project_paths=project_paths,
+        card_project_keys=card_project_keys,
+    )
+    _register_generated_project_paths(projects, project_paths, projects_root)
+
+    # Requeue only cards whose stale identity was repaired in this pass and
+    # only when the replacement checkout exists. Provider-limit and ordinary
+    # blocked cards are not in ``migrated`` and remain untouched.
+    for project in migrated:
+        configured_path = (project_paths or {}).get(project.project_key)
+        if (
+            project.status == ProjectStatus.BLOCKED
+            and configured_path
+            and Path(str(configured_path)).expanduser().is_dir()
+        ):
+            project.transition_to(ProjectStatus.NEW)
+            project.blocked_by = None
+            project.stop_reason = None
+            project.retry_after = None
+            project.human_notified_reason = None
+            project.human_action_step = None
+            sync_project_to_trello(client, project)
+            notify(
+                "[AI Project Manager] Opravena stale identita a znovu zařazena "
+                f"karta do Připraveno: {project.name}{_card_url_suffix(project)}"
+            )
+
     issues = maintain_board_contract(client)
     for issue in issues:
         notify(f"[AI Project Manager] Trello Card Contract vyžaduje zásah: {issue}")
@@ -657,6 +837,7 @@ def run_loop(
     guard: Optional[OrchestratorGuard] = None,
     project_paths: Optional[dict] = None,
     card_project_keys: Optional[dict] = None,
+    projects_root: Optional[str] = None,
     recovery_max_attempts: int = DEFAULT_MAX_ATTEMPTS,
     recovery_backoff: Callable[[int], timedelta] = default_backoff,
     audit_run_fn: Optional[AuditRunFn] = None,
@@ -667,6 +848,9 @@ def run_loop(
     self_update_test_command: Optional[Sequence[str]] = None,
     self_update_run_tests=None,
     self_update_run_git=None,
+    inbox_planner: Optional[InboxPlannerFn] = None,
+    artifact_cleanup_root: Optional[str] = None,
+    artifact_cleanup_retention_seconds: float = 86400.0,
 ) -> RunOutcome:
     """Run the scheduler forever (or, with ``once=True``, exactly one tick
     and return - the safe live-smoke-test mode). Sleeps between ticks
@@ -741,6 +925,8 @@ def run_loop(
                     guard=guard,
                     project_paths=project_paths,
                     card_project_keys=card_project_keys,
+                    projects_root=projects_root,
+                    inbox_planner=inbox_planner,
                     recovery_max_attempts=recovery_max_attempts,
                     recovery_backoff=recovery_backoff,
                     audit_run_fn=audit_run_fn,
@@ -763,6 +949,19 @@ def run_loop(
             outcome.ran,
             outcome.reason,
         )
+
+        # run_tick is synchronous: reaching this point means neither an
+        # implementation nor an audit subprocess is active. Cleanup is kept
+        # outside that run boundary and is restricted again by the helper's
+        # explicit active_run gate and filename allowlist.
+        if artifact_cleanup_root:
+            removed = cleanup_test_artifacts(
+                artifact_cleanup_root,
+                retention_seconds=artifact_cleanup_retention_seconds,
+                active_run=False,
+            )
+            if removed:
+                logger.info("removed %d expired test artifact(s)", len(removed))
 
         if check_self_update and not once and started_version is not None:
             status = check_self_update_fn(started_version, root=code_root)

@@ -22,12 +22,13 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import re
 from datetime import datetime, timezone
 from typing import Optional
 
 from .models import DoDItem, GitHubRef, GoogleDriveRef, ProjectRecord, ProjectStatus
-from .inbox_preparation import derive_priority
+from .inbox_preparation import derive_priority, is_repair_request
 from .trello_client import MAX_TRELLO_DESC_CHARS
 from .card_contract import (
     CURRENT_SCHEMA_VERSION,
@@ -70,7 +71,7 @@ def _unescape_block_terminator(text: str) -> str:
     return text.replace(f"--{_ZWSP}>", BLOCK_END)
 
 
-PRIORITY_LABEL_RE = re.compile(r"^P([0-5])$")
+PRIORITY_LABEL_RE = re.compile(r"^P([0-5](?:\.\d+)?)$")
 _VISIBLE_DOD_ITEM_RE = re.compile(r"\[[ xX]\]\s*([^\[]+?)(?=\s*\[[ xX]\]|\s*$)")
 
 # One checklist item per line, Markdown-style ("- [ ] text" / "* [x] text",
@@ -233,8 +234,8 @@ STATUS_TO_LIST_CANDIDATES = {
 }
 MAX_TRELLO_FEEDBACK_CHARS = 3500
 MAX_TRELLO_LAST_OUTPUT_CHARS = 2500
-TITLE_PRIORITY_RE = re.compile(r"^\s*P([0-5])(?:\s|[-—–:])", re.IGNORECASE)
-TITLE_PRIORITY_PREFIX_RE = re.compile(r"^\s*P[0-5]\s*(?:[-—–:]\s*)?", re.IGNORECASE)
+TITLE_PRIORITY_RE = re.compile(r"^\s*P([0-5](?:\.\d+)?)(?:\s|[-—–:])", re.IGNORECASE)
+TITLE_PRIORITY_PREFIX_RE = re.compile(r"^\s*P[0-5](?:\.\d+)?\s*(?:[-—–:]\s*)?", re.IGNORECASE)
 
 _LEGACY_INBOX_AUDIT_TEXT = (
     "Ai-orchestrator spustí cílené regresní testy a uvede konkrétní výsledek; "
@@ -255,11 +256,11 @@ _LEGACY_INBOX_WORKER_SUFFIX = (
 _CONTRACT_MIGRATION_MARKER = "_pm_contract_migration_required"
 
 
-def priority_from_labels(labels: list[dict]) -> int:
+def priority_from_labels(labels: list[dict]) -> float:
     for label in labels or []:
         m = PRIORITY_LABEL_RE.match((label.get("name") or "").strip())
         if m:
-            return int(m.group(1))
+            return float(m.group(1))
     return 0
 
 
@@ -289,7 +290,7 @@ def project_key_from_labels(labels: list[dict]) -> Optional[str]:
     return next(iter(identities), None)
 
 
-def priority_from_card(card: dict) -> int:
+def priority_from_card(card: dict) -> float:
     """Use a P0..P5 label when present, otherwise the card-title prefix.
 
     The live board historically encoded priority only in names (for example
@@ -299,29 +300,43 @@ def priority_from_card(card: dict) -> int:
     for label in card.get("labels", []) or []:
         match = PRIORITY_LABEL_RE.match((label.get("name") or "").strip())
         if match:
-            return int(match.group(1))
+            return float(match.group(1))
     match = TITLE_PRIORITY_RE.match(card.get("name", ""))
-    return int(match.group(1)) if match else 0
+    return float(match.group(1)) if match else 0
 
 
-def priority_label_name(priority: int) -> str:
-    return f"P{priority}"
+def priority_label_name(priority: float) -> str:
+    value = float(priority)
+    if value.is_integer():
+        return f"P{int(value)}"
+    # At least two fractional digits keep P2.01 and P2.10 distinct. For a
+    # queue larger than 99 cards, retain additional digits instead of
+    # rounding two different priorities to the same visible label.
+    rendered = f"{value:.6f}".rstrip("0").rstrip(".")
+    whole, fractional = rendered.split(".", 1)
+    if len(fractional) == 1:
+        fractional += "0"
+    return f"P{whole}.{fractional.zfill(2)}"
 
 
 def _priority_prefixed_name(project: ProjectRecord) -> str:
-    """Return the canonical visible name for a non-terminal work card.
+    """Return the canonical visible name for a workflow card.
 
     Priority is operational metadata, but it must also remain visible in the
-    title so a human can understand the Ready queue without opening PM-DATA.
-    Replace an old prefix rather than stacking prefixes after a reprioritization.
+    title so a human can understand every governed queue without opening
+    PM-DATA. Replace an old prefix rather than stacking prefixes after a
+    reprioritization. This applies to terminal cards too: the title remains a
+    durable human-readable record of the priority used for that work.
     """
     base_name = TITLE_PRIORITY_PREFIX_RE.sub("", str(project.name or ""), count=1).strip()
-    return f"P{project.priority} — {base_name or 'Inbox úkol'}"
+    return f"{priority_label_name(project.priority)} — {base_name or 'Inbox úkol'}"
 
 
-def _is_intake_prepared(project: ProjectRecord) -> bool:
-    """Whether this record was created by the governed Inbox preparation."""
-    return isinstance((project.extra_data or {}).get("inbox_preparation"), dict)
+def _workflow_visible_name(project: ProjectRecord) -> str:
+    """Return the required title form for every non-Inbox workflow card."""
+    if project.status == ProjectStatus.INBOX:
+        return project.name
+    return _priority_prefixed_name(project)
 
 
 def status_from_list(list_id: Optional[str], list_id_to_name: dict[str, str]) -> ProjectStatus:
@@ -410,7 +425,9 @@ def _migrate_legacy_prepared_card(data: dict, card: dict, priority: int) -> bool
         child_card["labels"] = [
             label for label in (card.get("labels", []) or [])
             if str(label.get("name") if isinstance(label, dict) else label).strip().casefold()
-            not in {f"p{index}" for index in range(6)}
+            and not PRIORITY_LABEL_RE.match(
+                str(label.get("name") if isinstance(label, dict) else label).strip()
+            )
         ]
         derived_priority, derived_reason = derive_priority(
             child_card,
@@ -762,7 +779,10 @@ def project_from_card(card: dict, list_id_to_name: dict[str, str]) -> ProjectRec
     )
 
     return ProjectRecord(
-        name=card.get("name", ""),
+        # The leading P<n> is a visible Trello metadata prefix, not part of
+        # the logical project identity used for provider prompts, response
+        # matching, or project-path resolution.
+        name=TITLE_PRIORITY_PREFIX_RE.sub("", str(card.get("name", "")), count=1).strip(),
         priority=priority,
         status=status,
         main_task=data.get("main_task", ""),
@@ -875,16 +895,11 @@ def card_updates_from_project(project: ProjectRecord, list_name_to_id: dict[str,
     if project.project_key:
         labels.append(project.project_key)
 
-    visible_name = (
-        _priority_prefixed_name(project)
-        if _is_intake_prepared(project) and project.status in {
-            ProjectStatus.NEW,
-            ProjectStatus.READY,
-            ProjectStatus.IN_PROGRESS,
-            ProjectStatus.TESTING,
-        }
-        else project.name
-    )
+    # Priority must be visible in the title for every governed workflow card,
+    # not only for cards created by Inbox intake. This prevents a stale title
+    # from making a card in Pracuje se look like a different task after a
+    # reprioritization or provider handoff.
+    visible_name = _workflow_visible_name(project)
 
     return {
         "name": visible_name,
@@ -970,27 +985,53 @@ def maintain_board_contract(client) -> list[str]:
                 ):
                     project.transition_to(ProjectStatus.TESTING)
                     project.stop_reason = "implementation DoD complete; awaiting ai-orchestrator audit"
+                # A non-terminal card with every DoD item checked is an
+                # impossible intermediate state: only an accepted,
+                # ai-orchestrator-owned audit may close a card. Recover such
+                # stale/hidden cards into the explicit audit gate instead of
+                # leaving a falsely complete card in the implementation queue.
+                if (
+                    project.status in {ProjectStatus.READY, ProjectStatus.IN_PROGRESS}
+                    and project.dod
+                    and all(item.checked for item in project.dod)
+                ):
+                    project.transition_to(ProjectStatus.TESTING)
+                    project.stop_reason = "all DoD items were checked before audit; awaiting ai-orchestrator audit"
                 if project.status == ProjectStatus.IN_PROGRESS:
                     active_projects.append(project)
                 identity = raw.get("card_identity")
-                label_names = {label.get("name") for label in card.get("labels", [])}
-                needs_write = any((
+                preparation = project.extra_data.get("inbox_preparation")
+                dependency_metadata_needs_migration = False
+                if isinstance(preparation, dict):
+                    # Older split cards predate dependency-aware intake. An
+                    # absent field means no dependency was declared by that
+                    # historical plan; make that fact explicit so every
+                    # current workflow card has the same machine-readable
+                    # contract. New AI plans are validated before admission.
+                    if "depends_on_subtask_indices" not in preparation:
+                        preparation["depends_on_subtask_indices"] = []
+                        dependency_metadata_needs_migration = True
+                    if "execution_order" not in preparation:
+                        preparation["execution_order"] = int(
+                            preparation.get("subtask_index") or 0
+                        )
+                        dependency_metadata_needs_migration = True
+                migration_needs_write = any((
                     raw.get("schema_version") != CURRENT_SCHEMA_VERSION,
                     raw.get("governance") != GOVERNANCE_POLICY,
-                    # Migrate the versioned routing contract on cards that
-                    # can still be scheduled. Historical Hotovo cards are
-                    # terminal and may contain legacy/oversized descriptions;
-                    # rewriting them adds no safety and can exceed Trello's
-                    # description limit.
-                    (
-                        project.status in {ProjectStatus.READY, ProjectStatus.IN_PROGRESS, ProjectStatus.TESTING}
-                        and raw.get("dod_routing_policy") != DOD_ROUTING_POLICY
-                    ),
+                    raw.get("dod_routing_policy") != DOD_ROUTING_POLICY,
                     not identity,
-                    raw.get("lifecycle_status") != project.status.value,
-                    priority_label_name(project.priority) not in label_names,
-                    project.returned_from_testing and raw.get("returned_from_testing") is not True,
+                    (
+                        card.get("name") != _workflow_visible_name(project)
+                        and project.status != ProjectStatus.INBOX
+                    ),
+                    dependency_metadata_needs_migration,
+                    bool(project.extra_data.get(_CONTRACT_MIGRATION_MARKER)),
                     not raw.get("status_updated_at") and bool(card.get("last_activity_at")),
+                ))
+                workflow_needs_write = any((
+                    raw.get("lifecycle_status") != project.status.value,
+                    project.returned_from_testing and raw.get("returned_from_testing") is not True,
                     project.status == ProjectStatus.DONE and not raw.get("completed_at"),
                     project.status != ProjectStatus.DONE and bool(raw.get("completed_at")),
                     project.status == ProjectStatus.DONE and bool(raw.get("stop_reason")),
@@ -1001,8 +1042,16 @@ def maintain_board_contract(client) -> list[str]:
                     # physical list is Ready/In Progress/Done, but the raw
                     # card still has the old value - persist the clearing.
                     bool(raw.get("blocked_by")) and not project.blocked_by,
-                    bool(project.extra_data.get(_CONTRACT_MIGRATION_MARKER)),
                 ))
+                # Hotovo is terminal evidence. Loading it through the current
+                # in-memory migration keeps reads compatible, but schema,
+                # policy, title, identity and dependency normalization alone
+                # must not rewrite its Trello description. Only a concrete
+                # lifecycle repair (for example missing completion evidence)
+                # makes a terminal write necessary.
+                needs_write = workflow_needs_write or (
+                    project.status != ProjectStatus.DONE and migration_needs_write
+                )
                 if needs_write:
                     sync_project_to_trello(client, project)
             except CardContractError as exc:

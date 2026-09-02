@@ -1,23 +1,27 @@
-"""Deterministic preparation of raw Trello Inbox work.
+"""Validation and materialization of AI-prepared raw Trello Inbox work.
 
-The preparation step runs before a card is admitted to the governed workflow.
-It deliberately uses no provider tokens: a bounded, explainable policy is
-safer for unattended intake than silently inventing a project, priority, or
-Definition of Done from an opaque guess.  The result is structured so an AI
-planner can replace the policy later without changing the Trello lifecycle.
+The production planner runs before a card is admitted to the governed
+workflow. This module keeps the deterministic splitter for tests and
+backwards-compatible callers, while accepting a validated AI task plan from
+the read-only ai-orchestrator handoff.
+When explicitly enabled by the production configuration, a genuinely new
+unlabelled idea receives an isolated, source-ID-bound project identity under
+the configured projects root; an ambiguous existing identity still fails
+closed.
 """
 
 from __future__ import annotations
 
 import re
 from dataclasses import dataclass, replace
+from pathlib import Path
 from typing import Mapping, Optional
 
 from .models import DoDItem
 
 
 _WORD_RE = re.compile(r"[a-zA-Z0-9áčďéěíňóřšťúůýž]+", re.IGNORECASE)
-_EXPLICIT_PRIORITY_RE = re.compile(r"^P([0-5])$", re.IGNORECASE)
+_EXPLICIT_PRIORITY_RE = re.compile(r"^P([0-5](?:\.\d+)?)$", re.IGNORECASE)
 _SENTENCE_RE = re.compile(r"(?<=[.!?])\s+|\"(?=[A-ZÁČĎÉĚÍŇÓŘŠŤÚŮÝŽ])")
 _PM_DATA_BLOCK_RE = re.compile(r"<!--\s*PM-DATA.*?-->", re.DOTALL)
 
@@ -30,8 +34,12 @@ class PreparedTask:
     task: str
     next_step: str
     scope: str
-    priority: int = 2
+    priority: float = 2
     priority_reason: str = "výchozí priorita bez silnějšího signálu"
+    # Zero-based indices in the AI plan.  A task may be dispatched only after
+    # all listed sibling tasks are in Hotovo; priority orders only tasks that
+    # are otherwise dependency-ready.
+    depends_on: tuple[int, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -41,11 +49,54 @@ class InboxPreparation:
     source_name: str
     normalized_text: str
     project_key: Optional[str]
-    priority: int
+    priority: float
     priority_reason: str
     tasks: tuple[PreparedTask, ...]
     dod: tuple[DoDItem, ...]
     human_required_reason: Optional[str] = None
+    project_path: Optional[str] = None
+    generated_project: bool = False
+
+
+def task_execution_order(tasks: tuple[PreparedTask, ...] | list[PreparedTask]) -> tuple[int, ...]:
+    """Validate and return a dependency-safe, priority-aware task order.
+
+    Dependencies refer to the stable zero-based indices in the AI response.
+    Kahn's algorithm makes cycles and out-of-range references fail closed.
+    Among currently ready nodes, the higher priority wins; this preserves the
+    business priority rule without ever running a dependent task first.
+    """
+    items = tuple(tasks)
+    count = len(items)
+    dependencies: dict[int, set[int]] = {}
+    dependents: dict[int, set[int]] = {index: set() for index in range(count)}
+    for index, task in enumerate(items):
+        raw = task.depends_on or ()
+        if not isinstance(raw, (tuple, list)):
+            raise ValueError(f"task {index} dependencies must be an array")
+        deps = set()
+        for dependency in raw:
+            if isinstance(dependency, bool) or not isinstance(dependency, int):
+                raise ValueError(f"task {index} dependency index must be an integer")
+            if dependency < 0 or dependency >= count or dependency == index:
+                raise ValueError(f"task {index} has invalid dependency index {dependency}")
+            deps.add(dependency)
+            dependents[dependency].add(index)
+        dependencies[index] = deps
+
+    ready = [index for index, deps in dependencies.items() if not deps]
+    order: list[int] = []
+    while ready:
+        ready.sort(key=lambda index: (-items[index].priority, index))
+        index = ready.pop(0)
+        order.append(index)
+        for dependent in dependents[index]:
+            dependencies[dependent].discard(index)
+            if not dependencies[dependent]:
+                ready.append(dependent)
+    if len(order) != count:
+        raise ValueError("AI Inbox task dependencies contain a cycle")
+    return tuple(order)
 
 
 def visible_inbox_description(card: Mapping) -> str:
@@ -56,6 +107,31 @@ def visible_inbox_description(card: Mapping) -> str:
 def inbox_source_text(card: Mapping) -> str:
     """Return the human Inbox request, falling back to its title."""
     return visible_inbox_description(card) or str(card.get("name") or "").strip()
+
+
+def _generated_project_identity(source_name: str, source_id: str) -> str:
+    """Create a stable identity for a genuinely new Inbox project.
+
+    The short immutable source-ID suffix prevents two similar ideas from
+    silently sharing one checkout. This is only used after classification has
+    established that the card is not an existing project or feedback item.
+    """
+    name = re.sub(r"^\s*P[0-5](?:\.\d+)?\s*[-–—:]\s*", "", source_name, flags=re.IGNORECASE)
+    name = re.sub(r"^\s*budoucí projekt\s*[-–—:]\s*", "", name, flags=re.IGNORECASE)
+    name = re.sub(r"\s*\[[^\]]+\]\s*$", "", name).strip(" -–—")
+    name = name or "Nový Inbox projekt"
+    suffix = re.sub(r"[^a-zA-Z0-9]", "", source_id or "")[:8]
+    return f"{name} [Inbox {suffix}]" if suffix else name
+
+
+def _generated_project_path(project_key: str, projects_root: str) -> str:
+    """Return a root-contained checkout path for an auto-created project."""
+    root = Path(projects_root).expanduser().resolve()
+    slug = re.sub(r"[^a-zA-Z0-9]+", "-", project_key.casefold()).strip("-") or "inbox-project"
+    candidate = (root / slug).resolve()
+    if candidate == root or root not in candidate.parents:
+        raise ValueError("generated Inbox project path escaped AI_PM_PROJECTS_ROOT")
+    return str(candidate)
 
 
 def prioritize_inbox_cards(
@@ -111,16 +187,50 @@ def _explicit_priority(card: Mapping) -> Optional[int]:
     return None
 
 
-def derive_priority(card: Mapping, text: str, default_priority: int = 2) -> tuple[int, str]:
+def is_repair_request(text: str) -> bool:
+    """Return whether text describes corrective work.
+
+    Corrective work is a hard P5 signal. This helper is shared by Inbox
+    intake and board maintenance so a lower source label cannot demote a
+    confirmed repair.
+    """
+    lowered = (text or "").casefold()
+    if re.search(r"\bbug\b", lowered):
+        return True
+    return any(
+        re.search(
+            rf"(?<![a-záčďéěíňóřšťúůýž]){re.escape(term)}",
+            lowered,
+            flags=re.IGNORECASE,
+        )
+        for term in ("oprav", "fix", "chyba", "nefung", "regres", "error", "rework", "náprav")
+    )
+
+
+def derive_priority(card: Mapping, text: str, default_priority: float = 2) -> tuple[float, str]:
     """Derive P5..P0 from explicit labels or a documented urgency rubric."""
+    # A repair is always the highest operational priority. Evaluate this
+    # before an inherited/explicit source label so intake cannot demote it.
+    if is_repair_request(text):
+        return 5, "oprava nebo potvrzená regrese; závazná nejvyšší priorita"
     explicit = _explicit_priority(card)
     if explicit is not None:
         return explicit, "explicitní Trello priorita"
 
     lowered = text.casefold()
+
+    def has_term(term: str) -> bool:
+        # Stems are intentional for Czech inflection (``oprav`` matches
+        # ``oprava``), but must not match inside another word (``dopravy``).
+        return re.search(
+            rf"(?<![a-záčďéěíňóřšťúůýž]){re.escape(term)}",
+            lowered,
+            flags=re.IGNORECASE,
+        ) is not None
+
     standalone_bug = bool(re.search(r"\bbug\b", lowered))
     mentions_pm = any(
-        term in lowered
+        has_term(term)
         for term in (
             "ai-project-manager",
             "project manager",
@@ -131,7 +241,7 @@ def derive_priority(card: Mapping, text: str, default_priority: int = 2) -> tupl
     ) or bool(re.search(r"\bpm\b", lowered))
     pm_repair = mentions_pm and (
         any(
-            term in lowered
+            has_term(term)
             for term in (
                 "oprav",
                 "chyba",
@@ -146,14 +256,14 @@ def derive_priority(card: Mapping, text: str, default_priority: int = 2) -> tupl
     )
     if pm_repair:
         return 5, "oprava vlastního PM/orchestrátoru nebo jeho workflow"
-    if any(term in lowered for term in ("bezpeč", "security", "ztrát", "data loss", "produkč", "blokuj")):
+    if any(has_term(term) for term in ("bezpeč", "security", "ztrát", "data loss", "produkč", "blokuj")):
         return 5, "bezpečnostní, produkční nebo blokující dopad"
-    if any(term in lowered for term in ("live", "chyba", "nefung", "přetrvává", "regres", "error")) or standalone_bug:
+    if any(has_term(term) for term in ("live", "chyba", "nefung", "přetrvává", "regres", "error")) or standalone_bug:
         return 4, "potvrzený bug nebo regrese z live používání"
-    if any(term in lowered for term in ("oprav", "fix", "urgent", "krit")):
+    if any(has_term(term) for term in ("oprav", "fix", "urgent", "krit")):
         return 4, "opravný nebo naléhavý požadavek"
     if any(
-        term in lowered
+        has_term(term)
         for term in (
             "rozšíř",
             "implement",
@@ -171,9 +281,37 @@ def derive_priority(card: Mapping, text: str, default_priority: int = 2) -> tupl
         )
     ):
         return 3, "realizovatelná změna funkcionality"
-    if any(term in lowered for term in ("budouc", "nápad", "research", "rešerš")):
+    if any(has_term(term) for term in ("budouc", "nápad", "research", "rešerš")):
         return 1, "budoucí nebo rešeršní práce"
     return max(0, min(5, default_priority)), "výchozí priorita bez silnějšího signálu"
+
+
+def _unique_child_priorities(tasks: list[PreparedTask]) -> list[PreparedTask]:
+    """Make priorities unique within one split while preserving P5..P0 bands.
+
+    Decimal subpriorities are only introduced when two children have the same
+    contextual base priority. They remain below the next integer band, so a
+    P4 child still outranks every P3.xx child.
+    """
+    by_priority: dict[int, list[int]] = {}
+    for index, task in enumerate(tasks):
+        by_priority.setdefault(int(task.priority), []).append(index)
+    result = list(tasks)
+    for base, indices in by_priority.items():
+        if len(indices) < 2:
+            continue
+        denominator = 10 ** len(str(len(indices) + 1))
+        for rank, index in enumerate(indices, start=1):
+            subpriority = round(base + rank / denominator, 6)
+            result[index] = replace(
+                result[index],
+                priority=subpriority,
+                priority_reason=(
+                    f"{result[index].priority_reason}; pořadí podúkolu "
+                    f"{rank}/{len(indices)} v prioritní úrovni P{base}"
+                ),
+            )
+    return result
 
 
 def resolve_project_key(
@@ -236,6 +374,22 @@ def _sentences(text: str) -> list[str]:
     return result
 
 
+def _remainder_clauses(sentences: list[str]) -> list[str]:
+    """Break otherwise-unclassified long requirements into atomic clauses.
+
+    Inbox ideas commonly arrive as a paragraph followed by bullet points.
+    Keeping all unmatched text in one ``další požadavky`` task made a large
+    new project effectively one oversized Hermes handoff.  Bullets, lines,
+    and semicolon-separated clauses are safe local structure; they do not
+    invent content or merge distinct source cards.
+    """
+    clauses: list[str] = []
+    for sentence in sentences:
+        parts = re.split(r"\s*(?:[•▪◦]|\r?\n|;|\s[-–—]\s)\s*", sentence)
+        clauses.extend(part.strip(" .:-") for part in parts if part.strip(" .:-"))
+    return clauses
+
+
 def split_tasks(source_name: str, text: str, project_key: Optional[str]) -> tuple[PreparedTask, ...]:
     """Split materially different workstreams, retaining every source clause."""
     sentences = _sentences(text)
@@ -260,20 +414,32 @@ def split_tasks(source_name: str, text: str, project_key: Optional[str]) -> tupl
             )
         )
 
-    remainder = [sentence for index, sentence in enumerate(sentences) if index not in assigned]
+    remainder_sentences = [
+        sentence for index, sentence in enumerate(sentences) if index not in assigned
+    ]
+    remainder = _remainder_clauses(remainder_sentences)
     if remainder:
-        body = ". ".join(remainder).strip() + "."
-        # Keep the canonical source name when the card does not need splitting.
-        # A synthetic suffix would break ordinary source/target idempotence.
-        title = source_name if not tasks else f"{prefix} — další požadavky"
-        tasks.append(
-            PreparedTask(
-                title=title,
-                task=body,
-                next_step="Rozdělit a ověřit zbývající požadavky proti projektu.",
-                scope="další požadavky",
+        if len(remainder) == 1 and not tasks:
+            # Keep the canonical source name when the card does not need
+            # splitting. A synthetic suffix would break source idempotence.
+            tasks.append(
+                PreparedTask(
+                    title=source_name,
+                    task=remainder[0] + ".",
+                    next_step="Upřesnit první implementační krok.",
+                    scope="celý požadavek",
+                )
             )
-        )
+        else:
+            for number, clause in enumerate(remainder, start=1):
+                tasks.append(
+                    PreparedTask(
+                        title=f"{prefix} — požadavek {number}",
+                        task=clause.rstrip(".") + ".",
+                        next_step="Prověřit a implementovat tento samostatný požadavek.",
+                        scope=f"požadavek {number}",
+                    )
+                )
     if not tasks:
         tasks.append(
             PreparedTask(
@@ -307,35 +473,87 @@ def prepare_inbox_card(
     card_project_keys: Optional[Mapping[str, str]] = None,
     default_priority: int = 2,
     priority_override: Optional[tuple[int, str]] = None,
+    projects_root: Optional[str] = None,
+    allow_new_project: bool = False,
+    planned_tasks: Optional[tuple[PreparedTask, ...]] = None,
 ) -> InboxPreparation:
     source_name = str(card.get("name") or "Inbox úkol").strip()
     text = normalize_inbox_text(inbox_source_text(card) or source_name)
     project_key, human_reason = resolve_project_key(card, text, project_paths, card_project_keys)
+    project_path: Optional[str] = None
+    generated_project = False
+    if (
+        allow_new_project
+        and human_reason
+        # A repair names an existing system boundary, but its title is not a
+        # safe repository identity.  Never create a disposable slug checkout
+        # for corrective work; require an explicit project label/mapping.
+        and not is_repair_request(text)
+        and not any(
+            str(label.get("name") if isinstance(label, dict) else label).strip()
+            and not _EXPLICIT_PRIORITY_RE.match(
+                str(label.get("name") if isinstance(label, dict) else label).strip()
+            )
+            for label in card.get("labels", []) or []
+        )
+        and projects_root
+    ):
+        project_key = _generated_project_identity(source_name, str(card.get("id") or ""))
+        project_path = _generated_project_path(project_key, projects_root)
+        human_reason = None
+        generated_project = True
     priority, priority_reason = priority_override or derive_priority(card, text, default_priority)
-    raw_tasks = split_tasks(source_name, text, project_key)
+    raw_tasks = planned_tasks or split_tasks(source_name, text, project_key)
+    if planned_tasks is not None:
+        prefix = project_key or source_name
+        raw_tasks = tuple(
+            replace(
+                task,
+                title=(
+                    task.title
+                    if " — " in task.title
+                    else f"{prefix} — {task.title or task.scope}"
+                ),
+            )
+            for task in raw_tasks
+        )
     # A source card's explicit P-label expresses the urgency of the Inbox
     # request as a whole. Once it is split into independent workstreams,
     # each child must be ranked from its own content; otherwise one inherited
     # P0 label makes every materially different task look identical. Keep
-    # the source priority as the fallback only when a child has no stronger
-    # contextual signal.
+    # the neutral configured default when a child has no stronger contextual
+    # signal. An explicit source P-label is still retained in the parent
+    # metadata, but must not flatten independent child priorities.
     child_card = dict(card)
     child_card["labels"] = [
         label for label in (card.get("labels", []) or [])
         if str(label.get("name") if isinstance(label, dict) else label).strip().casefold()
-        not in {f"p{index}" for index in range(6)}
+        and not _EXPLICIT_PRIORITY_RE.match(
+            str(label.get("name") if isinstance(label, dict) else label).strip()
+        )
     ]
     prepared_tasks: list[PreparedTask] = []
     for task in raw_tasks:
+        if planned_tasks is not None:
+            prepared_tasks.append(
+                replace(
+                    task,
+                    priority_reason=(
+                        task.priority_reason
+                        or "priorita přidělena AI Inbox plannerem"
+                    ),
+                )
+            )
+            continue
         child_priority, child_reason = derive_priority(
             child_card,
             f"{task.scope}: {task.task}",
-            priority,
+            default_priority,
         )
         prepared_tasks.append(
             replace(task, priority=child_priority, priority_reason=child_reason)
         )
-    tasks = tuple(prepared_tasks)
+    tasks = tuple(_unique_child_priorities(prepared_tasks))
     return InboxPreparation(
         source_name=source_name,
         normalized_text=text,
@@ -345,4 +563,6 @@ def prepare_inbox_card(
         tasks=tasks,
         dod=build_dod(tasks),
         human_required_reason=human_reason,
+        project_path=project_path,
+        generated_project=generated_project,
     )

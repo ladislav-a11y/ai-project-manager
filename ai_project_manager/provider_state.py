@@ -61,6 +61,9 @@ def save_provider_state(path: str | Path, registry: ProviderRegistry) -> None:
             ),
             "last_error": status.last_error,
             "checkpoint": status.checkpoint,
+            "models": list(status.models),
+            "selected_model": status.selected_model,
+            "capability_limits": status.capability_limits,
         }
 
     # Write to a sibling temp file and atomically rename it into place -
@@ -130,6 +133,21 @@ def load_provider_state(path: str | Path, registry: ProviderRegistry) -> None:
             checkpoint=safe_checkpoint,
         )
 
+    def apply_persisted_model_state(name: str, models: list[str], selected_model: object) -> None:
+        """Load model metadata only when the process has no current catalog.
+
+        The PM now delegates model selection to providers and production
+        config intentionally supplies ``{}``. A previous run may still have
+        persisted a removed/stale model; letting that metadata overwrite the
+        current empty catalog makes diagnostics lie and can reintroduce
+        obsolete selection behavior. Standalone callers that did not
+        configure catalogs retain the legacy state round-trip behavior.
+        """
+        if not registry.has_configured_model_catalog(name):
+            status = registry.get_status(name)
+            status.models = tuple(models)
+            status.selected_model = selected_model
+
     for name, value in data.items():
         if not isinstance(name, str) or not isinstance(value, dict):
             gate_configured_entry(name, "entry must be an object")
@@ -175,6 +193,22 @@ def load_provider_state(path: str | Path, registry: ProviderRegistry) -> None:
             gate_configured_entry(name, "invalid checkpoint")
             continue
         checkpoint = dict(checkpoint or {})
+        capability_limits = value.get("capability_limits")
+        if capability_limits is not None and not isinstance(capability_limits, Mapping):
+            gate_configured_entry(name, "invalid capability_limits", checkpoint)
+            continue
+        capability_limits = dict(capability_limits or {})
+        has_model_state = "models" in value or "selected_model" in value
+        models = value.get("models", [])
+        selected_model = value.get("selected_model")
+        if (
+            not isinstance(models, list)
+            or any(not isinstance(model, str) or not model.strip() for model in models)
+            or (selected_model is not None and not isinstance(selected_model, str))
+            or (selected_model is not None and selected_model not in models)
+        ):
+            gate_configured_entry(name, "invalid model selection", checkpoint)
+            continue
 
         state = value.get("state")
 
@@ -198,6 +232,10 @@ def load_provider_state(path: str | Path, registry: ProviderRegistry) -> None:
                 checkpoint=checkpoint,
                 reason=value.get("last_error"),
             )
+            status = registry.get_status(name)
+            if has_model_state:
+                apply_persisted_model_state(name, models, selected_model)
+            status.capability_limits = capability_limits
 
         elif state == ProviderState.ERROR:
             registry.mark_error(
@@ -206,6 +244,10 @@ def load_provider_state(path: str | Path, registry: ProviderRegistry) -> None:
                 retry_after=retry_after,
                 checkpoint=checkpoint,
             )
+            status = registry.get_status(name)
+            if has_model_state:
+                apply_persisted_model_state(name, models, selected_model)
+            status.capability_limits = capability_limits
 
         elif state == ProviderState.AVAILABLE:
             status = registry.mark_available(name)
@@ -214,6 +256,9 @@ def load_provider_state(path: str | Path, registry: ProviderRegistry) -> None:
             # back to AVAILABLE, and a process restart must preserve the
             # same progress just as the in-memory transition does.
             status.checkpoint = checkpoint
+            if has_model_state:
+                apply_persisted_model_state(name, models, selected_model)
+            status.capability_limits = capability_limits
         else:
             # Provider state gates paid/external work.  Treating a typo or
             # a value written by an incompatible version as AVAILABLE would

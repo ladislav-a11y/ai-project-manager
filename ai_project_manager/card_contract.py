@@ -6,7 +6,10 @@ from copy import deepcopy
 import re
 
 
-CURRENT_SCHEMA_VERSION = 1
+# Version 1 is the contract that is currently present on the live board.  The
+# priority/dependency immutability rules are a contract change, not merely an
+# implementation detail, so new writes must be explicitly stamped as v2.
+CURRENT_SCHEMA_VERSION = 2
 GOVERNANCE_POLICY = {
     "source_of_truth": "trello",
     "control_hierarchy": ["ai-project-manager", "ai-orchestrator", "agents"],
@@ -43,6 +46,16 @@ DOD_ROUTING_POLICY = {
         "actionable audit rejection is persisted as feedback, materialized as one implementation rework item, and consumed by the next tick",
         "an explicitly non-rework audit gate may remain in Testování",
     ],
+    "inbox_dependency_rule": (
+        "AI Inbox subtasks declare zero-based depends_on indices; cycles and missing "
+        "dependencies fail closed, and priority orders only dependency-ready siblings"
+    ),
+    "repair_priority_rule": (
+        "corrective work, confirmed bugs, regressions, and rework are always P5; "
+        "an explicit lower source label cannot demote them at Inbox intake; "
+        "after a card enters Připraveno its assigned priority is immutable and "
+        "must never be recomputed from status, provider, phase, or card text"
+    ),
 }
 # The first version of the routing contract was already written to live cards.
 # It is a known migration source, not an invalid user-authored contract.
@@ -72,6 +85,53 @@ _LEGACY_DOD_ROUTING_POLICY_V4["dispatch_requirements"] = [
     "audit-only work is routed to Testování",
     "audit rejection is persisted as feedback and consumed by the next tick",
 ]
+# A terminal card written during the first live migration contained both the
+# old dispatch wording and no test_execution_rule.  It remains valid
+# historical evidence in Trello, but must be normalized in memory so one old
+# Hotovo card cannot make the whole board unsafe on every tick.
+_LEGACY_DOD_ROUTING_POLICY_V5 = deepcopy(_LEGACY_DOD_ROUTING_POLICY_V4)
+_LEGACY_DOD_ROUTING_POLICY_V5.pop("test_execution_rule")
+_LEGACY_DOD_ROUTING_POLICY_V6 = deepcopy(DOD_ROUTING_POLICY)
+_LEGACY_DOD_ROUTING_POLICY_V6.pop("inbox_dependency_rule")
+# Some live cards contain the previous three-item dispatch policy together
+# with test_execution_rule, but were written before dependency metadata was
+# introduced. Keep this exact historical form migratable; conflicting policy
+# values remain fail-closed.
+_LEGACY_DOD_ROUTING_POLICY_V7 = deepcopy(_LEGACY_DOD_ROUTING_POLICY_V4)
+_LEGACY_DOD_ROUTING_POLICY_V7.pop("inbox_dependency_rule")
+# One terminal governance card predates both the test-evidence rule and the
+# Inbox dependency rule.  Migrate this exact historical shape; do not weaken
+# validation for any other conflicting policy.
+_LEGACY_DOD_ROUTING_POLICY_V8 = deepcopy(_LEGACY_DOD_ROUTING_POLICY_V5)
+_LEGACY_DOD_ROUTING_POLICY_V8.pop("inbox_dependency_rule")
+# Cards written after dependency support but before the mandatory repair
+# priority rule are safe to migrate; other policy mismatches remain fail-closed.
+_LEGACY_DOD_ROUTING_POLICY_V9 = deepcopy(DOD_ROUTING_POLICY)
+_LEGACY_DOD_ROUTING_POLICY_V9.pop("repair_priority_rule")
+# Production cards also exist in intermediate shapes that already contain
+# the test-evidence rule but predate both the Inbox dependency and repair
+# priority rules. Keep these exact values migratable instead of rejecting
+# historical cards forever.
+_LEGACY_DOD_ROUTING_POLICY_V10 = deepcopy(DOD_ROUTING_POLICY)
+_LEGACY_DOD_ROUTING_POLICY_V10.pop("inbox_dependency_rule")
+_LEGACY_DOD_ROUTING_POLICY_V10.pop("repair_priority_rule")
+_LEGACY_DOD_ROUTING_POLICY_V11 = deepcopy(_LEGACY_DOD_ROUTING_POLICY_V10)
+_LEGACY_DOD_ROUTING_POLICY_V11["dispatch_requirements"] = [
+    "at least one implementation DoD item remains for Pracuje se",
+    "audit-only work is routed to Testování",
+    "audit rejection is persisted as feedback and consumed by the next tick",
+]
+_LEGACY_DOD_ROUTING_POLICY_V12 = deepcopy(_LEGACY_DOD_ROUTING_POLICY_V11)
+_LEGACY_DOD_ROUTING_POLICY_V12.pop("test_execution_rule")
+# Live workflow cards were also written with the dependency rule and the
+# complete current dispatch/test policy, but before the intake-only priority
+# immutability sentence was added. This exact historical form is safe to
+# migrate; arbitrary policy changes remain fail-closed.
+_LEGACY_DOD_ROUTING_POLICY_V13 = deepcopy(DOD_ROUTING_POLICY)
+_LEGACY_DOD_ROUTING_POLICY_V13["repair_priority_rule"] = (
+    "corrective work, confirmed bugs, regressions, and rework are always P5; "
+    "an explicit lower source label cannot demote them"
+)
 
 
 class CardContractError(ValueError):
@@ -80,6 +140,64 @@ class CardContractError(ValueError):
 
 class UnsupportedCardSchemaError(CardContractError):
     """The card was written by a newer PM contract than this process knows."""
+
+
+def _schema_version(data: dict) -> int:
+    """Read and fail-closed validate the version before any migration."""
+    version = data.get("schema_version", 0)
+    if isinstance(version, bool) or not isinstance(version, int) or version < 0:
+        raise CardContractError("schema_version must be a non-negative integer")
+    if version > CURRENT_SCHEMA_VERSION:
+        raise UnsupportedCardSchemaError(
+            f"unsupported Trello Card Contract schema_version={version}; "
+            f"this PM supports up to {CURRENT_SCHEMA_VERSION}"
+        )
+    return version
+
+
+def _migrate_schema_0_to_1(data: dict) -> None:
+    """Add the neutral containers defined by the original card contract."""
+    data.setdefault("checkpoint", {})
+    data.setdefault("dod", [])
+    data.setdefault("open_feedback", [])
+    data.setdefault("lifecycle_status", None)
+    data["schema_version"] = 1
+
+
+def _migrate_schema_1_to_2(data: dict) -> None:
+    """Stamp the priority/dependency contract introduced by schema v2."""
+    # Early v1 writers did not consistently emit every neutral container.
+    # Retain the established compatible-load behavior while advancing them.
+    data.setdefault("checkpoint", {})
+    data.setdefault("dod", [])
+    data.setdefault("open_feedback", [])
+    data.setdefault("lifecycle_status", None)
+    data["schema_version"] = 2
+
+
+# This ordered, adjacent-version table is the sole schema migration authority.
+# Loading, validation, and maintenance repair all pass through it.
+_SCHEMA_MIGRATIONS = {
+    0: _migrate_schema_0_to_1,
+    1: _migrate_schema_1_to_2,
+}
+
+
+def _migrate_schema(data: dict) -> None:
+    version = _schema_version(data)
+    while version < CURRENT_SCHEMA_VERSION:
+        migration = _SCHEMA_MIGRATIONS.get(version)
+        if migration is None:
+            raise UnsupportedCardSchemaError(
+                f"no Trello Card Contract migration from schema_version={version}"
+            )
+        migration(data)
+        next_version = _schema_version(data)
+        if next_version != version + 1:
+            raise CardContractError(
+                f"invalid Trello Card Contract migration {version}->{next_version}"
+            )
+        version = next_version
 
 
 KNOWN_FIELDS = {
@@ -240,20 +358,7 @@ def migrate_and_validate(raw: dict) -> dict:
     # contract; drop it here so it can never leak into extra_data or a
     # future agent prompt, instead of carrying it forward forever.
     data.pop("learning_context", None)
-    version = data.get("schema_version", 0)
-    if isinstance(version, bool) or not isinstance(version, int) or version < 0:
-        raise CardContractError("schema_version must be a non-negative integer")
-    if version > CURRENT_SCHEMA_VERSION:
-        raise UnsupportedCardSchemaError(
-            f"unsupported Trello Card Contract schema_version={version}; "
-            f"this PM supports up to {CURRENT_SCHEMA_VERSION}"
-        )
-    if version == 0:
-        data["schema_version"] = CURRENT_SCHEMA_VERSION
-        data.setdefault("checkpoint", {})
-        data.setdefault("dod", [])
-        data.setdefault("open_feedback", [])
-        data.setdefault("lifecycle_status", None)
+    _migrate_schema(data)
 
     # Governance is an invariant, not card-authored configuration. Cards
     # written before this field existed are safely upgraded; a conflicting
@@ -265,6 +370,15 @@ def migrate_and_validate(raw: dict) -> dict:
         _LEGACY_DOD_ROUTING_POLICY_V2,
         _LEGACY_DOD_ROUTING_POLICY_V3,
         _LEGACY_DOD_ROUTING_POLICY_V4,
+        _LEGACY_DOD_ROUTING_POLICY_V5,
+        _LEGACY_DOD_ROUTING_POLICY_V6,
+        _LEGACY_DOD_ROUTING_POLICY_V7,
+        _LEGACY_DOD_ROUTING_POLICY_V8,
+        _LEGACY_DOD_ROUTING_POLICY_V9,
+        _LEGACY_DOD_ROUTING_POLICY_V10,
+        _LEGACY_DOD_ROUTING_POLICY_V11,
+        _LEGACY_DOD_ROUTING_POLICY_V12,
+        _LEGACY_DOD_ROUTING_POLICY_V13,
     ):
         # Upgrade only this exact prior PM-authored contract. Any other
         # conflicting value remains fail-closed below.
@@ -329,22 +443,14 @@ def repair_incomplete_contract(raw: dict) -> tuple[dict, list[str]]:
         raise CardContractError("PM-DATA must be a JSON object")
 
     repaired = deepcopy(raw)
-    repaired_fields: list[str] = []
+    repaired_fields: list[str] = ["schema_version"] if "schema_version" not in repaired else []
 
-    version = repaired.get("schema_version", 0)
-    if isinstance(version, bool) or not isinstance(version, int) or version < 0:
-        raise CardContractError("schema_version must be a non-negative integer")
-    if version > CURRENT_SCHEMA_VERSION:
-        raise UnsupportedCardSchemaError(
-            f"unsupported Trello Card Contract schema_version={version}; "
-            f"this PM supports up to {CURRENT_SCHEMA_VERSION}"
-        )
+    version = _schema_version(repaired)
 
     # These values are neutral containers or a value derived from the
     # physical Trello list later by project_from_card.  They never fabricate
     # work and preserve any value that the card already supplied.
     safe_defaults = {
-        "schema_version": CURRENT_SCHEMA_VERSION,
         "checkpoint": {},
         "dod": [],
         "open_feedback": [],
@@ -357,13 +463,14 @@ def repair_incomplete_contract(raw: dict) -> tuple[dict, list[str]]:
             repaired[field] = deepcopy(default)
             repaired_fields.append(field)
 
-    # An explicit schema_version=0 is a legacy contract.  Normalize it to
-    # the current version while retaining all user-authored fields.
-    if version == 0 and repaired.get("schema_version") != CURRENT_SCHEMA_VERSION:
-        repaired["schema_version"] = CURRENT_SCHEMA_VERSION
+    # Schema upgrades are deliberately not reimplemented here. The canonical
+    # loader performs the only migration chain and this function merely
+    # reports that maintenance must persist its resulting version stamp.
+    migrated = migrate_and_validate(repaired)
+    if version < CURRENT_SCHEMA_VERSION and "schema_version" not in repaired_fields:
         repaired_fields.append("schema_version")
 
-    return migrate_and_validate(repaired), repaired_fields
+    return migrated, repaired_fields
 
 
 def unknown_fields(data: dict) -> dict:

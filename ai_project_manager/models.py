@@ -16,7 +16,10 @@ from typing import Any, Optional
 
 
 MIN_PRIORITY = 0
-MAX_PRIORITY = 5
+# Integer P5..P0 remains the public banding. Decimal subpriorities below 6
+# (for example P2.01) distinguish children of one split Inbox request
+# without changing the meaning that a higher number wins.
+MAX_PRIORITY = 5.999999
 
 
 class ProjectStatus(str, Enum):
@@ -109,7 +112,8 @@ class ProjectRecord:
 
     Fields map directly onto a Trello card:
       - name                     -> card name
-      - priority                 -> "P0".."P5" label on the card
+      - priority                 -> "P0".."P5" label, or a decimal subpriority
+        such as "P2.01" within a split Inbox batch
       - status                   -> the Trello list the card belongs to
       - main_task                -> card description (structured block)
       - open_feedback             -> card description (structured block)

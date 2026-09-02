@@ -47,21 +47,19 @@ def test_runner_seeds_card_project_key_migration_for_the_known_real_production_c
 
     assert "'6a8f0baf1332f1d03b972003' = 'AI Project Manager'" in source
     assert "'6a9537223372a7c011c2f651' = 'Station Agent'" in source
+    assert "'6a96f3a589ea0531cfc12958' = 'Station Agent'" in source
     assert "'6a954cb7a0650b2d68cbb51f' = 'AI Project Manager'" in source
     assert "'6a954f060373e6917e0a7291' = 'AI Project Manager'" in source
     assert "$cardProjectKeys | ConvertTo-Json -Compress" in source
     assert "$env:AI_PM_CARD_PROJECT_KEYS = $cardProjectKeys | ConvertTo-Json -Compress" in source
 
 
-def test_runner_configures_explicit_provider_model_catalog() -> None:
+def test_runner_delegates_model_selection_to_providers() -> None:
     source = (SCRIPTS / "run-ai-project-manager.ps1").read_text(encoding="utf-8")
 
     assert "$env:AI_PM_PROVIDERS = 'hermes,antigravity,claude,codex'" in source
-    assert "$env:AI_PM_PROVIDER_MODELS" in source
-    assert "'hermes' = @('upstage/solar-pro4:free')" in source
-    assert "'codex' = @('gpt-5.6-luna')" in source
-    assert "'claude' = @('claude-opus-4-1', 'claude-sonnet-4')" in source
-    assert "'antigravity' = @('gemini-2.5-pro')" in source
+    assert "$env:AI_PM_PROVIDER_MODELS = '{}'" in source
+    assert "Model selection belongs to each provider" in source
 
 
 def test_runner_preserves_configured_czech_trello_names_as_utf8() -> None:
@@ -106,7 +104,18 @@ def test_runner_clears_every_environment_variable_it_sets() -> None:
         for line in cleanup.splitlines()
         if line.strip().startswith("$env:") and line.strip().endswith("= $null")
     }
+    # AI_PM_PROVIDER_STATE_PATH is special, but its no-inherited-value branch
+    # still clears it exactly like the other launcher-owned variables.
     assert cleared == assigned
+    assert "$env:AI_PM_PROVIDER_STATE_PATH" in cleanup
+
+
+def test_runner_preserves_an_explicit_provider_state_path_for_isolated_probe() -> None:
+    source = (SCRIPTS / "run-ai-project-manager.ps1").read_text(encoding="utf-8")
+
+    assert "$inheritedProviderStatePath = $env:AI_PM_PROVIDER_STATE_PATH" in source
+    assert "can use an isolated file" in source
+    assert "$env:AI_PM_PROVIDER_STATE_PATH = $inheritedProviderStatePath" in source
 
 
 def test_runner_routes_the_persistent_loop_through_the_watchdog() -> None:

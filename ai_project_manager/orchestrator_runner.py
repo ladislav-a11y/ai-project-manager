@@ -49,6 +49,7 @@ from __future__ import annotations
 
 import functools
 import json
+import math
 import re
 import subprocess
 import uuid
@@ -64,6 +65,7 @@ from .dod_validator import (
     validate_project_dod,
 )
 from .models import ProjectRecord
+from .inbox_preparation import PreparedTask, task_execution_order
 from .orchestrator_handoff import (
     AUDIT_VERDICT_ACCEPTED,
     AUDIT_VERDICT_REJECTED,
@@ -71,7 +73,11 @@ from .orchestrator_handoff import (
     build_audit_task,
     build_orchestrator_task,
 )
-from .providers import ProviderRegistry, detect_limit
+from .providers import (
+    ProviderRegistry,
+    detect_limit,
+)
+from .scheduler import audit_capability_key
 
 # command (argv, already including --project/--goal/--spec/--agent/
 # --model/--run-id when a model is configured) -> a
@@ -98,6 +104,28 @@ _DEFAULT_OUTBOX_DIR = "outbox"
 # is the single place that translation happens.
 DEFAULT_PROVIDER_AGENT_MAP = {"claude": "claude-code"}
 
+# PM retired Gemini after its account/project restriction was confirmed. This
+# is passed only to AO failover invocations from PM; AO's canonical default
+# order remains hermes, gemini, antigravity, claude-code, codex for other users.
+PM_FAILOVER_PROVIDER_ORDER = ("hermes", "antigravity", "claude-code", "codex")
+
+
+def _tick_provider_order(
+    provider: str,
+    provider_registry: ProviderRegistry,
+    project: Optional[ProjectRecord] = None,
+    provider_agent_map: Optional[dict] = None,
+) -> list[str]:
+    """Start AO with PM's selected provider and keep explicit failover visible."""
+    selected_agent = map_provider_to_agent(provider, provider_agent_map)
+    order = [selected_agent, *[name for name in PM_FAILOVER_PROVIDER_ORDER if name != selected_agent]]
+    if project is not None:
+        capability_key = audit_capability_key(project)
+        order = [name for name in order if not provider_registry.is_capability_limited(name, capability_key)]
+        if selected_agent not in order:
+            order.insert(0, selected_agent)
+    return order
+
 
 def map_provider_to_agent(provider: str, provider_agent_map: Optional[dict] = None) -> str:
     """Translate a Project Manager provider name into the agent
@@ -121,6 +149,162 @@ def _default_subprocess_run(command: list, timeout: Optional[float] = None) -> "
     )
 
 
+def _plan_command(command: list) -> list:
+    """Turn the production autonomous command into the planner command."""
+    base = [part for part in command if part not in {"autonomous", "--no-commit"}]
+    return base + ["plan-inbox"]
+
+
+def _json_object(text: str) -> Optional[dict]:
+    """Decode the first JSON object, tolerating a provider code fence."""
+    raw = (text or "").strip()
+    if raw.startswith("```"):
+        raw = re.sub(r"^```(?:json)?\s*|\s*```$", "", raw, flags=re.IGNORECASE | re.DOTALL).strip()
+    try:
+        value = json.loads(raw)
+        return value if isinstance(value, dict) else None
+    except (json.JSONDecodeError, TypeError):
+        start = raw.find("{")
+        if start < 0:
+            return None
+        try:
+            value, _ = json.JSONDecoder().raw_decode(raw[start:])
+            return value if isinstance(value, dict) else None
+        except (json.JSONDecodeError, TypeError):
+            return None
+
+
+def _planner_tasks(payload: dict) -> Optional[list[PreparedTask]]:
+    tasks = payload.get("tasks")
+    if not isinstance(tasks, list) or not 1 <= len(tasks) <= 32:
+        return None
+    result: list[PreparedTask] = []
+    for item in tasks:
+        if not isinstance(item, dict):
+            return None
+        scope = item.get("scope")
+        task = item.get("task")
+        next_step = item.get("next_step")
+        priority = item.get("priority")
+        depends_on = item.get("depends_on", [])
+        if not all(isinstance(value, str) and value.strip() for value in (scope, task, next_step)):
+            return None
+        if not isinstance(depends_on, list):
+            return None
+        if isinstance(priority, bool) or not isinstance(priority, (int, float)):
+            return None
+        if not math.isfinite(float(priority)) or not 0 <= float(priority) < 6:
+            return None
+        result.append(
+            PreparedTask(
+                title=str(scope).strip(),
+                task=str(task).strip(),
+                next_step=str(next_step).strip(),
+                scope=str(scope).strip(),
+                priority=float(priority),
+                priority_reason="priorita přidělena AI Inbox plannerem",
+                depends_on=tuple(depends_on),
+            )
+        )
+    if len({task.priority for task in result}) != len(result):
+        return None
+    try:
+        task_execution_order(result)
+    except ValueError:
+        return None
+    return result
+
+
+INBOX_PLANNER_PROVIDERS = ("antigravity", "claude", "codex")
+
+
+def build_inbox_planner_fn(
+    provider_registry: ProviderRegistry,
+    command: list,
+    *,
+    subprocess_run: Optional[Callable[..., "subprocess.CompletedProcess"]] = None,
+    timeout_seconds: float = 180,
+):
+    """Build the AI-only Inbox planner, explicitly excluding Hermes.
+
+    The planner is a separate read-only ai-orchestrator command. It returns a
+    validated task plan and never receives a real project checkout.
+    """
+    # Inbox intake is deliberately never allowed to use Hermes.  Keep this
+    # allowlist local to the planner so a general provider-order change or a
+    # Hermes-first autonomous failover can never leak into intake.
+    allowed = INBOX_PLANNER_PROVIDERS
+    planner_command = _plan_command(command)
+
+    def plan(card: dict, projects: list[ProjectRecord]) -> Optional[dict]:
+        request = {
+            "card": {
+                "id": str(card.get("id") or ""),
+                "name": str(card.get("name") or ""),
+                "description": str(card.get("desc") or ""),
+                "labels": [
+                    str(label.get("name") if isinstance(label, dict) else label)
+                    for label in (card.get("labels") or [])
+                ],
+            },
+            "existing_projects": [
+                {"name": project.name, "project_key": project.project_key, "main_task": project.main_task}
+                for project in projects
+                if project.status.value != "done"
+            ],
+        }
+        for provider in allowed:
+            if not provider_registry.is_available(provider):
+                continue
+            agent = map_provider_to_agent(provider)
+            full_command = planner_command + ["--agent", agent]
+            try:
+                if subprocess_run is None:
+                    completed = subprocess.run(
+                        full_command,
+                        input=json.dumps(request, ensure_ascii=False),
+                        capture_output=True,
+                        text=True,
+                        encoding="utf-8",
+                        errors="replace",
+                        timeout=timeout_seconds,
+                        check=False,
+                    )
+                else:
+                    completed = subprocess_run(
+                        full_command,
+                        input=json.dumps(request, ensure_ascii=False),
+                        timeout=timeout_seconds,
+                    )
+            except Exception as exc:  # noqa: BLE001 - planner failover is explicit
+                provider_registry.mark_error(provider, f"Inbox planner selhal: {type(exc).__name__}", timedelta(minutes=30))
+                continue
+            envelope = _json_object((completed.stdout or "") + "\n" + (completed.stderr or ""))
+            if not envelope:
+                provider_registry.mark_error(provider, "Inbox planner nevrátil JSON envelope", timedelta(minutes=30))
+                continue
+            if not envelope.get("success"):
+                reason = str(envelope.get("error") or "Inbox planner selhal")
+                if envelope.get("limited"):
+                    provider_registry.mark_limited(provider, timedelta(minutes=30), reason=reason)
+                else:
+                    provider_registry.mark_error(provider, reason, timedelta(minutes=30))
+                continue
+            plan_payload = _json_object(str(envelope.get("output") or ""))
+            tasks = _planner_tasks(plan_payload or {})
+            if tasks is None:
+                provider_registry.mark_error(provider, "AI Inbox planner vrátil neplatný task plán", timedelta(minutes=30))
+                continue
+            return {
+                "provider": provider,
+                "model": envelope.get("model"),
+                "tasks": tasks,
+            }
+        return None
+
+    return plan
+
+
 class OrchestratorProcessError(RuntimeError):
     """Raised when ai-orchestrator fails in a way that is not a
     recognizable session/quota limit."""
@@ -142,7 +326,7 @@ def _slugify(name: str) -> str:
 # time a card is re-prioritized and is never part of the project's
 # identity, so it must not affect which local checkout a card resolves
 # to.
-_PRIORITY_PREFIX_RE = re.compile(r"^\s*P[0-5]\s*[-–—:]*\s*", re.IGNORECASE)
+_PRIORITY_PREFIX_RE = re.compile(r"^\s*P[0-5](?:\.\d+)?\s*[-–—:]*\s*", re.IGNORECASE)
 
 
 def _strip_priority_prefix(name: str) -> str:
@@ -714,7 +898,11 @@ def build_run_fn(
         # tick starts from Hermes again. Tests and explicit callers retain the
         # old single-agent behavior unless they opt in.
         agent_name = "auto" if use_provider_failover else map_provider_to_agent(provider, provider_agent_map)
-        selected_model = None if use_provider_failover else provider_registry.selected_model(provider)
+        # The PM selects a provider, not a model. Each provider owns its
+        # model policy and may choose an appropriate model from the task
+        # prompt; Hermes remains governed by ai-orchestrator's Nous-only
+        # contract. Never pass a stale PM-side --model override.
+        selected_model = None
         task = build_orchestrator_task(project, definition_of_done=definition_of_done, provider=agent_name)
 
         try:
@@ -766,8 +954,11 @@ def build_run_fn(
             "--spec", str(spec_path),
             "--agent", agent_name,
         ]
-        if selected_model:
-            full_command += ["--model", selected_model]
+        if use_provider_failover:
+            full_command += [
+                "--provider-order",
+                ",".join(_tick_provider_order(provider, provider_registry, provider_agent_map=provider_agent_map)),
+            ]
         full_command += [
             "--run-id", run_id,
             "--implementation-only",
@@ -838,6 +1029,7 @@ def build_run_fn(
 
         result: dict = {}
         for key in (
+            "run_id",
             "checkpoint",
             "last_output",
             "next_step",
@@ -912,13 +1104,14 @@ def _audit_reject_target(project: ProjectRecord, rejected_indices: list[int]) ->
     """Route a rejected verdict according to the rejected DoD phases.
 
     This does not create a verdict. ai-orchestrator remains the sole audit
-    authority. An audit rejection is actionable by default: even when the
-    rejected indices are audit-only, ``apply_audit_verdict`` materializes the
-    finding as one implementation rework item before returning the card to
-    ``Pracuje se``. A controller may explicitly return ``testing`` when the
-    rejection is a non-rework audit gate.
+    authority. A rejection containing only audit-phase indices is a non-rework
+    audit gate and remains in ``Testování``. A rejection that includes an
+    implementation item returns the card to ``Pracuje se`` for actual rework.
     """
     indices = sorted({index for index in (rejected_indices or []) if isinstance(index, int)})
+    valid_indices = [index for index in indices if 0 <= index < len(project.dod)]
+    if valid_indices and all(project.dod[index].phase == "audit" for index in valid_indices):
+        return "testing"
     return "in_progress"
 
 
@@ -965,7 +1158,9 @@ def build_audit_run_fn(
 
     def audit_run_fn(project: ProjectRecord, provider: str) -> dict:
         agent_name = "auto" if use_provider_failover else map_provider_to_agent(provider, provider_agent_map)
-        selected_model = None if use_provider_failover else provider_registry.selected_model(provider)
+        # Model selection belongs to the selected provider. The PM passes the
+        # audit task prompt and never forces a provider-specific model.
+        selected_model = None
         task = build_audit_task(project, provider=agent_name)
 
         try:
@@ -997,8 +1192,11 @@ def build_audit_run_fn(
             "--spec", str(spec_path),
             "--agent", agent_name,
         ]
-        if selected_model:
-            full_command += ["--model", selected_model]
+        if use_provider_failover:
+            full_command += [
+                "--provider-order",
+                ",".join(_tick_provider_order(provider, provider_registry, project, provider_agent_map)),
+            ]
         full_command += [
             "--run-id", run_id,
             # Testování is an audit gate, not another implementation loop.

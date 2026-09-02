@@ -308,8 +308,10 @@ dokumentů a potvrzené uživatelem 28. 8. 2026:
   ověřuje readbackem.
 - Opakované zpracování stejné Inbox položky musí být idempotentní: ID příjmu se uloží do cílového
   kontraktu a nesmí podruhé přidat stejný feedback nebo založit druhý úkol.
-- Nejasná položka se nesmí odhadnout ani smazat. PM ji ponechá v Inboxu a viditelně uvede, jaké
-  rozhodnutí potřebuje od člověka.
+- Nejasná položka existujícího projektu se nesmí odhadnout ani smazat. PM ji ponechá v Inboxu a
+  viditelně uvede, jaké rozhodnutí potřebuje od člověka. Skutečně nový nápad bez projektové identity
+  se smí připravit autonomně jako izolovaný projekt pod explicitním `AI_PM_PROJECTS_ROOT`; identita
+  obsahuje neměnné zdrojové ID, aby se dvě podobné ideje neslily do jednoho checkoutu.
 - **Trello je jediným zdrojem pravdy** pro prioritu, lifecycle, DoD, blokaci a dokončení.
 - Pevná hierarchie řízení je **AI Project Manager → ai-orchestrator → agenti**. PM vybírá a řídí
   workflow; orchestrátor rozděluje práci a jako jediný provádí audit a vydává accepted/rejected
@@ -399,10 +401,11 @@ jednoznačný podúkol existující karty; nevytvářet paralelní duplicity.
    úkol a rozdělit jej na malé navazující části s vlastním DoD, testem,
    prioritou a checkpointem. Části musí zůstat součástí jednoho projektu a
    nesmí umožnit přeskočení testování nebo auditu.
-6. **Prioritizace v kontextu celého projektu** — AI má přidělit jedinečné,
-   odůvodněné priority `P5–P0` napříč kartami a fázemi; opravné a závislostní
-   úkoly mají přednost před běžnými, ale čekací a auditní fáze se nesmí
-   přeskočit kvůli prioritě.
+6. **Prioritizace při Inbox intake** — AI má při přijetí do `Připraveno`
+   přidělit jedinečné, odůvodněné priority `P5–P0`; opravné a PM úkoly mají
+   tehdy přednost před běžnými úkoly. Po zařazení je priorita neměnný údaj
+   Card Contractu a PM ji nesmí přečíslovat podle aktuálního listu, fáze,
+   providera ani textu karty.
 7. **Dokončovací úklid** — po úspěšném auditu a Git checkpointu bezpečně
    identifikovat a odstranit pouze prokazatelně nepotřebné dočasné soubory a
    složky, výsledek úklidu zapsat do DoD a zachovat možnost obnovy. Nikdy
@@ -416,3 +419,191 @@ jednoznačný podúkol existující karty; nevytvářet paralelní duplicity.
    PoC vedle PM/orchestrátoru, Ollama/LM Studio/OpenAI-compatible endpoint,
    měření kvality/rychlosti/VRAM/nákladů, fallback a GO/NO-GO. Produkční
    migrace až po live E2E důkazu.
+10. **Optimalizace kódu a využití AI v AI Project Manager a jeho komplexní
+    kontrola a úklid** — provést systematickou kontrolu struktury a kvality
+    kódu, odstranit prokazatelně mrtvé nebo duplicitní části, zjednodušit
+    zbytečnou složitost, zkontrolovat testy, logování, stavovou správu,
+    bezpečnost, výkon a spotřebu tokenů. Součástí bude i kontrola promptů,
+    kontextu a využití providerů tak, aby AI nepálila prostředky bez přínosu.
+    Změny musí zachovat Card Contract, audit-only pravidla a neměnnost priorit
+    po zařazení do `Připraveno`; před úklidem i po něm bude proveden úplný
+    readback a ověření provozní stability.
+
+### 7.5 Ověřená blokace Gemini a přechod na Antigravity (1. 9. 2026)
+
+Gemini se dále nezkouší. Izolovaný forced tick s `--agent gemini` a bez AO
+failoveru byl skutečně proveden na kartě `P5.01 — oprava project manager
+[Inbox 6a966a72] — požadavek 1`. Gemini CLI vrátil `IneligibleTierError` a
+`UNSUPPORTED_CLIENT` s vysvětlením, že tento klient již není podporován pro
+Gemini Code Assist pro jednotlivce a že je nutné migrovat na sadu produktů
+Antigravity (`https://antigravity.google`). Nešlo o běžné vyčerpání kvóty;
+AO proto nepřepnul na jiného providera. Samostatné REST ověření stejného
+projektu navíc skončilo `PERMISSION_DENIED` / „Your project has been denied
+access“.
+
+**Rozhodnutí:** Gemini je pro PM dočasně veden jako nedostupný (`ERROR` s
+retry backoffem); další Gemini tick se nespouští. Další diagnostika a live E2E
+ověření pokračuje izolovaným forced tickem pouze s Antigravity. Za fungujícího
+providera se Antigravity označí až po skutečném PM → AO handoffu, úspěšném
+výsledku `agy`, zápisu outboxu/checkpointu a konzistentním readbacku Trella a
+Slacku. Tento záznam je provozní důkaz a nepředstavuje auditní verdikt
+`Testování`.
+
+### 7.6 Obnova priorit po historickém chybném re-rankingu (1. 9. 2026)
+
+### 8.6 Aktuální kontrakt: model vybírá provider, Inbox Hermes nikdy
+
+- PM předává pouze providera, typ úkolu a bezpečný prompt; do planneru,
+  implementačního ani auditního argv se nepřidává `--model` z PM katalogu.
+- Provider si zvolí konkrétní model podle typu úkolu. AO musí skutečně použitý
+  model vrátit v outboxu; PM jej pouze zapíše do Trello/Slack evidence a při
+  absenci výstupu uvede neznámý provider default.
+- `build_inbox_planner_fn` používá explicitní allowlist `antigravity`, `claude`,
+  `codex`. Hermes v něm není a nesmí se do něj dostat změnou obecného
+  provider-order. Inbox plánování tak nikdy nepoužije Hermes.
+- Hermes mimo Inbox zůstává vždy Nous-only: `provider=nous` a
+  `model=upstage/solar-pro4:free`. Každý free provider musí fail-closed odmítnout
+  placený model nebo tichý placený fallback; platí to i pro Inbox planning.
+
+Historický maintenance re-ranking změnil priority i po Inbox intake a
+způsobil kolizi `P5.06 — Bazar ... požadavek 1` s opravnými/PM kartami. Stav
+byl jednorázově ručně opraven přímo v živém Trellu: opravné a PM karty mají
+jedinečné `P5.01` až `P5.05`; Bazar požadavky 1 až 17 mají jedinečné `P2.01`
+až `P2.17`, tedy požadavek 5 je `P2.05`. Po tomto repair zásahu už PM
+priority nepřiděluje ani nemění; pouze respektuje hodnotu získanou při intake.
+
+---
+
+## 8. Mapování: rozhodování PM/PO o provideru a modelu LLM podle typu úkolu (oprava PM [Inbox 6a96e12f])
+
+Historická mapa níže zachycuje předchozí návrh. Aktuální kontrakt je v části
+8.6: PM vybírá providera a typ úkolu, konkrétní model volí provider, Inbox
+intake Hermes nikdy nepoužije a free provider nesmí tiše přejít na placený
+model.
+
+### 8.1 Tři typy úkolu, které PM providerovi/LLM zadává
+
+| Typ úkolu | Kdy nastává | Funkce, která provider/model vybírá |
+|---|---|---|
+| **Inbox planning** (čtení a klasifikace nové Inbox položky) | Read-only, karta ještě není `Připraveno` | `orchestrator_runner.build_inbox_planner_fn` (vlastní hardcoded allowlist, viz 8.2) |
+| **Implementace** (`Pracuje se`) | Karta má neprovedené `implementation` DoD položky | `scheduler.pick_next_project` + `orchestrator_runner.build_run_fn` |
+| **Audit** (`Testování`) | Karta čeká na accepted/rejected verdikt | `scheduler.pick_next_audit_project` + `orchestrator_runner.build_audit_run_fn` |
+
+### 8.2 Výběr providera podle typu úkolu
+
+- **Inbox planning** (`ai_project_manager/orchestrator_runner.py:215-227`): `build_inbox_planner_fn`
+  definuje vlastní samostatný allowlist `allowed = ("antigravity", "claude", "codex")` přímo v
+  `orchestrator_runner.py:227` a vybírá první provider z tohoto pevného pořadí, který je
+  `provider_registry.is_available(...)`. Hermes je z plánování natvrdo vyloučen tím, že v tomto
+  tuple vůbec není, a Gemini je z PM úplně stažen (viz 7.5), takže také chybí.
+  Pozn. (zjištění, ne oprava — mimo rozsah této karty): `ai_project_manager/inbox.py:36-44` definuje
+  paralelní funkci `inbox_planner_providers` a konstantu `INBOX_PLANNING_FORBIDDEN_PROVIDERS =
+  {"hermes", "gemini"}`, které vyjadřují stejnou politiku (žádný Hermes/Gemini v Inbox planningu),
+  ale produkční dispatch `build_inbox_planner_fn` je nevolá a nijak na ně neodkazuje — v
+  `orchestrator_runner.py` není žádný `from .inbox import`/`import inbox`. Oba symboly z `inbox.py`
+  jsou tedy vůči skutečné rozhodovací cestě pro výběr providera mrtvý kód; jediní volající jsou
+  `tests/test_inbox.py:9,29`. Efektivní chování (vyloučení Hermes a Gemini) je dnes shodné, protože
+  je duplikované přímo v `orchestrator_runner.py:227`, ale je to nezávislá, nikoli sdílená
+  implementace.
+- **Implementace** (`scheduler.py:98-158`, funkce `pick_next_project`): pro danou kartu se vezme
+  `providers_for_project.get(project.name)` (`AI_PM_PROVIDERS_FOR_PROJECT`), jinak výchozí
+  `AI_PM_PROVIDERS` pořadí; vybere se první provider v tomto pořadí, který je momentálně
+  `is_available` (stav `AVAILABLE`, ne `LIMITED`/`ERROR`).
+- **Audit** (`scheduler.py:176-219`, funkce `pick_next_audit_project`): stejné pořadí
+  `providers_for_project`/`AI_PM_PROVIDERS` jako u implementace, ale navíc filtruje providery,
+  kteří jsou `provider_registry.is_capability_limited(name, audit_capability_key(project))` —
+  perzistentní, per-projekt-a-scope značka (`providers.py:223-235`, `mark_capability_limited`),
+  odlišná od běžného `LIMITED`/`ERROR` kvótového stavu. Toto je jediné místo, kde volba
+  **providera** skutečně závisí na typu úkolu (implementace vs. audit): audit dispatch má
+  dodatečný filtr, který implementační dispatch nemá — provider zůstává použitelný pro
+  implementaci jiných karet i poté, co byl kvůli konkrétnímu auditnímu scope kategoricky
+  odmítnut (např. bezpečnostní hranice Hermes guardu, viz runtime contract).
+- **`AI_PM_PROVIDERS=auto`** (výchozí hodnota): PM sám žádného konkrétního providera nepin­uje;
+  `--agent auto` deleguje skutečnou volbu na vlastní failover řetězec ai-orchestrátoru
+  (`orchestrator_runner.py:104-107`, komentář: „AO's canonical default order remains hermes,
+  gemini, antigravity, claude-code, codex for other users" — PM sám Gemini z tohoto řetězce
+  odstranil, viz 7.5).
+- **Explicitní `--provider-order`** (`use_provider_failover=True`, `_tick_provider_order`,
+  `orchestrator_runner.py:110-124`): když PM pošle konkrétní vybraný provider, přiloží i celé
+  pořadí pro same-tick failover uvnitř ai-orchestrátoru — vybraný provider první, pak zbytek
+  pevného `PM_FAILOVER_PROVIDER_ORDER = (hermes, antigravity, claude-code, codex)`; u audit
+  dispatche se z tohoto pořadí navíc odstraní providery capability-limited pro dané auditní
+  scope (parametr `project` je předán jen v audit větvi, `orchestrator_runner.py:1198`).
+
+### 8.3 Historický stav výběru modelu LLM (již nepoužívaný)
+
+- `AI_PM_PROVIDER_MODELS` je volitelná JSON mapa provider → seřazený neprázdný seznam modelů.
+  Při startu CLI (`cli.py:129-132`) se pro **každý** nakonfigurovaný provider zavolá
+  `provider_registry.configure_models(name, config.provider_models.get(name, []))` — i pro
+  providery bez záznamu v `AI_PM_PROVIDER_MODELS` (dostanou prázdný seznam). První položka
+  seznamu se stává `selected_model` (`providers.py:97-109`); prázdný seznam znamená
+  `selected_model = None`.
+- Implementační dispatch (`build_run_fn`, `orchestrator_runner.py:899-902`) a auditní dispatch
+  (`build_audit_run_fn`, `orchestrator_runner.py:1160-1163`) používají **doslova stejný výraz**:
+  `None if provider.casefold() == "hermes" else provider_registry.selected_model(provider)`.
+  Do žádné z obou funkcí nevstupuje fáze/typ úkolu jako parametr ovlivňující volbu modelu —
+  jediné zohlednění typu úkolu v `--model` je nepřímé, přes to, jaký `provider` byl už vybrán
+  podle 8.2. Model vybraný pro implementaci a model vybraný pro audit téže karty je tedy vždy
+  identický, pokud se mezitím nezměnil `AI_PM_PROVIDER_MODELS`/stav providera.
+  Pozn.: `build_inbox_planner_fn` (typ úkolu „Inbox planning") používá tentýž
+  `provider_registry.selected_model(provider)` bez Hermes výjimky (Hermes je z plánování už
+  vyloučen na úrovni výběru providera, viz 8.2), takže žádná zvláštní logika navíc.
+- **Providery bez možnosti volby modelu:**
+  - **Hermes** — jediný provider, kde je nepředání `--model` vynucené v kódu bez ohledu na
+    obsah `AI_PM_PROVIDER_MODELS` nebo typ úkolu (`orchestrator_runner.py:895-902`,
+    `runner.py:100-104,138-139`). I kdyby operátor omylem nastavil
+    `AI_PM_PROVIDER_MODELS["hermes"]`, PM ho nikdy nepoužije. Důvodová zpráva zapisovaná do
+    Trella/Slacku je vždy „model je pevně daný Hermes Nous-only kontraktem" — Hermes tedy má
+    jeden pevný model (Nous-only kontrakt) a PM u něj o modelu vůbec nerozhoduje.
+  - **Kterýkoli jiný nakonfigurovaný provider bez záznamu v `AI_PM_PROVIDER_MODELS`** —
+    `selected_model` zůstává `None`, `--model` se vůbec nepřidá do argv a použije se výchozí
+    model daného CLI/agenta. PM tento stav hlásí explicitně jako „provider nemá
+    nakonfigurovaný model; použit bude jeho výchozí model" (`runner.py:111`) / „provider
+    použil svůj výchozí model" (`runner.py:151`) — nikdy neodhaduje jméno modelu z názvu
+    providera.
+  - Pokud ai-orchestrator ve výsledku vrátí `active_model`/`model`/`usage.total.model`, tento
+    potvrzený běhový model nahradí nakonfigurovanou preferenci jen v reportovacím textu
+    (`runner.py:115-152`) — na už odeslaný dispatch to zpětně nepůsobí.
+
+### 8.4 Zjištěná mezera (zaznamenáno mapováním, uzavřeno v 8.5)
+
+Volba konkrétního modelu dříve nezohledňovala typ úkolu, fázi workflow ani požadovanou kvalitu —
+běžná implementace i audit stejné karty vždy dostaly stejný, staticky nakonfigurovaný první
+model daného providera (viz 8.3, popis stavu v době mapování). Odlišení „úsporný model pro
+rutinní implementaci, kvalitnější model pro audit/složitou opravu" tehdy nebylo v kódu
+implementováno. Toto přesně odpovídalo už dříve evidovanému bodu **7.4, položka 2** („Výběr
+konkrétního modelu v rámci providera"). Následující iterace téže karty [Inbox 6a96e12f] mezeru
+zavírá — viz **8.5**.
+
+### 8.5 Historický návrh výběru modelu podle typu úkolu (nahrazeno)
+
+- `ProviderRegistry.model_for_task(name, task_type)` (`providers.py`) doplňuje `selected_model`
+  o parametr typu úkolu (`TASK_INBOX_PLANNING`, `TASK_IMPLEMENTATION`, `TASK_AUDIT`). Provider
+  s 0 nebo 1 nakonfigurovaným modelem se chová naprosto stejně jako dřív pro každý typ úkolu —
+  diferenciace nastává jen tehdy, když `AI_PM_PROVIDER_MODELS` skutečně obsahuje víc než jeden
+  model pro daného providera, takže mimo tento opt-in případ se chování nemění.
+- Konvence seřazeného seznamu: index 0 = nejúspornější/výchozí model (Inbox planning i rutinní
+  implementace), poslední index = nejkvalitnější nakonfigurovaný model (audit — nezávislý
+  auditní gate, kde záleží víc na správnosti než na propustnosti).
+- `build_inbox_planner_fn` a `build_run_fn` (implementace) volají
+  `provider_registry.model_for_task(provider, TASK_INBOX_PLANNING/TASK_IMPLEMENTATION)`, tedy
+  vždy `models[0]` — beze změny oproti předchozímu `selected_model`. `build_audit_run_fn` volá
+  `model_for_task(provider, TASK_AUDIT)`, tedy `models[-1]` — u providera s víc než jedním
+  nakonfigurovaným modelem tak audit dostane jiný (kvalitnější) model než implementace téže
+  karty.
+- `runner.py` (`_provider_selection_reason`/`_actual_provider_selection_reason`, volané z
+  `run_once` a `run_once_audit`) reportuje do Trella/Slacku stejný model, jaký skutečně použije
+  `orchestrator_runner.py` pro daný typ úkolu, a u auditu s víc než jedním modelem odlišuje důvod
+  textem „model … je pro audit nejkvalitnější nakonfigurovaný model providera" místo
+  „model … je pro implementaci první preferovaný model providera". Důvod výběru provideru
+  zůstává v téže Slack zprávě zachován jako samostatná část.
+- Hermes (`PROVIDERS_WITHOUT_MODEL_SELECTION`) zůstává beze změny — `model_for_task` se pro něj
+  vůbec nevolá (`supports_model_selection` guard na všech dispatch místech), model je nadále
+  pevně daný Nous-only kontraktem bez ohledu na typ úkolu.
+
+Historický maintenance re-ranking změnil priority i po Inbox intake a
+způsobil kolizi `P5.06 — Bazar ... požadavek 1` s opravnými/PM kartami. Stav
+byl jednorázově ručně opraven přímo v živém Trellu: opravné a PM karty mají
+jedinečné `P5.01` až `P5.05`; Bazar požadavky 1 až 17 mají jedinečné `P2.01`
+až `P2.17`, tedy požadavek 5 je `P2.05`. Po tomto repair zásahu už PM
+priority nepřiděluje ani nemění; pouze respektuje hodnotu získanou při intake.

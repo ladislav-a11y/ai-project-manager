@@ -2,7 +2,7 @@ from datetime import timedelta
 
 from ai_project_manager.models import ProjectRecord, ProjectStatus
 from ai_project_manager.providers import ProviderRegistry
-from ai_project_manager.scheduler import is_schedulable, pick_next_project
+from ai_project_manager.scheduler import is_schedulable, pick_next_audit_project, pick_next_project
 
 
 def test_waiting_card_blocks_other_work_until_workflow_resumes():
@@ -189,6 +189,28 @@ def test_returns_none_when_no_provider_available():
     assert decision is None
 
 
+def test_dependency_ready_child_waits_for_done_sibling_even_with_higher_priority():
+    registry = make_registry(claude="AVAILABLE")
+    dependency = ProjectRecord(
+        name="Base",
+        priority=1,
+        status=ProjectStatus.READY,
+        extra_data={"inbox_preparation": {"source_card_id": "source", "subtask_index": 0}},
+    )
+    dependent = ProjectRecord(
+        name="Dependent",
+        priority=5,
+        status=ProjectStatus.READY,
+        extra_data={"inbox_preparation": {
+            "source_card_id": "source", "subtask_index": 1,
+            "depends_on_subtask_indices": [0],
+        }},
+    )
+    assert pick_next_project([dependency, dependent], registry, default_providers=["claude"]).project is dependency
+    dependency.status = ProjectStatus.DONE
+    assert pick_next_project([dependency, dependent], registry, default_providers=["claude"]).project is dependent
+
+
 def test_falls_back_to_lower_priority_project_when_top_providers_unavailable():
     projects = [
         ProjectRecord(name="High", priority=5, status=ProjectStatus.READY),
@@ -215,3 +237,26 @@ def test_scheduler_never_touches_providers_that_are_not_registered():
     decision = pick_next_project(projects, registry, default_providers=["unregistered"])
 
     assert decision is None
+
+
+def test_audit_capability_limit_skips_hermes_for_same_task_family():
+    project = ProjectRecord(
+        name="P5.04 — propagation a scoring",
+        project_key="Station Agent",
+        priority=5.04,
+        status=ProjectStatus.TESTING,
+        extra_data={"inbox_preparation": {"scope": "propagation a scoring"}},
+    )
+    registry = make_registry(hermes="AVAILABLE", codex="AVAILABLE")
+    registry.mark_capability_limited(
+        "hermes",
+        "audit:station agent:propagation a scoring",
+        "no independent verdict",
+    )
+
+    decision = pick_next_audit_project(
+        [project], registry, default_providers=["hermes", "codex"]
+    )
+
+    assert decision is not None
+    assert decision.provider == "codex"

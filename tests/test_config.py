@@ -278,6 +278,24 @@ def test_load_config_resolves_provider_state_path_to_absolute_by_default():
     # process happens to have when it later loads/saves provider state.
     assert os.path.isabs(config.provider_state_path)
     assert config.provider_state_path == os.path.abspath("provider_state.json")
+    assert config.artifact_cleanup_root is None
+    assert config.artifact_cleanup_retention_seconds == 24 * 3600
+
+
+def test_load_config_parses_explicit_artifact_cleanup_policy():
+    config = load_config(base_env(
+        AI_PM_ARTIFACT_CLEANUP_ROOT="test-artifacts",
+        AI_PM_ARTIFACT_RETENTION_HOURS="2.5",
+    ))
+
+    assert config.artifact_cleanup_root == os.path.abspath("test-artifacts")
+    assert config.artifact_cleanup_retention_seconds == 2.5 * 3600
+
+
+@pytest.mark.parametrize("value", ["old", "-1", "nan", "inf"])
+def test_load_config_rejects_unsafe_artifact_retention(value):
+    with pytest.raises(ConfigError, match="AI_PM_ARTIFACT_RETENTION_HOURS"):
+        load_config(base_env(AI_PM_ARTIFACT_RETENTION_HOURS=value))
 
 
 def test_load_config_honors_custom_provider_state_path():

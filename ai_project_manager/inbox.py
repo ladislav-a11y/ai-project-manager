@@ -1,10 +1,9 @@
 """Trello Inbox intake: the single manual input point.
 
 A human's only interaction with the system is dropping a card into the
-Trello "Inbox" list. This module reads those cards, classifies each one
-against existing projects using a cheap local heuristic (no AI tokens
-spent on routine intake), and assigns it to the matching project -
-creating a new project record when nothing matches closely enough.
+Trello "Inbox" list. Production preparation is performed by the separate
+AI planner and is validated here before admission. The deterministic splitter
+remains for tests and backwards-compatible callers only.
 """
 
 from __future__ import annotations
@@ -14,18 +13,35 @@ import hashlib
 import logging
 import unicodedata
 from dataclasses import dataclass
-from typing import Callable, Mapping, Optional
+from pathlib import Path
+from typing import Callable, Mapping, MutableMapping, Optional
 
 from .models import DoDItem, ProjectRecord, ProjectStatus
 from .inbox_preparation import (
+    PreparedTask,
     build_dod,
     inbox_source_text,
     prepare_inbox_card,
     prioritize_inbox_cards,
     visible_inbox_description,
+    task_execution_order,
 )
 
 logger = logging.getLogger("ai_project_manager")
+
+# Inbox preparation is a planning/classification phase, not worker work.
+# Keep this policy executable even if an AI planner is added later: Hermes is
+# deliberately reserved for already-prepared atomic cards. Gemini is retired
+# from PM entirely after its migration/audit outcome.
+INBOX_PLANNING_FORBIDDEN_PROVIDERS = frozenset({"hermes", "gemini"})
+
+
+def inbox_planner_providers(providers) -> tuple[str, ...]:
+    """Return providers allowed to plan Inbox input, never including Hermes."""
+    return tuple(
+        provider for provider in providers
+        if str(provider).strip().casefold() not in INBOX_PLANNING_FORBIDDEN_PROVIDERS
+    )
 
 # Below this score a card is treated as belonging to a brand-new project
 # rather than an existing one.
@@ -72,6 +88,7 @@ class ClassificationResult:
 # AI-assisted) classifier can be swapped in without touching callers.
 ClassifierFn = Callable[[dict, list[ProjectRecord]], ClassificationResult]
 PersistProjectFn = Callable[[ProjectRecord], Optional[Mapping]]
+InboxPlannerFn = Callable[[dict, list[ProjectRecord]], Optional[dict]]
 
 
 @dataclass(frozen=True)
@@ -359,8 +376,10 @@ def process_inbox(
     inbox_list_name: str = "Inbox",
     default_priority: int = 2,
     persist_project: Optional[PersistProjectFn] = None,
-    project_paths: Optional[Mapping[str, str]] = None,
+    project_paths: Optional[MutableMapping[str, str]] = None,
     card_project_keys: Optional[Mapping[str, str]] = None,
+    projects_root: Optional[str] = None,
+    planner: Optional[InboxPlannerFn] = None,
 ) -> list[ProjectRecord]:
     """Fetch new (not yet processed) cards from the Trello Inbox list,
     classify each one and fold it into the right project. Returns the
@@ -410,6 +429,12 @@ def process_inbox(
         # against the durable receipt before preparing more children.
         previous = find_inbox_receipt(list(projects_by_name.values()), card)
         if partial_split and previous is not None and previous.matched_by == "source_card_id":
+            expected_split_counts = [
+                int((project.extra_data or {}).get("inbox_preparation", {}).get("subtask_count", 0))
+                for project in partial_split.values()
+                if isinstance((project.extra_data or {}).get("inbox_preparation"), dict)
+            ]
+            expected_split_count = max(expected_split_counts, default=0)
             canonical_source = any(
                 preparation.get("subtask_index") == 0
                 and project.trello_card_id == source_id
@@ -417,11 +442,14 @@ def process_inbox(
                 for preparation in [(project.extra_data or {}).get("inbox_preparation", {})]
                 if isinstance(preparation, dict)
             )
-            if not canonical_source:
+            if not canonical_source or (
+                expected_split_count and len(partial_split) < expected_split_count
+            ):
                 # An exact receipt belonging to an already-persisted split
                 # child does not mean the source request is fully handled.
                 # Continue the split preparation so the missing children are
-                # created and the source card remains the canonical target.
+                # created, stale child metadata is reconciled, and the source
+                # card remains the canonical target.
                 previous = None
         if previous is not None:
             target = previous.project
@@ -480,13 +508,52 @@ def process_inbox(
             continue
 
         result = classifier(card, list(projects_by_name.values()))
+        planner_result = None
+        planned_tasks = None
+        if planner is not None and (result.is_new_project or partial_split):
+            planner_result = planner(card, list(projects_by_name.values()))
+            if not planner_result or not planner_result.get("tasks"):
+                logger.warning(
+                    "Inbox card left in Inbox: AI planner produced no valid plan id=%s name=%r",
+                    card.get("id"), card.get("name"),
+                )
+                continue
+            planned_tasks = tuple(planner_result["tasks"])
         if result.is_new_project or partial_split:
+            preparation_card = card
+            if partial_split:
+                # A source card may have been manually restored to Inbox and
+                # lose its PM-DATA/identity label while its already-persisted
+                # children still carry the durable source binding. Recover
+                # the identity only when every known child agrees; never
+                # infer it from fuzzy title similarity.
+                child_identities = {
+                    project.project_key
+                    for project in partial_split.values()
+                    if project.project_key
+                }
+                source_identities = {
+                    str(label.get("name") if isinstance(label, dict) else label).strip()
+                    for label in card.get("labels", []) or []
+                    if str(label.get("name") if isinstance(label, dict) else label).strip()
+                    and not re.match(
+                        r"^P[0-5](?:\.\d+)?$",
+                        str(label.get("name") if isinstance(label, dict) else label).strip(),
+                        flags=re.IGNORECASE,
+                    )
+                }
+                if not source_identities and len(child_identities) == 1:
+                    preparation_card = dict(card)
+                    preparation_card["labels"] = [{"name": next(iter(child_identities))}]
             preparation = prepare_inbox_card(
-                card,
+                preparation_card,
                 project_paths=project_paths,
                 card_project_keys=card_project_keys,
                 default_priority=default_priority,
                 priority_override=batch_priorities.get(str(card.get("id") or "")),
+                projects_root=projects_root,
+                allow_new_project=result.is_new_project,
+                planned_tasks=planned_tasks,
             )
             if preparation.human_required_reason:
                 logger.warning(
@@ -496,15 +563,61 @@ def process_inbox(
                 continue
 
             source_reference = inbox_source_reference(card)
+            if preparation.generated_project and preparation.project_key and preparation.project_path:
+                if project_paths is not None:
+                    existing_path = project_paths.get(preparation.project_key)
+                    if existing_path and str(Path(existing_path).resolve()) != str(Path(preparation.project_path).resolve()):
+                        logger.warning(
+                            "Inbox card requires human project assignment id=%s name=%r reason=generated project identity conflicts with configured path",
+                            card.get("id"), card.get("name"),
+                        )
+                        continue
+                    project_paths[preparation.project_key] = preparation.project_path
+                Path(preparation.project_path).mkdir(parents=True, exist_ok=True)
             # Persist split children before mutating/moving the source card.
             # Thus any failure leaves the canonical source in Inbox, while a
             # retry can recognize already durable children by source/index.
-            ordered_tasks = list(enumerate(preparation.tasks))
-            if len(ordered_tasks) > 1:
-                ordered_tasks = ordered_tasks[1:] + ordered_tasks[:1]
+            execution_order = task_execution_order(preparation.tasks)
+            ordered_tasks = [
+                (index, preparation.tasks[index]) for index in execution_order
+            ]
             prepared_projects: dict[int, ProjectRecord] = dict(partial_split)
             for index, prepared_task in ordered_tasks:
                 if index in partial_split:
+                    # A prior attempt may have persisted only part of the
+                    # split, or may have used an older priority rubric. Keep
+                    # the durable card identity but reconcile its task text,
+                    # DoD, metadata, and priority before continuing.
+                    task = partial_split[index]
+                    task.name = prepared_task.title
+                    task.priority = prepared_task.priority
+                    task.main_task = prepared_task.task
+                    task.next_step = prepared_task.next_step
+                    task.orchestrator_ready_task = (
+                        f"Implementovat tento samostatný rozsah v projektu "
+                        f"{preparation.project_key or prepared_task.title}: {prepared_task.task} "
+                        "Zachovat chování mimo tento rozsah."
+                    )
+                    task.dod = list(build_dod((prepared_task,)))
+                    metadata = task.extra_data.setdefault("inbox_preparation", {})
+                    metadata.update({
+                        "subtask_count": len(preparation.tasks),
+                        "scope": prepared_task.scope,
+                        "source_priority": preparation.priority,
+                        "source_priority_reason": preparation.priority_reason,
+                        "task_priority": prepared_task.priority,
+                        "priority_reason": prepared_task.priority_reason,
+                        "depends_on_subtask_indices": list(prepared_task.depends_on),
+                        "execution_order": execution_order.index(index),
+                        "dod": [item.to_dict() for item in task.dod],
+                        "project_path": preparation.project_path,
+                            "generated_project": preparation.generated_project,
+                            "intake_provider": (planner_result or {}).get("provider"),
+                            "intake_model": (planner_result or {}).get("model"),
+                        })
+                    record_inbox_receipt(task, card, target_card_id=task.trello_card_id)
+                    if persist_project is not None:
+                        persist_project(task)
                     continue
                 task = ProjectRecord(
                     name=prepared_task.title,
@@ -531,7 +644,13 @@ def process_inbox(
                             "source_priority_reason": preparation.priority_reason,
                             "task_priority": prepared_task.priority,
                             "priority_reason": prepared_task.priority_reason,
+                            "depends_on_subtask_indices": list(prepared_task.depends_on),
+                            "execution_order": execution_order.index(index),
                             "dod": [item.to_dict() for item in build_dod((prepared_task,))],
+                            "project_path": preparation.project_path,
+                            "generated_project": preparation.generated_project,
+                            "intake_provider": (planner_result or {}).get("provider"),
+                            "intake_model": (planner_result or {}).get("model"),
                         }
                     },
                 )

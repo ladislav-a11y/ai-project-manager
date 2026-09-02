@@ -208,7 +208,7 @@ def test_full_visible_trello_dod_checklist_survives_to_completion(tmp_path):
     subprocess_run, calls = _fake_ai_orchestrator(
         outbox_dir,
         responses={
-            "P4 - Full DoD": {
+            "Full DoD": {
                 "checkpoint": {"completed_dod_indices": list(range(8))},
                 "last_output": "all 8 items verified",
                 "status": "completed",
@@ -296,7 +296,7 @@ def test_incomplete_dod_never_closes_the_card(tmp_path):
     subprocess_run, _calls = _fake_ai_orchestrator(
         outbox_dir,
         responses={
-            "P4 - Partial DoD": {
+            "Partial DoD": {
                 # Only 5 of the 8 items are confirmed - the run/agent
                 # claims "completed" anyway.
                 "checkpoint": {"completed_dod_indices": [0, 1, 2, 3, 4]},

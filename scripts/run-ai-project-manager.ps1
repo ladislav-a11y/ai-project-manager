@@ -1,12 +1,14 @@
 [CmdletBinding()]
 param(
     [switch]$Once,
+    [switch]$MaintainOnly,
     [switch]$SlackProbe,
     [string]$PythonExe = $env:AI_PM_PYTHON_EXE,
     [string]$OrchestratorRoot,
     [string]$StationAgentRoot,
     [int]$PollIntervalSeconds = 300,
-    [string]$ScheduledTaskName = 'AI Project Manager Scheduler'
+    [string]$ScheduledTaskName = 'AI Project Manager Scheduler',
+    [string]$ProviderOverride = ''
 )
 
 $ErrorActionPreference = 'Stop'
@@ -33,9 +35,13 @@ if (-not $PythonExe) {
 }
 $secretPath = Join-Path $projectRoot '.secrets\scheduler.clixml'
 $runtimeDir = Join-Path $projectRoot 'runtime\scheduler'
+$inheritedProviderStatePath = $env:AI_PM_PROVIDER_STATE_PATH
 
 if ($PollIntervalSeconds -lt 1) {
     throw 'PollIntervalSeconds must be at least 1.'
+}
+if (($Once -and $MaintainOnly) -or ($Once -and $SlackProbe) -or ($MaintainOnly -and $SlackProbe)) {
+    throw 'Once, MaintainOnly, and SlackProbe are mutually exclusive.'
 }
 
 if (-not (Test-Path -LiteralPath $secretPath -PathType Leaf)) {
@@ -88,6 +94,10 @@ try {
     }
 
     $env:TRELLO_INBOX_LIST = 'INBOX / Nápady'
+    # New, unlabelled Inbox ideas are auto-prepared as isolated projects under
+    # this approved workspace root; existing ambiguous project mappings still
+    # fail closed.
+    $env:AI_PM_PROJECTS_ROOT = $workspaceRoot
     # Inbox intake is enabled after the dedicated P5 governance/intake card
     # was prepared in Připraveno. The intake remains fail-closed on project
     # identity and never touches the personal Inbox.
@@ -96,17 +106,24 @@ try {
     # hard-wired in ai-orchestrator to the Nous free model only.  The PM
     # provider names intentionally remain stable; ``hermes`` maps to the
     # production Hermes agent, while ``claude`` maps to claude-code.
-    $env:AI_PM_PROVIDERS = 'hermes,gemini,antigravity,claude,codex'
-    $env:AI_PM_PROVIDER_MODELS = (@{
-        'hermes' = @('upstage/solar-pro4:free')
-        'gemini' = @('gemini-2.5-flash')
-        'claude' = @('claude-opus-4-1', 'claude-sonnet-4')
-        'antigravity' = @('gemini-2.5-pro')
-        # The ChatGPT-account Codex CLI rejects the generic gpt-5.6 alias;
-        # use the concrete model configured for this installation.
-        'codex' = @('gpt-5.6-luna')
-    } | ConvertTo-Json -Compress)
+    # Gemini was retired from PM after its successful audit migration. Keep
+    # the canonical AO order unchanged; PM must not register or select it.
+    $env:AI_PM_PROVIDERS = 'hermes,antigravity,claude,codex'
+    if ($ProviderOverride.Trim()) {
+        if ($ProviderOverride.Trim().ToLowerInvariant() -eq 'gemini') {
+            throw 'Gemini je z PM vyřazen; použijte jiného providera.'
+        }
+        $env:AI_PM_PROVIDERS = $ProviderOverride.Trim()
+    }
+    # Model selection belongs to each provider. PM passes only the task
+    # prompt and provider identity; Hermes alone remains fixed to Nous free
+    # by ai-orchestrator's provider contract.
+    $env:AI_PM_PROVIDER_MODELS = '{}'
     $env:AI_PM_POLL_INTERVAL_SECONDS = [string]$PollIntervalSeconds
+    # Cleanup is constrained to direct, expired .pytest-basetemp-* children
+    # of this checkout and runs only after a scheduler tick has completed.
+    $env:AI_PM_ARTIFACT_CLEANUP_ROOT = $projectRoot
+    $env:AI_PM_ARTIFACT_RETENTION_HOURS = '24'
     $env:AI_ORCHESTRATOR_TIMEOUT_SECONDS = '3600'
     $env:AI_ORCHESTRATOR_CMD = "`"$orchestratorPython`" `"$orchestratorScript`" autonomous --no-commit"
     $finalizeScript = Join-Path $OrchestratorRoot 'finalize.py'
@@ -144,7 +161,14 @@ try {
     $env:AI_ORCHESTRATOR_FINALIZE_PATHS = $finalizePaths | ConvertTo-Json -Compress
     $env:AI_ORCHESTRATOR_SPEC_DIR = Join-Path $projectRoot 'runtime\specs'
     $env:AI_ORCHESTRATOR_OUTBOX_DIR = Join-Path $OrchestratorRoot 'outbox'
-    $env:AI_PM_PROVIDER_STATE_PATH = Join-Path $projectRoot 'runtime\provider_state.json'
+    # Preserve an explicitly supplied state path so a guarded diagnostic tick
+    # can use an isolated file and cannot mutate production provider health.
+    if ([string]::IsNullOrWhiteSpace($inheritedProviderStatePath)) {
+        $env:AI_PM_PROVIDER_STATE_PATH = Join-Path $projectRoot 'runtime\provider_state.json'
+    }
+    else {
+        $env:AI_PM_PROVIDER_STATE_PATH = $inheritedProviderStatePath
+    }
     # Keyed by each project's stable identity - either a "project_key"
     # Trello label on the card (recommended: works even when the card's
     # title never mentions the project at all, e.g. a generic work item
@@ -160,6 +184,9 @@ try {
         'ai-orchestrator' = $OrchestratorRoot
         'AI Orchestrator' = $OrchestratorRoot
         'Station Agent' = $StationAgentRoot
+        # This Inbox project has a durable generated checkout. Keep the
+        # mapping explicit so a split child cannot be guessed from its title.
+        'Bazar Scout + multi-inzerce [Inbox 6a89edf4]' = Join-Path $workspaceRoot 'bazar-scout-multi-inzerce-inbox-6a89edf4'
     }
     $env:AI_PM_PROJECT_PATHS = $projectPaths | ConvertTo-Json -Compress
 
@@ -176,6 +203,12 @@ try {
     $cardProjectKeys = [ordered]@{
         '6a8f0baf1332f1d03b972003' = 'AI Project Manager'
         '6a9537223372a7c011c2f651' = 'Station Agent'
+        # The source Inbox card was historically created without its stable
+        # project label. Bind its already-split children to the real Station
+        # Agent checkout instead of allowing a generated scratch identity.
+        '6a96f3a589ea0531cfc12958' = 'Station Agent'
+        '6a96541d04fe14b38ccf96db' = 'Station Agent'
+        '6a9666115f87e75a5c37742d' = 'Station Agent'
         '6a954cb7a0650b2d68cbb51f' = 'AI Project Manager'
         '6a954f060373e6917e0a7291' = 'AI Project Manager'
     }
@@ -188,6 +221,12 @@ try {
         # release the scheduler from HOLD. notify() returns a failing process
         # status unless Slack itself acknowledges the POST with HTTP 200.
         $arguments = @('-m', 'ai_project_manager', '--slack-probe', '--log-level', 'INFO')
+        & $PythonExe @arguments
+    }
+    elseif ($MaintainOnly) {
+        # Card Contract maintenance is a live Trello repair pass only. It
+        # never dispatches a project or touches provider state.
+        $arguments = @('-m', 'ai_project_manager', '--maintain-only', '--log-level', 'INFO')
         & $PythonExe @arguments
     }
     elseif ($Once) {
@@ -246,6 +285,8 @@ finally {
     $env:AI_PM_PROVIDERS = $null
     $env:AI_PM_PROVIDER_MODELS = $null
     $env:AI_PM_POLL_INTERVAL_SECONDS = $null
+    $env:AI_PM_ARTIFACT_CLEANUP_ROOT = $null
+    $env:AI_PM_ARTIFACT_RETENTION_HOURS = $null
     $env:AI_ORCHESTRATOR_TIMEOUT_SECONDS = $null
     $env:AI_ORCHESTRATOR_CMD = $null
     $env:AI_ORCHESTRATOR_FINALIZE_CMD = $null
@@ -253,8 +294,14 @@ finally {
     $env:AI_ORCHESTRATOR_FINALIZE_PATHS = $null
     $env:AI_ORCHESTRATOR_SPEC_DIR = $null
     $env:AI_ORCHESTRATOR_OUTBOX_DIR = $null
-    $env:AI_PM_PROVIDER_STATE_PATH = $null
+    if ([string]::IsNullOrWhiteSpace($inheritedProviderStatePath)) {
+        $env:AI_PM_PROVIDER_STATE_PATH = $null
+    }
+    else {
+        $env:AI_PM_PROVIDER_STATE_PATH = $inheritedProviderStatePath
+    }
     $env:AI_PM_PROJECT_PATHS = $null
+    $env:AI_PM_PROJECTS_ROOT = $null
     $env:AI_PM_CARD_PROJECT_KEYS = $null
     $credentials = $null
     Stop-Transcript | Out-Null

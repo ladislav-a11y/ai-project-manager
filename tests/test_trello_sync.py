@@ -73,7 +73,7 @@ def test_card_identity_ignores_rich_text_url_whitespace():
 
     sync_project_to_trello(client, project)
 
-    assert client.get_card(card["id"])["name"] == project.name
+    assert client.get_card(card["id"])["name"] == "P5 — URL"
 
 
 def test_card_update_preserves_contract_when_visible_notes_are_oversized():
@@ -136,6 +136,19 @@ def test_priority_prefix_is_replaced_after_reprioritization():
     updates = card_updates_from_project(project, {"Připraveno": "ready"})
 
     assert updates["name"] == "P5 — Inbox task"
+
+
+def test_every_workflow_card_name_exposes_label_priority():
+    project = ProjectRecord(
+        name="P5 — wrong stale title",
+        priority=2.01,
+        status=ProjectStatus.IN_PROGRESS,
+        main_task="Continue the prepared task",
+    )
+
+    updates = card_updates_from_project(project, {"Pracuje se": "working"})
+
+    assert updates["name"] == "P2.01 — wrong stale title"
 
 
 def test_explicit_priority_label_wins_over_title_prefix():
@@ -585,9 +598,34 @@ def test_done_list_orders_chronologically_newest_first():
     assert [card["id"] for card in ordered] == [newest["id"], middle["id"], oldest["id"]]
 
 
+def test_terminal_card_is_not_rewritten_only_for_contract_migration():
+    client = InMemoryTrelloClient()
+    done = client.get_list_id_by_name("Done")
+    legacy = {
+        "schema_version": 1,
+        "checkpoint": {"preserve": "terminal evidence"},
+        "dod": [{"text": "hotovo", "checked": True}],
+        "open_feedback": [],
+        "lifecycle_status": "done",
+        "completed_at": "2026-02-01T10:00:00+00:00",
+    }
+    card = client.create_card(
+        done,
+        "P4 historical title",
+        _render_data_block(legacy),
+        labels=["P4", "AI Project Manager"],
+    )
+    before = client.get_card(card["id"])
+
+    assert maintain_board_contract(client) == []
+
+    assert client.get_card(card["id"]) == before
+
+
 def test_physical_ready_list_overrides_stale_completed_contract():
     client = InMemoryTrelloClient()
     ready = client.get_list_id_by_name("Ready")
+    testing = client.get_list_id_by_name("Testing")
     data = {
         "schema_version": CURRENT_SCHEMA_VERSION,
         "governance": GOVERNANCE_POLICY,
@@ -600,9 +638,12 @@ def test_physical_ready_list_overrides_stale_completed_contract():
 
     assert maintain_board_contract(client) == []
     repaired = client.get_card(card["id"])
-    assert repaired["list_id"] == ready
+    assert repaired["list_id"] == testing
     repaired_data = _parse_data_block(repaired["desc"])
-    assert repaired_data["lifecycle_status"] == "ready"
+    assert repaired_data["lifecycle_status"] == "testing"
+    assert repaired_data["stop_reason"] == (
+        "all DoD items were checked before audit; awaiting ai-orchestrator audit"
+    )
 
 
 def test_new_card_is_immediately_bound_to_its_trello_identity():
