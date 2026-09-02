@@ -75,6 +75,7 @@ from .orchestrator_handoff import (
 )
 from .providers import (
     ProviderRegistry,
+    TASK_INBOX_PLANNING,
     detect_limit,
 )
 from .scheduler import audit_capability_key
@@ -169,7 +170,23 @@ def _tick_provider_order(
     translated to AO's ``claude-code`` agent while availability remains keyed
     by the PM registry name.
     """
-    selected_agent = map_provider_to_agent(provider, provider_agent_map)
+    if provider.casefold() == "auto":
+        # ``auto`` is a PM-only alias.  AO accepts ``--agent auto`` to enable
+        # failover, but every item in ``--provider-order`` must be a real AO
+        # agent name.  Resolve the first available real provider here so the
+        # command cannot fail with ``unknown provider: auto``.
+        selected_agent = next(
+            (
+                candidate
+                for candidate in PM_FAILOVER_PROVIDER_ORDER
+                if _agent_is_available(candidate, provider_registry, provider_agent_map)
+            ),
+            None,
+        )
+        if selected_agent is None:
+            return []
+    else:
+        selected_agent = map_provider_to_agent(provider, provider_agent_map)
     order = [selected_agent, *[name for name in PM_FAILOVER_PROVIDER_ORDER if name != selected_agent]]
     order = [
         name for name in order
@@ -257,8 +274,12 @@ def _planner_tasks(payload: dict) -> Optional[list[PreparedTask]]:
         task = item.get("task")
         next_step = item.get("next_step")
         priority = item.get("priority")
+        priority_reason = item.get("priority_reason")
         depends_on = item.get("depends_on", [])
-        if not all(isinstance(value, str) and value.strip() for value in (scope, task, next_step)):
+        if not all(
+            isinstance(value, str) and value.strip()
+            for value in (scope, task, next_step, priority_reason)
+        ):
             return None
         if not isinstance(depends_on, list):
             return None
@@ -273,7 +294,7 @@ def _planner_tasks(payload: dict) -> Optional[list[PreparedTask]]:
                 next_step=str(next_step).strip(),
                 scope=str(scope).strip(),
                 priority=float(priority),
-                priority_reason="priorita přidělena AI Inbox plannerem",
+                priority_reason=str(priority_reason).strip(),
                 depends_on=tuple(depends_on),
             )
         )
@@ -289,12 +310,55 @@ def _planner_tasks(payload: dict) -> Optional[list[PreparedTask]]:
 INBOX_PLANNER_PROVIDERS = ("antigravity", "claude", "codex")
 
 
+def _inbox_model_hint(provider: str, provider_registry: ProviderRegistry) -> str:
+    """Describe the model before a provider-owned Inbox planning call.
+
+    PM intentionally does not pass ``--model``.  A catalog entry is useful
+    as an operator hint, but it is not evidence that the provider will use
+    that model, so the pre-call message must remain explicit about that
+    distinction.
+    """
+    configured = provider_registry.model_for_task(provider, TASK_INBOX_PLANNING)
+    if configured:
+        return f"provider default (návrh katalogu: {configured}; provider rozhodne podle typu a náročnosti)"
+    return "provider default (provider rozhodne podle typu a náročnosti Inbox plánování)"
+
+
+def _inbox_selection_reason(
+    provider: str,
+    provider_registry: ProviderRegistry,
+    *,
+    available: tuple[str, ...],
+) -> tuple[str, str]:
+    """Return explainable provider/model reasons for an Inbox call."""
+    provider_reason = (
+        f"{provider} je první dostupný provider z povoleného pořadí "
+        f"{', '.join(INBOX_PLANNER_PROVIDERS)}; Hermes je pro Inbox intake zakázán"
+    )
+    limited = []
+    for candidate in INBOX_PLANNER_PROVIDERS:
+        if candidate == provider or candidate in available:
+            continue
+        status = provider_registry.get_status(candidate)
+        if status.state in {"LIMITED", "ERROR"}:
+            deadline = status.retry_after.isoformat() if status.retry_after else "n/a"
+            limited.append(f"{candidate}={status.state} do {deadline}")
+    if limited:
+        provider_reason += "; přeskočeno kvůli limitu/chybě: " + ", ".join(limited)
+    model_reason = (
+        f"{_inbox_model_hint(provider, provider_registry)}; PM nepředává --model; "
+        "skutečný model se zapíše až z provider receipt"
+    )
+    return provider_reason, model_reason
+
+
 def build_inbox_planner_fn(
     provider_registry: ProviderRegistry,
     command: list,
     *,
     subprocess_run: Optional[Callable[..., "subprocess.CompletedProcess"]] = None,
     timeout_seconds: float = 180,
+    selection_notifier: Optional[Callable[[dict], None]] = None,
 ):
     """Build the AI-only Inbox planner, explicitly excluding Hermes.
 
@@ -324,11 +388,34 @@ def build_inbox_planner_fn(
                 if project.status.value != "done"
             ],
         }
+        available = tuple(
+            candidate for candidate in allowed
+            if provider_registry.is_available(candidate)
+        )
         for provider in allowed:
             if not provider_registry.is_available(provider):
                 continue
             agent = map_provider_to_agent(provider)
             full_command = planner_command + ["--agent", agent]
+            provider_reason, model_reason = _inbox_selection_reason(
+                provider,
+                provider_registry,
+                available=available,
+            )
+            selection = {
+                "source_card_id": request["card"]["id"],
+                "source_card_name": request["card"]["name"],
+                "provider": provider,
+                "model": _inbox_model_hint(provider, provider_registry),
+                "provider_reason": provider_reason,
+                "model_reason": model_reason,
+                "task_type": TASK_INBOX_PLANNING,
+            }
+            if selection_notifier is not None:
+                try:
+                    selection_notifier(selection)
+                except Exception:  # noqa: BLE001 - observability must not block intake
+                    logger.exception("Inbox planner selection notification failed")
             try:
                 if subprocess_run is None:
                     completed = subprocess.run(
@@ -366,9 +453,21 @@ def build_inbox_planner_fn(
             if tasks is None:
                 provider_registry.mark_error(provider, "AI Inbox planner vrátil neplatný task plán", timedelta(minutes=30))
                 continue
+            actual_model = envelope.get("model")
+            if not isinstance(actual_model, str) or not actual_model.strip():
+                actual_model = None
+            actual_model_reason = (
+                f"model {actual_model} je skutečně použitý model providera potvrzený "
+                "ai-orchestrátorem pro Inbox plánování"
+                if actual_model
+                else model_reason
+            )
             return {
                 "provider": provider,
-                "model": envelope.get("model"),
+                "model": actual_model,
+                "provider_reason": provider_reason,
+                "model_reason": actual_model_reason,
+                "selection_reason": f"{provider_reason}; {actual_model_reason}",
                 "tasks": tasks,
             }
         return None

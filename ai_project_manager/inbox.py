@@ -631,6 +631,9 @@ def process_inbox(
                             "generated_project": preparation.generated_project,
                             "intake_provider": (planner_result or {}).get("provider"),
                             "intake_model": (planner_result or {}).get("model"),
+                            "intake_provider_reason": (planner_result or {}).get("provider_reason"),
+                            "intake_model_reason": (planner_result or {}).get("model_reason"),
+                            "intake_selection_reason": (planner_result or {}).get("selection_reason"),
                         })
                     record_inbox_receipt(task, card, target_card_id=task.trello_card_id)
                     if persist_project is not None:
@@ -668,6 +671,9 @@ def process_inbox(
                             "generated_project": preparation.generated_project,
                             "intake_provider": (planner_result or {}).get("provider"),
                             "intake_model": (planner_result or {}).get("model"),
+                            "intake_provider_reason": (planner_result or {}).get("provider_reason"),
+                            "intake_model_reason": (planner_result or {}).get("model_reason"),
+                            "intake_selection_reason": (planner_result or {}).get("selection_reason"),
                         }
                     },
                 )

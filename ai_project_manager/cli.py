@@ -22,7 +22,7 @@ from .orchestrator_runner import build_audit_run_fn, build_inbox_planner_fn, bui
 from .providers import ProviderRegistry
 from .provider_state import load_provider_state
 from .self_update import RESTART_REQUIRED_EXIT_CODE
-from .slack_notify import notify
+from .slack_notify import notify, status_message
 from .trello_client import RealTrelloClient
 
 logger = logging.getLogger("ai_project_manager")
@@ -161,10 +161,27 @@ def main(
             use_provider_failover=True,
         )
 
+    def notify_inbox_selection(selection: dict) -> None:
+        """Expose provider/model selection before the read-only planner call."""
+        notify(status_message(
+            "PM zahajuje Inbox intake",
+            project=selection.get("source_card_name"),
+            provider=(
+                f"{selection.get('provider')} | "
+                f"model: {selection.get('model') or 'n/a'}"
+            ),
+            provider_reason=(
+                f"{selection.get('provider_reason')}; "
+                f"{selection.get('model_reason')}"
+            ),
+            detail=f"source_card_id={selection.get('source_card_id')}; task_type={selection.get('task_type')}",
+        ))
+
     inbox_planner = build_inbox_planner_fn(
         provider_registry,
         command=config.orchestrator.command,
         timeout_seconds=180,
+        selection_notifier=notify_inbox_selection,
     )
 
     logger.info(

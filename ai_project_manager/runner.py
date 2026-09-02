@@ -31,7 +31,12 @@ from .orchestrator_handoff import (
     materialize_project_dod,
 )
 from .providers import ProviderRegistry, TASK_AUDIT, TASK_IMPLEMENTATION, supports_model_selection
-from .scheduler import audit_capability_key, pick_next_audit_project, pick_next_project
+from .scheduler import (
+    audit_capability_key,
+    expand_provider_aliases,
+    pick_next_audit_project,
+    pick_next_project,
+)
 from .trello_sync import project_from_card, sync_project_to_trello
 from .slack_notify import (
     notify,
@@ -139,7 +144,8 @@ def _provider_selection_reason(
         project.name,
         default_providers or provider_registry.registered_names(),
     )
-    provider_reason = f"provider je první dostupný v pořadí {', '.join(ordered)}"
+    resolved_order = expand_provider_aliases(list(ordered), provider_registry)
+    provider_reason = f"provider je první dostupný v pořadí {', '.join(resolved_order or ordered)}"
     model_reason = _model_selection_reason(
         provider, None, provider_registry, task_type
     )

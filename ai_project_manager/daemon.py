@@ -514,6 +514,31 @@ def load_projects_and_inbox(
             card = sync_project_to_trello(client, project)
         return card
 
+    # Inbox is still inspected on every tick, but AI planning is a separate
+    # admission step.  Existing governed work has phase precedence: while a
+    # card is in Připraveno/Pracuje se/Čeká na AI/Testování (or another hard
+    # hold), do not spend a planner call on a new Inbox project.  The normal
+    # scheduler below will immediately select the dependency-ready card from
+    # Připraveno, so a ready batch cannot be overtaken by fresh intake.
+    intake_gate_statuses = {
+        ProjectStatus.READY,
+        ProjectStatus.IN_PROGRESS,
+        ProjectStatus.TESTING,
+        ProjectStatus.PAUSED,
+        ProjectStatus.BLOCKED,
+        ProjectStatus.ERROR,
+    }
+    if any(project.status in intake_gate_statuses for project in projects):
+        id_to_name, name_to_id = build_list_maps(client)
+        inbox_id = name_to_id.get(inbox_list_name)
+        inbox_count = len(client.list_cards(inbox_id)) if inbox_id else 0
+        logger.info(
+            "Inbox intake checked: planner skipped because governed work is active; "
+            "inbox_cards=%s",
+            inbox_count,
+        )
+        return projects
+
     changed = process_inbox(
         client,
         projects,
@@ -543,12 +568,22 @@ def load_projects_and_inbox(
                 for project in prepared
             })
             models = sorted({
-                str((project.extra_data or {}).get("inbox_preparation", {}).get("intake_model") or "n/a")
+                str((project.extra_data or {}).get("inbox_preparation", {}).get("intake_model") or "provider receipt nevrátil model")
+                for project in prepared
+            })
+            provider_reasons = sorted({
+                str((project.extra_data or {}).get("inbox_preparation", {}).get("intake_provider_reason") or "neuveden")
+                for project in prepared
+            })
+            model_reasons = sorted({
+                str((project.extra_data or {}).get("inbox_preparation", {}).get("intake_model_reason") or "neuveden")
                 for project in prepared
             })
             message = (
                 "[AI Project Manager] Inbox intake: "
                 f"intake_provider={','.join(providers)}; intake_model={','.join(models)}; "
+                f"intake_provider_reason={' || '.join(provider_reasons)}; "
+                f"intake_model_reason={' || '.join(model_reasons)}; "
                 f"source_card_id={source_id}; prepared_tasks={len(prepared)}; priorities=[{priorities}]; "
                 "worker_provider=not_selected_in_intake"
             )

@@ -237,12 +237,12 @@ def test_run_tick_loads_real_projects_and_processes_inbox_only_when_explicitly_e
     assert outcome.ran is True
     assert calls == ["Dashboard"]
 
-    # The Inbox is a queue, not an archive. The processed source becomes a
-    # completed receipt and the target contract records its immutable ID.
-    assert client.list_cards(name_to_id["Inbox"]) == []
-    receipts = client.list_cards(name_to_id["Done"])
-    assert len(receipts) == 1
-    assert receipts[0]["name"].startswith("P2 — Zpracováno")
+    # A governed card already exists, so this tick must not spend an AI call
+    # on Inbox intake. The source remains queued for a later idle tick.
+    inbox_cards = client.list_cards(name_to_id["Inbox"])
+    assert len(inbox_cards) == 1
+    assert inbox_cards[0]["name"] == "Dashboard spinner bug"
+    assert client.list_cards(name_to_id["Done"]) == []
 
 
 def test_run_tick_keeps_new_inbox_task_in_ready_until_next_tick():
@@ -943,6 +943,43 @@ def test_bootstrap_project_key_never_infers_identity_from_card_content():
 
     reloaded = client.get_card(card["id"])
     assert {label["name"] for label in reloaded["labels"]} == {"P5"}
+
+
+def test_inbox_intake_skips_ai_when_prepared_work_has_phase_precedence():
+    client = InMemoryTrelloClient(
+        list_names=(
+            "INBOX / Nápady",
+            "Připraveno",
+            "Pracuje se",
+            "Čeká na AI",
+            "Testování",
+            "Hotovo",
+        )
+    )
+    _, name_to_id = build_list_maps(client)
+    ready = client.create_card(
+        name_to_id["Připraveno"],
+        "P5.10 — Station Agent — oprava spuštění",
+        desc="Opravit Station Agent.",
+        labels=["P5.10", "Station Agent"],
+    )
+    inbox = client.create_card(
+        name_to_id["INBOX / Nápady"],
+        "Nový projekt",
+        desc="Vytvořit nový projekt.",
+    )
+    planner_calls = []
+
+    projects = load_projects_and_inbox(
+        client,
+        inbox_list_name="INBOX / Nápady",
+        process_inbox_enabled=True,
+        planner=lambda *_: planner_calls.append(True),
+    )
+
+    assert planner_calls == []
+    assert client.get_card(inbox["id"])["list_id"] == name_to_id["INBOX / Nápady"]
+    assert any(project.trello_card_id == ready["id"] for project in projects)
 
 
 def test_bootstrap_project_key_does_not_guess_on_zero_or_ambiguous_match():

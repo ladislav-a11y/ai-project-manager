@@ -46,6 +46,33 @@ def test_batch_prioritization_puts_pm_repairs_before_new_features():
     assert "závazná nejvyšší priorita" in priorities["pm-bug"][1]
 
 
+def test_ai_planner_cannot_raise_normal_feature_above_source_priority():
+    prepared = prepare_inbox_card(
+        {
+            "id": "cw-source",
+            "name": "CW dekodér – Windows desktopová aplikace",
+            "desc": "Vytvořit novou Windows desktopovou aplikaci.",
+            "labels": [],
+        },
+        projects_root="D:/projects",
+        allow_new_project=True,
+        planned_tasks=(
+            PreparedTask(
+                "architektura",
+                "Navrhnout architekturu aplikace.",
+                "Sepsat rozhraní modulů.",
+                "architektura",
+                priority=5.7,
+                priority_reason="AI planner bez konkrétního důvodu",
+            ),
+        ),
+    )
+
+    assert prepared.priority == 2
+    assert prepared.tasks[0].priority == 2
+    assert "omezeno na prioritu zdrojového zadání" in prepared.tasks[0].priority_reason
+
+
 def test_priority_rubric_handles_pm_abbreviation_and_functional_display_change():
     assert derive_priority(
         {"labels": [{"name": "AI Project Manager"}]},

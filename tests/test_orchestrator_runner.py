@@ -16,6 +16,7 @@ from ai_project_manager.orchestrator_runner import (
     build_audit_run_fn,
     build_inbox_planner_fn,
     build_run_fn,
+    _tick_provider_order,
     _controller_finalization_is_verified,
     _finalization_needs_refresh,
     _terminal_finalization_issue,
@@ -809,6 +810,45 @@ def test_production_run_fn_dispatches_auto_for_same_tick_provider_failover(tmp_p
     assert seen["command"][seen["command"].index("--provider-order") + 1] == "hermes,antigravity,claude-code,codex"
     assert "gemini" not in seen["command"][seen["command"].index("--provider-order") + 1]
     assert "--model" not in seen["command"]
+
+
+def test_auto_provider_alias_resolves_to_real_available_failover_order(tmp_path):
+    registry = ProviderRegistry()
+    registry.mark_available("auto")
+    registry.mark_available("hermes")
+    registry.mark_limited("antigravity", timedelta(hours=1))
+    registry.mark_available("claude")
+    registry.mark_available("codex")
+
+    assert _tick_provider_order("auto", registry) == ["hermes", "claude-code", "codex"]
+
+    seen = {}
+
+    def fake_subprocess_run(command):
+        seen["command"] = command
+        write_outbox_result(
+            tmp_path / "outbox",
+            "Demo",
+            {"status": "in_progress", "provider_sequence": ["hermes"]},
+            run_id="auto-run",
+        )
+        return completed()
+
+    project = ProjectRecord(name="Demo", status=ProjectStatus.READY, orchestrator_ready_task="Implement")
+    run_fn, _, _ = make_run_fn(
+        tmp_path,
+        registry,
+        subprocess_run=fake_subprocess_run,
+        run_id_fn=lambda: "auto-run",
+        use_provider_failover=True,
+    )
+
+    run_fn(project, "auto")
+
+    assert seen["command"][seen["command"].index("--agent") + 1] == "auto"
+    assert seen["command"][seen["command"].index("--provider-order") + 1] == (
+        "hermes,claude-code,codex"
+    )
 
 
 def test_production_failover_suppresses_pm_selected_model_for_non_hermes_provider(tmp_path):
@@ -1772,6 +1812,7 @@ def test_inbox_planner_excludes_retired_gemini_and_hermes_and_returns_validated_
         registry.mark_available(name)
     registry.configure_models("antigravity", ["Gemini 3.7 Flash (High)"])
     calls = []
+    selections = []
 
     def fake_subprocess(command, **kwargs):
         calls.append((command, kwargs))
@@ -1789,6 +1830,7 @@ def test_inbox_planner_excludes_retired_gemini_and_hermes_and_returns_validated_
                                     "task": "Opravit potvrzenou regresi.",
                                     "next_step": "Reprodukovat regresi.",
                                     "priority": 4.01,
+                                    "priority_reason": "potvrzená regrese; P5 pracovní oprava",
                                 }
                             ]
                         }
@@ -1801,10 +1843,17 @@ def test_inbox_planner_excludes_retired_gemini_and_hermes_and_returns_validated_
         registry,
         ["python", "orchestrator.py", "autonomous", "--no-commit"],
         subprocess_run=fake_subprocess,
+        selection_notifier=selections.append,
     )
     result = planner({"id": "source", "name": "Regrese", "desc": "Opravit regresi"}, [])
 
     assert result["provider"] == "antigravity"
+    assert result["model"] == "Gemini 3.7 Flash (High)"
+    assert "první dostupný provider" in result["provider_reason"]
+    assert "skutečně použitý model" in result["model_reason"]
+    assert selections[0]["provider"] == "antigravity"
+    assert "podle typu a náročnosti" in selections[0]["model"]
+    assert selections[0]["task_type"] == "inbox_planning"
     assert result["tasks"][0].priority == 4.01
     assert calls[0][0] == ["python", "orchestrator.py", "plan-inbox", "--agent", "antigravity"]
     assert "gemini" not in calls[0][0]
@@ -1828,6 +1877,35 @@ def test_inbox_planner_does_not_fallback_to_hermes_when_it_is_the_only_provider(
 
     assert planner({"id": "source", "name": "Nápad", "desc": "Úkol"}, []) is None
     assert calls == []
+
+
+def test_inbox_planner_requires_an_explainable_priority_reason():
+    registry = ProviderRegistry()
+    registry.mark_available("claude")
+
+    def fake_subprocess(command, **kwargs):
+        return completed(json.dumps({
+            "success": True,
+            "provider": "claude",
+            "model": "claude-haiku",
+            "output": json.dumps({
+                "tasks": [{
+                    "scope": "feature",
+                    "task": "Vytvořit funkci.",
+                    "next_step": "Navrhnout rozhraní.",
+                    "priority": 5.7,
+                    "depends_on": [],
+                }],
+            }),
+        }))
+
+    planner = build_inbox_planner_fn(
+        registry,
+        ["python", "orchestrator.py", "autonomous", "--no-commit"],
+        subprocess_run=fake_subprocess,
+    )
+
+    assert planner({"id": "source", "name": "Nápad", "desc": "Úkol"}, []) is None
 
 
 def test_run_fn_keeps_pm_side_provider_name_for_registry_while_mapping_agent_for_cli(tmp_path):

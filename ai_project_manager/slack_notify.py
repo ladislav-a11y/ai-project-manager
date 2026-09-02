@@ -1,7 +1,7 @@
 import os
 import requests
 import logging
-from datetime import datetime
+from datetime import datetime, timezone
 
 logger = logging.getLogger("ai_project_manager")
 
@@ -49,6 +49,7 @@ def provider_blocked_message(
 ) -> str:
     """Render provider backoff as a standalone AI-status message."""
     detail = f"blokován do: {retry_after}"
+    detail += f" | retry za: {retry_countdown(retry_after, now=now)}"
     if reason:
         detail += f" | důvod: {reason}"
     return status_message(
@@ -57,6 +58,36 @@ def provider_blocked_message(
         detail=detail,
         now=now,
     )
+
+
+def retry_countdown(retry_after: str | datetime | None, *, now: datetime | None = None) -> str:
+    """Return a bounded human-readable countdown to a retry deadline."""
+    if retry_after is None:
+        return "n/a"
+    try:
+        deadline = (
+            retry_after
+            if isinstance(retry_after, datetime)
+            else datetime.fromisoformat(str(retry_after).replace("Z", "+00:00"))
+        )
+        if deadline.tzinfo is None:
+            deadline = deadline.replace(tzinfo=timezone.utc)
+        reference = now or datetime.now(timezone.utc)
+        if reference.tzinfo is None:
+            reference = reference.replace(tzinfo=timezone.utc)
+        seconds = max(0, int((deadline.astimezone(timezone.utc) - reference.astimezone(timezone.utc)).total_seconds()))
+    except (TypeError, ValueError, OverflowError):
+        return "n/a"
+    days, remainder = divmod(seconds, 86400)
+    hours, remainder = divmod(remainder, 3600)
+    minutes, seconds = divmod(remainder, 60)
+    if days:
+        return f"{days}d {hours}h {minutes}m"
+    if hours:
+        return f"{hours}h {minutes}m"
+    if minutes:
+        return f"{minutes}m {seconds}s"
+    return f"{seconds}s"
 
 
 def _notifications_enabled() -> bool:
@@ -170,6 +201,8 @@ def provider_route_detail(
             state = status.get("state") or "UNKNOWN"
             retry_at = status.get("retry_at")
             suffix = f" do {retry_at}" if isinstance(retry_at, str) and retry_at else ""
+            if retry_at:
+                suffix += f" (retry za {retry_countdown(retry_at)})"
             status_path.append(f"{name}={state}{suffix}")
         if status_path:
             detail += " | provider status: " + "; ".join(status_path)

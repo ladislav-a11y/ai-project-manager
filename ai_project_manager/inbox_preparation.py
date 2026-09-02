@@ -591,13 +591,12 @@ def prepare_inbox_card(
             )
             for task in raw_tasks
         )
-    # A source card's explicit P-label expresses the urgency of the Inbox
-    # request as a whole. Once it is split into independent workstreams,
-    # each child must be ranked from its own content; otherwise one inherited
-    # P0 label makes every materially different task look identical. Keep
-    # the neutral configured default when a child has no stronger contextual
-    # signal. An explicit source P-label is still retained in the parent
-    # metadata, but must not flatten independent child priorities.
+    # A source card's urgency is the upper bound for AI-created child work.
+    # The planner may order and differentiate siblings, but it may not turn a
+    # normal feature/research request into P5 without an explicit corrective
+    # signal in that child. This keeps the large AI intake useful while
+    # preventing arbitrary planner numbers from overruling the deterministic
+    # source-level priority rubric.
     child_card = dict(card)
     child_card["labels"] = [
         label for label in (card.get("labels", []) or [])
@@ -609,13 +608,22 @@ def prepare_inbox_card(
     prepared_tasks: list[PreparedTask] = []
     for task in raw_tasks:
         if planned_tasks is not None:
+            child_text = f"{task.scope}: {task.task}"
+            child_priority = float(task.priority)
+            if not is_repair_request(child_text) and child_priority > priority:
+                child_priority = priority
+                priority_reason_suffix = (
+                    f"; omezeno na prioritu zdrojového zadání P{priority:g}"
+                )
+            else:
+                priority_reason_suffix = ""
             prepared_tasks.append(
                 replace(
                     task,
+                    priority=child_priority,
                     priority_reason=(
-                        task.priority_reason
-                        or "priorita přidělena AI Inbox plannerem"
-                    ),
+                        task.priority_reason + priority_reason_suffix
+                    ).strip(),
                 )
             )
             continue

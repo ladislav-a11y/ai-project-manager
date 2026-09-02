@@ -43,6 +43,15 @@ def test_usage_suffix_reports_unknown_tokens_when_receipt_is_missing():
     )
 
 
+def test_retry_countdown_is_visible_and_timezone_safe():
+    now = datetime(2026, 8, 31, 16, 30, tzinfo=timezone.utc)
+    assert slack_notify.retry_countdown("2026-08-31T17:31:05+00:00", now=now) == "1h 1m"
+    blocked = slack_notify.provider_blocked_message(
+        "antigravity", "2026-08-31T17:31:05+00:00", now=now
+    )
+    assert "retry za: 1h 1m" in blocked
+
+
 def test_usage_suffix_renders_only_bounded_total_receipt():
     result = {
         "usage": {

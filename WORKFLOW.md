@@ -129,10 +129,23 @@ typu úkolu a skutečně použitý model se bere až z AO outboxu. Hermes má mi
 Inbox pevný Nous-only free kontrakt `upstage/solar-pro4:free`; žádný free
 provider nesmí při nedostupnosti svého povoleného free modelu tiše zvolit
 placený LLM.
+Před každým použitím providera PM oznámí jeho výběr, důvod, typ úkolu a modelový
+plán; po dokončení uloží skutečný model potvrzený providerem. Intake navíc
+zapisuje do `PM-DATA` `intake_provider_reason`, `intake_model_reason` a
+`intake_selection_reason`, aby byl výběr dohledatelný na každém podúkolu i ve
+Slacku. Pokud je provider omezený, Slack i stavová zpráva uvádí absolutní
+`retry_at` a odpočet `retry za`; PM jej do té doby znovu nevolá.
 Globální stav `LIMITED` nebo `ERROR` s `retry_after` je závazný pro všechny
 workflow fáze: PM takového providera nepředá ani do dalšího AO failover řetězce
 až do termínu revalidace. Do té doby se provider pouze lokálně přeskočí;
 po termínu proběhne právě jedna dostupnostní revalidace.
+
+### Bezpečná změna runtime
+
+Pokud běží PM tick, persistentní PM nebo jeho ai-orchestrator child proces,
+nesmí se současně opravovat kód, workflow pravidla ani runtime konfigurace.
+Nejprve se běh bezpečně ukončí a ověří se, že PM/AO již neběží; teprve potom
+je dovolena oprava. Po změně se PM spouští pouze řízeným `--once` tickem.
 AO musí v outboxu vracet `provider_statuses` pro všechny providery v daném
 failover pořadí. Každý `LIMITED` záznam nese absolutní UTC `retry_at`; PM
 zapíše všechny tyto termíny do persistentního stavu a do PM-DATA/Trella

@@ -44,6 +44,35 @@ WAITING_WORKFLOW_STATUSES = {
     ProjectStatus.ERROR,
 }
 
+# ``auto`` is a PM configuration alias, not an ai-orchestrator provider.  It
+# must be expanded before provider availability is checked; otherwise PM can
+# select the literal alias and later pass it to AO as ``--provider-order auto``.
+# Keep the order aligned with the PM-owned failover policy.  Both the canonical
+# PM Claude name and AO's legacy name are accepted because persisted provider
+# state can contain either spelling.
+AUTO_PROVIDER_ORDER = ("hermes", "antigravity", "claude", "claude-code", "codex")
+
+
+def expand_provider_aliases(
+    provider_names: list[str], provider_registry: ProviderRegistry
+) -> list[str]:
+    """Expand PM-only provider aliases into registered provider identities."""
+    expanded: list[str] = []
+    registered = set(provider_registry.registered_names())
+    for provider_name in provider_names:
+        if provider_name.casefold() != "auto":
+            if provider_name not in expanded:
+                expanded.append(provider_name)
+            continue
+        for candidate in AUTO_PROVIDER_ORDER:
+            # Prefer PM's canonical ``claude`` identity over the AO alias when
+            # both happen to be present in durable provider state.
+            if candidate in registered and candidate not in expanded:
+                if candidate == "claude-code" and "claude" in registered:
+                    continue
+                expanded.append(candidate)
+    return expanded
+
 
 def _is_human_hold(project: ProjectRecord) -> bool:
     return bool(project.human_action_step or project.human_notified_reason)
@@ -108,7 +137,9 @@ def pick_next_project(
     acceptable provider names (falls back to ``default_providers``, or
     to every provider registered so far).
     """
-    fallback_providers = default_providers or provider_registry.registered_names()
+    fallback_providers = expand_provider_aliases(
+        default_providers or provider_registry.registered_names(), provider_registry
+    )
 
     waiting = [project for project in projects if project.status in WAITING_WORKFLOW_STATUSES]
     if waiting:
@@ -150,7 +181,10 @@ def pick_next_project(
     )
 
     for project in candidates:
-        allowed_providers = (providers_for_project or {}).get(project.name, fallback_providers)
+        allowed_providers = expand_provider_aliases(
+            (providers_for_project or {}).get(project.name, fallback_providers),
+            provider_registry,
+        )
         for provider_name in allowed_providers:
             if provider_registry.is_available(provider_name):
                 return SchedulingDecision(project=project, provider=provider_name)
@@ -190,13 +224,18 @@ def pick_next_audit_project(
     ai-orchestrator's audit-only mode (see
     orchestrator_handoff.build_audit_task).
     """
-    fallback_providers = default_providers or provider_registry.registered_names()
+    fallback_providers = expand_provider_aliases(
+        default_providers or provider_registry.registered_names(), provider_registry
+    )
 
     candidates = [p for p in projects if is_auditable(p)]
     candidates.sort(key=lambda p: p.priority, reverse=True)
 
     for project in candidates:
-        allowed_providers = (providers_for_project or {}).get(project.name, fallback_providers)
+        allowed_providers = expand_provider_aliases(
+            (providers_for_project or {}).get(project.name, fallback_providers),
+            provider_registry,
+        )
         capability_key = audit_capability_key(project)
         for provider_name in allowed_providers:
             if (

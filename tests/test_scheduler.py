@@ -98,6 +98,22 @@ def test_picks_highest_priority_unblocked_project():
     assert decision.provider == "claude"
 
 
+def test_auto_alias_selects_first_available_real_provider():
+    registry = make_registry(
+        auto="AVAILABLE",
+        hermes="AVAILABLE",
+        antigravity="LIMITED",
+        claude="AVAILABLE",
+        codex="AVAILABLE",
+    )
+    project = ProjectRecord(name="Auto", priority=5, status=ProjectStatus.READY)
+
+    decision = pick_next_project([project], registry, default_providers=["auto"])
+
+    assert decision is not None
+    assert decision.provider == "hermes"
+
+
 def test_continues_in_progress_before_higher_priority_ready_card():
     projects = [
         ProjectRecord(name="P5 - new", priority=5, status=ProjectStatus.READY),
