@@ -111,7 +111,7 @@ def test_auto_alias_selects_first_available_real_provider():
     decision = pick_next_project([project], registry, default_providers=["auto"])
 
     assert decision is not None
-    assert decision.provider == "hermes"
+    assert decision.provider == "claude"
 
 
 def test_continues_in_progress_before_higher_priority_ready_card():

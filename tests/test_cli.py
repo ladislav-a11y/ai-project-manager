@@ -127,7 +127,7 @@ def test_main_auto_provider_alias_selects_hermes_without_persisting_literal_auto
         return {"status": "in_progress"}
 
     assert main(["--once"], client=client, run_fn=fake_run_fn) == 0
-    assert calls == [("Demo", "hermes")]
+    assert calls == [("Demo", "antigravity")]
 
 
 def test_main_maintain_only_migrates_and_notifies_without_ever_dispatching(monkeypatch):

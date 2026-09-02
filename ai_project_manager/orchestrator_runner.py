@@ -108,7 +108,7 @@ DEFAULT_PROVIDER_AGENT_MAP = {"claude": "claude-code"}
 # PM retired Gemini after its account/project restriction was confirmed. This
 # is passed only to AO failover invocations from PM; AO's canonical default
 # order remains hermes, gemini, antigravity, claude-code, codex for other users.
-PM_FAILOVER_PROVIDER_ORDER = ("hermes", "antigravity", "claude-code", "codex")
+PM_FAILOVER_PROVIDER_ORDER = ("antigravity", "claude-code", "codex")
 
 
 def _pm_provider_name(

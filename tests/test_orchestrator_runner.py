@@ -820,7 +820,7 @@ def test_auto_provider_alias_resolves_to_real_available_failover_order(tmp_path)
     registry.mark_available("claude")
     registry.mark_available("codex")
 
-    assert _tick_provider_order("auto", registry) == ["hermes", "claude-code", "codex"]
+    assert _tick_provider_order("auto", registry) == ["claude-code", "codex"]
 
     seen = {}
 
@@ -847,7 +847,7 @@ def test_auto_provider_alias_resolves_to_real_available_failover_order(tmp_path)
 
     assert seen["command"][seen["command"].index("--agent") + 1] == "auto"
     assert seen["command"][seen["command"].index("--provider-order") + 1] == (
-        "hermes,claude-code,codex"
+        "claude-code,codex"
     )
 
 
