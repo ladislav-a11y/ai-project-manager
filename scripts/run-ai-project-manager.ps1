@@ -137,6 +137,7 @@ try {
     $env:AI_ORCHESTRATOR_FINALIZE_CMD = "`"$orchestratorPython`" `"$finalizeScript`" --test-command `"$finalizeTestCommand`""
     $env:AI_ORCHESTRATOR_ALLOWED_PUSH_REMOTES = (@{
         'AI Project Manager' = 'https://github.com/ladislav-a11y/ai-project-manager.git'
+        'Station Agent' = 'https://github.com/ladislav-a11y/station-agent.git'
     } | ConvertTo-Json -Compress)
     $finalizePaths = [ordered]@{
         'AI Project Manager' = @(

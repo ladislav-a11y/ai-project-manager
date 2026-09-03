@@ -62,6 +62,13 @@ def test_runner_delegates_model_selection_to_providers() -> None:
     assert "Model selection belongs to each provider" in source
 
 
+def test_runner_authorizes_push_remotes_for_ai_project_manager_and_station_agent() -> None:
+    source = (SCRIPTS / "run-ai-project-manager.ps1").read_text(encoding="utf-8")
+
+    assert "'AI Project Manager' = 'https://github.com/ladislav-a11y/ai-project-manager.git'" in source
+    assert "'Station Agent' = 'https://github.com/ladislav-a11y/station-agent.git'" in source
+
+
 def test_runner_rejects_retired_providers_via_override() -> None:
     source = (SCRIPTS / "run-ai-project-manager.ps1").read_text(encoding="utf-8")
 

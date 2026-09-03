@@ -47,13 +47,22 @@ fáze a nesmí obejít čekání, audit ani aktivní práci. Pořadí dispatch �
   `Testování`.
 
 Terminální finalizace je vlastněna controllerem, nikdy agentem. Standardně
-musí být pro dirty checkout dokončena před `Hotovo`: test, explicitní rozsah
-commitu, čistý pracovní strom a záloha/ověřený remote HEAD. U schválené
-`post_done_finalization` karty se tento krok nesmí vydávat za hotový předem a
-musí se provést bezprostředně jako navazující finalizace. Pokud finalizátor
-nebo jeho allowlist není k dispozici, běžnou kartu audit nepřijme; PM nesmí
-použít globální `git add -A` jako náhradní řešení. Čistý checkout bez změn
-nevyžaduje prázdný commit.
+musí být pro dirty checkout dokončena před `Hotovo`: test, rozsah commitu,
+čistý pracovní strom a záloha/ověřený remote HEAD. Rozsah commitovaných cest
+se odvozuje ze skutečného `git status` daného projektu, pokud pro něj není
+nakonfigurován explicitní kurátorovaný seznam (`AI_ORCHESTRATOR_FINALIZE_PATHS`)
+- takový seznam zůstává jen přísnější volitelnou výjimkou pro projekt, který
+smí měnit vlastní řídicí kód (např. AI Project Manager při self-update); pro
+běžný cílový projekt (např. Station Agent) žádný ruční seznam nevyžaduje.
+V obou případech se nikdy nepoužije globální `git add -A` - cesty se vždy
+stagují jednotlivě a explicitně vyjmenované. Push na vzdálený remote naopak
+zůstává vždy vázaný na explicitní `AI_ORCHESTRATOR_ALLOWED_PUSH_REMOTES`
+záznam pro daný projekt - bez něj finalizace zůstane commitnutá jen lokálně,
+`pushed=true` se nesplní a karta se vrátí do `Pracuje se` s konkrétním
+důvodem, dokud povolení nepřidá člověk. U schválené `post_done_finalization`
+karty se tento krok nesmí vydávat za hotový předem a musí se provést
+bezprostředně jako navazující finalizace. Čistý checkout bez změn nevyžaduje
+prázdný commit.
 
 Implementační agent nikdy sám neuzavírá kartu do `Hotovo`. Neúplné nebo
 neověřené DoD se nesmí označit jako hotové. Karta vrácená z auditu se nesmí
