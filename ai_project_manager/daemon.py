@@ -752,6 +752,20 @@ def run_tick(
         for project in projects:
             if project.trello_card_id in prepared_this_tick_ids:
                 setattr(project, "_prepared_this_tick", True)
+        # The pre-check above ran against the pre-refetch snapshot. This
+        # fresh read is the one dispatch selection actually uses below, and
+        # it can legitimately differ (board maintenance/migrations just ran,
+        # or the first snapshot simply predates a card's own creation within
+        # this same tick) - a project with no identity label must never slip
+        # through on that gap. Incident: card "AI CAD - evidence Onshape
+        # projektů a tisku na Bambu Lab A1" reached IN_PROGRESS with no
+        # project_key label at all (2026-09-03), which only failed inside
+        # the real dispatch attempt instead of being caught here first, and
+        # then sat blocked-with-human-hold without ever consuming a token -
+        # correct, but only by luck of where in run_fn the check happened to
+        # live, not because this gate covered it.
+        if project_paths is not None:
+            _fail_closed_invalid_project_identities(client, projects, project_paths)
 
         resumed_provider_waits = set(_resume_due_provider_waits(
             client,

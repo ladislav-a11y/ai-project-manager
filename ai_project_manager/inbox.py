@@ -527,7 +527,7 @@ def process_inbox(
         result = classifier(card, list(projects_by_name.values()))
         planner_result = None
         planned_tasks = None
-        if planner is not None and (result.is_new_project or partial_split):
+        if planner is not None:
             planner_result = planner(card, list(projects_by_name.values()))
             if not planner_result or not planner_result.get("tasks"):
                 logger.warning(
@@ -536,7 +536,7 @@ def process_inbox(
                 )
                 continue
             planned_tasks = tuple(planner_result["tasks"])
-        if result.is_new_project or partial_split:
+        if planner is not None or result.is_new_project or partial_split:
             preparation_card = card
             if partial_split:
                 # A source card may have been manually restored to Inbox and

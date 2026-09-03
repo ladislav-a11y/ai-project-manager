@@ -710,3 +710,59 @@ def test_revised_inbox_source_updates_existing_project_without_new_work_card():
     ]
     assert len(work_cards) == 1
     assert "forecast" in target.next_step
+
+def test_process_inbox_uses_planner_for_new_work_on_existing_project():
+    client = InMemoryTrelloClient()
+    _, name_to_id = build_list_maps(client)
+
+    existing = ProjectRecord(
+        name="Station Agent",
+        priority=2,
+        status=ProjectStatus.IN_PROGRESS,
+        main_task="Existing Station Agent work",
+        project_key="Station Agent",
+    )
+
+    source = client.create_card(
+        name_to_id["Inbox"],
+        "oprava station agent",
+        desc="Station Agent does not work; replace mock behavior with real behavior.",
+        labels=["Station Agent"],
+    )
+
+    planner_calls = []
+
+    def planner(card, projects):
+        planner_calls.append(card["id"])
+        return {
+            "provider": "claude",
+            "model": None,
+            "tasks": (
+                PreparedTask(
+                    title="Station Agent - real backend",
+                    task="Replace mock behavior with real backend behavior.",
+                    next_step="Implement real backend.",
+                    scope="Station Agent real backend",
+                    priority=5,
+                    priority_reason="confirmed repair",
+                ),
+            ),
+        }
+
+    changed = process_inbox(
+        client,
+        [existing],
+        persist_project=lambda project: sync_project_to_trello(client, project),
+        project_paths={"Station Agent": "D:/station-agent"},
+        planner=planner,
+    )
+
+    assert planner_calls == [source["id"]]
+    assert len(changed) == 1
+    assert changed[0] is not existing
+    assert changed[0].project_key == "Station Agent"
+    assert changed[0].status == ProjectStatus.NEW
+    assert changed[0].trello_card_id == source["id"]
+    assert changed[0].extra_data["inbox_preparation"]["source_card_id"] == source["id"]
+    assert client.list_cards(name_to_id["Inbox"]) == []
+    assert client.get_card(source["id"])["list_id"] == name_to_id["New"]
