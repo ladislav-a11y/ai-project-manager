@@ -28,7 +28,12 @@ def test_runner_is_relocatable_and_python_is_configurable() -> None:
 def test_runner_builds_project_paths_from_resolved_checkout_parameters() -> None:
     source = (SCRIPTS / "run-ai-project-manager.ps1").read_text(encoding="utf-8")
 
-    assert "'Řídicí systém' = $projectRoot" in source
+    # Built from [char] codepoints, not a literal diacritic - see
+    # test_runner_preserves_configured_czech_trello_names_as_utf8 for why.
+    assert (
+        "\"$([char]0x0158)$([char]0x00ED)dic$([char]0x00ED) syst$([char]0x00E9)m\" "
+        "= $projectRoot"
+    ) in source
     assert "'AI Project Manager' = $projectRoot" in source
     assert "'ai-orchestrator' = $OrchestratorRoot" in source
     assert "'AI Orchestrator' = $OrchestratorRoot" in source
@@ -72,15 +77,36 @@ def test_runner_authorizes_push_remotes_for_ai_project_manager_and_station_agent
 def test_runner_rejects_retired_providers_via_override() -> None:
     source = (SCRIPTS / "run-ai-project-manager.ps1").read_text(encoding="utf-8")
 
-    assert "Gemini je z PM vyřazen; použijte jiného providera." in source
-    assert "Hermes je z PM vyřazen; použijte jiného providera." in source
+    assert (
+        "throw \"Gemini je z PM vy$([char]0x0159)azen; "
+        "pou$([char]0x017E)ijte jin$([char]0x00E9)ho providera.\""
+    ) in source
+    assert (
+        "throw \"Hermes je z PM vy$([char]0x0159)azen; "
+        "pou$([char]0x017E)ijte jin$([char]0x00E9)ho providera.\""
+    ) in source
 
 
 def test_runner_preserves_configured_czech_trello_names_as_utf8() -> None:
+    """Windows PowerShell 5.1 parses a BOM-less .ps1 file (this project's
+    convention, see AI_PROJECT_PROTOCOL.md SS3) in the system ANSI code page,
+    not UTF-8 - a *literal* diacritic in the script source is silently
+    misread before the value ever reaches Trello or Python (verified
+    incident 2026-09-03: this corrupted TRELLO_INBOX_LIST and silently
+    disabled Inbox intake, even though the file's own UTF-8 bytes, read by
+    Python here, were always correct). Every functionally significant
+    diacritic string must therefore be built at runtime from [char]
+    codepoints instead, which this test enforces directly rather than
+    trusting the file's on-disk encoding."""
     source = (SCRIPTS / "run-ai-project-manager.ps1").read_text(encoding="utf-8")
 
-    assert "$env:TRELLO_INBOX_LIST = 'INBOX / Nápady'" in source
-    assert "'Řídicí systém' = $projectRoot" in source
+    assert '$env:TRELLO_INBOX_LIST = "INBOX / N$([char]0x00E1)pady"' in source
+    assert (
+        "\"$([char]0x0158)$([char]0x00ED)dic$([char]0x00ED) syst$([char]0x00E9)m\" "
+        "= $projectRoot"
+    ) in source
+    # The two exact-match asserts above already pin every character of both
+    # assignments; a reintroduced literal diacritic would fail them directly.
     # These common mojibake markers indicate that UTF-8 was decoded and
     # re-encoded through a legacy Windows code page. Exact Trello/project
     # name matching would then silently stop working.
@@ -91,7 +117,7 @@ def test_runner_preserves_configured_czech_trello_names_as_utf8() -> None:
 def test_runner_enables_governed_main_board_inbox_intake() -> None:
     source = (SCRIPTS / "run-ai-project-manager.ps1").read_text(encoding="utf-8")
 
-    assert "$env:TRELLO_INBOX_LIST = 'INBOX / Nápady'" in source
+    assert '$env:TRELLO_INBOX_LIST = "INBOX / N$([char]0x00E1)pady"' in source
     assert "$env:AI_PM_ENABLE_INBOX = '1'" in source
     assert "personal Inbox" in source
 

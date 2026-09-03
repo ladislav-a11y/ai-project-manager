@@ -93,7 +93,15 @@ try {
         $env:CODEX_HOME = Join-Path $env:USERPROFILE '.codex'
     }
 
-    $env:TRELLO_INBOX_LIST = 'INBOX / Nápady'
+    # Built via [char] codepoints, not a literal diacritic, because Windows
+    # PowerShell 5.1 parses a BOM-less .ps1 file (see AI_PROJECT_PROTOCOL.md
+    # SS3, "UTF-8 bez BOM") using the system ANSI code page, not UTF-8 - a
+    # literal 'a with acute' here is silently misread (its UTF-8 bytes 0xC3
+    # 0xA1 decode as two separate CP1250 codepoints, U+0102 and U+02C7)
+    # before the value ever reaches Trello or Python. Verified incident
+    # (2026-09-03): this corrupted the value so process_inbox's own
+    # list-name lookup returned no match, silently skipping Inbox intake.
+    $env:TRELLO_INBOX_LIST = "INBOX / N$([char]0x00E1)pady"
     # New, unlabelled Inbox ideas are auto-prepared as isolated projects under
     # this approved workspace root; existing ambiguous project mappings still
     # fail closed.
@@ -112,10 +120,10 @@ try {
     $env:AI_PM_PROVIDERS = 'antigravity,claude,codex'
     if ($ProviderOverride.Trim()) {
         if ($ProviderOverride.Trim().ToLowerInvariant() -eq 'gemini') {
-            throw 'Gemini je z PM vyřazen; použijte jiného providera.'
+            throw "Gemini je z PM vy$([char]0x0159)azen; pou$([char]0x017E)ijte jin$([char]0x00E9)ho providera."
         }
         if ($ProviderOverride.Trim().ToLowerInvariant() -eq 'hermes') {
-            throw 'Hermes je z PM vyřazen; použijte jiného providera.'
+            throw "Hermes je z PM vy$([char]0x0159)azen; pou$([char]0x017E)ijte jin$([char]0x00E9)ho providera."
         }
         $env:AI_PM_PROVIDERS = $ProviderOverride.Trim()
     }
@@ -183,7 +191,7 @@ try {
     # checkout without needing this map updated. See
     # ai_project_manager.orchestrator_runner.resolve_project_path.
     $projectPaths = [ordered]@{
-        'Řídicí systém' = $projectRoot
+        "$([char]0x0158)$([char]0x00ED)dic$([char]0x00ED) syst$([char]0x00E9)m" = $projectRoot
         'AI Project Manager' = $projectRoot
         'ai-orchestrator' = $OrchestratorRoot
         'AI Orchestrator' = $OrchestratorRoot

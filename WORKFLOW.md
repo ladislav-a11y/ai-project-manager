@@ -256,3 +256,24 @@ selže na pracovním adresáři, výsledek je `rejected`/`blocked` a nesmí se
 započítat do DoD. Staré diagnostické hlášení o chybějícím `provider`/`model`
 v usage po pádu před dokončením turnu je protokolová chyba k automatickému
 recovery a nesmí samo o sobě kartu převést do trvalého `human_required`.
+
+## PowerShell skripty a diakritika (bez BOM)
+
+`scripts/run-ai-project-manager.ps1` je uložen jako UTF-8 bez BOM (viz
+`AI_PROJECT_PROTOCOL.md` § 3). Windows PowerShell 5.1 takový soubor bez BOM
+parsuje v systémové ANSI znakové sadě, ne v UTF-8 - **literál s českou
+diakritikou přímo ve zdrojovém textu skriptu (`'INBOX / Nápady'`, `'Řídicí
+systém'` apod.) se tak už při čtení souboru chybně přečte** (UTF-8 bajty
+znaku "á", `C3 A1`, se v CP1250 přečtou jako dva znaky "Ă"+"ˇ") - a to i
+navzdory tomu, že samotný `.py` kód, Trello API i konzole s diakritikou
+pracují správně. Ověřený incident (2026-09-03): poškozená hodnota
+`TRELLO_INBOX_LIST` způsobila, že Inbox intake tiše selhal (list nebyl
+nalezen, žádný warning) a neklasifikovaná karta z Inboxu byla rovnou
+dispatchnuta bez identity. Závazné pravidlo: v `.ps1` souborech tohoto
+projektu se řetězec s diakritikou nikdy nepíše jako literál - sestavuje se
+za běhu přes `[char]0x00E1` apod. (viz aktuální `run-ai-project-manager.ps1`
+kolem `TRELLO_INBOX_LIST` a `$projectPaths` pro vzor). Diagnostika
+podezřelého řetězce z takového skriptu se musí ověřit na úrovni kódových
+bodů (`[hex(ord(c)) for c in s]`), nikoli jen vizuálně v logu/konzoli -
+konzole samotná diakritiku dál zkresluje jinak, takže shodný vizuální
+výstup nic neprokazuje.
