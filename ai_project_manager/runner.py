@@ -81,6 +81,16 @@ RunFn = Callable[[ProjectRecord, str], dict]
 # orchestrator_runner.build_audit_run_fn.
 AuditRunFn = Callable[[ProjectRecord, str], dict]
 
+# finalize_fn commits/pushes a card whose implementation DoD is fully
+# checked, before it may be promoted to Testování - the controller-owned
+# step from AGENTS.md rule 4/11 and AI_PROJECT_RUNTIME.md's controller
+# finalization contract. Returns a result dict with "status" ("done" or
+# "blocked"), and on success "checkpoint" (carrying the verified
+# "finalization" proof) or "already_verified" when nothing was dirty; on
+# failure "stop_reason" explains why promotion must not happen yet. See
+# orchestrator_runner.build_finalize_fn.
+FinalizeFn = Callable[[ProjectRecord], dict]
+
 _REJECT_TARGET_MAP = {
     "in_progress": ProjectStatus.IN_PROGRESS,
     "ready": ProjectStatus.READY,

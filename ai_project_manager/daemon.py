@@ -31,6 +31,7 @@ from .recovery import DEFAULT_MAX_ATTEMPTS, default_backoff, scan_for_recovery
 from .runner import (
     DEFAULT_HOLDER,
     AuditRunFn,
+    FinalizeFn,
     RunFn,
     RunOutcome,
     run_once,
@@ -209,8 +210,23 @@ def _resume_due_provider_waits(
     return resumed
 
 
-def _promote_completed_implementations_to_testing(client, projects: list) -> list[str]:
-    """Expose the audit gate before invoking ai-orchestrator."""
+def _promote_completed_implementations_to_testing(
+    client, projects: list, finalize_fn: Optional[FinalizeFn] = None
+) -> list[str]:
+    """Expose the audit gate before invoking ai-orchestrator.
+
+    A plain implementation DoD item (the normal case - no explicit
+    commit/push wording) never asks the controller finalizer to run by
+    name (see ``orchestrator_runner._finalization_indices``), so without
+    this step nothing would ever be committed and every independent audit
+    would find an unchanged checkout - the "checkout se nezmenil" rejection
+    loop this was written to fix. ``finalize_fn`` is called here, once,
+    right before promotion; a card whose finalization fails stays in
+    Pracuje se with a concrete reason instead of entering Testování with
+    unfinalized (uncommitted) work. This spends no AI token either way -
+    finalization is a deterministic commit/test/push subprocess, not a
+    provider call.
+    """
     promoted = []
     for project in projects:
         if project.status != ProjectStatus.IN_PROGRESS:
@@ -224,6 +240,23 @@ def _promote_completed_implementations_to_testing(client, projects: list) -> lis
         implementation_items = [item for item in project.dod if item.phase == "implementation"]
         if not implementation_items or not all(item.checked for item in implementation_items):
             continue
+        if finalize_fn is not None:
+            finalize_result = finalize_fn(project) or {}
+            if finalize_result.get("status") != "done":
+                reason = finalize_result.get("stop_reason") or "controller finalization failed"
+                project.stop_reason = (
+                    "implementation DoD complete but controller finalization failed: "
+                    f"{reason}"
+                )
+                sync_project_to_trello(client, project)
+                logger.warning(
+                    "controller finalization blocked promotion to Testování: "
+                    "project=%r reason=%s",
+                    project.name, reason,
+                )
+                continue
+            if not finalize_result.get("already_verified"):
+                project.checkpoint = finalize_result.get("checkpoint", project.checkpoint)
         project.transition_to(ProjectStatus.TESTING)
         project.stop_reason = "implementation DoD complete; awaiting ai-orchestrator audit"
         sync_project_to_trello(client, project)
@@ -658,6 +691,7 @@ def run_tick(
     recovery_backoff: Callable[[int], timedelta] = default_backoff,
     audit_run_fn: Optional[AuditRunFn] = None,
     inbox_planner: Optional[InboxPlannerFn] = None,
+    finalize_fn: Optional[FinalizeFn] = None,
 ) -> RunOutcome:
     """Run exactly one scheduler tick: recheck due providers, load real
     Trello state, revisit any blocked project that is due for an
@@ -752,7 +786,7 @@ def run_tick(
 
         # Reflect the test/audit phase on Trello before the audit provider is
         # invoked. This local transition spends no AI tokens.
-        _promote_completed_implementations_to_testing(client, projects)
+        _promote_completed_implementations_to_testing(client, projects, finalize_fn=finalize_fn)
 
         # New Inbox tasks were already admitted to Připraveno above. They are
         # intentionally not eligible for implementation dispatch until the
@@ -949,6 +983,7 @@ def run_loop(
     inbox_planner: Optional[InboxPlannerFn] = None,
     artifact_cleanup_root: Optional[str] = None,
     artifact_cleanup_retention_seconds: float = 86400.0,
+    finalize_fn: Optional[FinalizeFn] = None,
 ) -> RunOutcome:
     """Run the scheduler forever (or, with ``once=True``, exactly one tick
     and return - the safe live-smoke-test mode). Sleeps between ticks
@@ -1028,6 +1063,7 @@ def run_loop(
                     recovery_max_attempts=recovery_max_attempts,
                     recovery_backoff=recovery_backoff,
                     audit_run_fn=audit_run_fn,
+                    finalize_fn=finalize_fn,
                 )
             except Exception as exc:  # noqa: BLE001 - keep the unattended daemon alive
                 # Trello and provider-state persistence are external I/O. A

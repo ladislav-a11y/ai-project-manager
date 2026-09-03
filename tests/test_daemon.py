@@ -201,6 +201,116 @@ def test_run_tick_promotes_complete_implementation_with_stale_return_marker():
     assert audit_phases == [ProjectStatus.TESTING]
 
 
+def _implementation_plus_audit_dod(implementation_checked: bool = True) -> list[DoDItem]:
+    """The real Inbox-prepared DoD shape (see inbox_preparation.py): one
+    implementation item plus outstanding audit items. This is what keeps
+    ``maintain_board_contract``'s own "every DoD item checked" early-promote
+    shortcut (trello_sync.py) from firing before daemon.py's own gate ever
+    runs - a plain card is never all-checked until the audit items are too,
+    so that shortcut only ever fires for the implementation-only DoD shape
+    these tests must NOT use."""
+    return [
+        DoDItem(text="implementation", phase="implementation", checked=implementation_checked),
+        DoDItem(text="independent audit: tests", phase="audit", checked=False),
+        DoDItem(text="independent audit: verdict", phase="audit", checked=False),
+    ]
+
+
+def test_run_tick_finalizes_before_promoting_completed_implementation():
+    """A plain implementation DoD item never asks the controller finalizer
+    to run by name (see orchestrator_runner._finalization_indices), so
+    without an automatic finalize_fn call here nothing would ever be
+    committed and every audit would find an unchanged checkout - the
+    "checkout se nezmenil" rejection loop this was written to fix."""
+    project = ProjectRecord(
+        name="Completed implementation",
+        priority=5,
+        status=ProjectStatus.IN_PROGRESS,
+        main_task="Implement and verify the feature",
+        dod=_implementation_plus_audit_dod(),
+        checkpoint={"run_id": "abc"},
+    )
+    client = make_client_with_project(project)
+    registry = ProviderRegistry()
+    registry.mark_available("claude")
+    finalize_calls = []
+
+    def run_fn(*_args):
+        raise AssertionError("implementation must not be dispatched again")
+
+    def finalize_fn(finalized_project):
+        finalize_calls.append(finalized_project.name)
+        return {
+            "status": "done",
+            "checkpoint": {"run_id": "abc", "finalization": {"done": True}},
+        }
+
+    def audit_run_fn(audited_project, _provider):
+        assert audited_project.status == ProjectStatus.TESTING
+        return {"verdict": "accepted", "evidence": "audit passed"}
+
+    outcome = run_tick(
+        client,
+        registry,
+        run_fn,
+        audit_run_fn=audit_run_fn,
+        finalize_fn=finalize_fn,
+        default_providers=["claude"],
+    )
+
+    assert outcome.ran is True
+    assert finalize_calls == ["Completed implementation"]
+    id_to_name, _ = build_list_maps(client)
+    card = project_from_card(client.get_card(project.trello_card_id), id_to_name)
+    assert card.checkpoint.get("finalization") == {"done": True}
+
+
+def test_run_tick_blocks_promotion_when_finalization_fails():
+    """A dirty checkout without a verified commit must never reach
+    Testování - the audit would just reject it as unchanged and burn a
+    token cycle for nothing. The card stays in Pracuje se with a concrete
+    reason instead."""
+    project = ProjectRecord(
+        name="Completed implementation",
+        priority=5,
+        status=ProjectStatus.IN_PROGRESS,
+        main_task="Implement and verify the feature",
+        dod=_implementation_plus_audit_dod(),
+    )
+    client = make_client_with_project(project)
+    registry = ProviderRegistry()
+    registry.mark_available("claude")
+    audit_calls = []
+
+    def run_fn(*_args):
+        raise AssertionError(
+            "nothing left to implement - scheduler must not re-dispatch"
+        )
+
+    def finalize_fn(_project):
+        return {"status": "blocked", "stop_reason": "tests failed: 2 failures"}
+
+    def audit_run_fn(*_args):
+        audit_calls.append(True)
+        return {"verdict": "accepted", "evidence": "audit passed"}
+
+    outcome = run_tick(
+        client,
+        registry,
+        run_fn,
+        audit_run_fn=audit_run_fn,
+        finalize_fn=finalize_fn,
+        default_providers=["claude"],
+    )
+
+    assert outcome.ran is False
+    assert audit_calls == []
+    id_to_name, _ = build_list_maps(client)
+    card = project_from_card(client.get_card(project.trello_card_id), id_to_name)
+    assert card.status == ProjectStatus.IN_PROGRESS
+    assert "tests failed: 2 failures" in (card.stop_reason or "")
+
+
 def test_run_tick_loads_real_projects_and_processes_inbox_only_when_explicitly_enabled():
     client = InMemoryTrelloClient()
     _, name_to_id = build_list_maps(client)

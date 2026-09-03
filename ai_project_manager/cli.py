@@ -18,7 +18,12 @@ from typing import Optional, Sequence
 
 from .config import ConfigError, load_config
 from .daemon import run_loop, run_maintenance_only
-from .orchestrator_runner import build_audit_run_fn, build_inbox_planner_fn, build_run_fn
+from .orchestrator_runner import (
+    build_audit_run_fn,
+    build_finalize_fn,
+    build_inbox_planner_fn,
+    build_run_fn,
+)
 from .providers import ProviderRegistry
 from .provider_state import load_provider_state
 from .scheduler import AUTO_PROVIDER_ORDER
@@ -84,14 +89,16 @@ def main(
     client=None,
     run_fn=None,
     audit_run_fn=None,
+    finalize_fn=None,
 ) -> int:
-    """Entrypoint. ``client``/``run_fn``/``audit_run_fn`` are only ever
-    passed by tests to inject an in-memory Trello client / fake
+    """Entrypoint. ``client``/``run_fn``/``audit_run_fn``/``finalize_fn`` are
+    only ever passed by tests to inject an in-memory Trello client / fake
     orchestrator dispatch and exercise the real config -> registry ->
     scheduler-loop wiring without a network call; production use (the
     console script / ``python -m ai_project_manager``) always leaves them
     unset and gets the real ``RealTrelloClient`` + ``build_run_fn`` /
-    ``build_audit_run_fn`` built from ``load_config()``.
+    ``build_audit_run_fn`` / ``build_finalize_fn`` built from
+    ``load_config()``.
     """
     args = build_parser().parse_args(argv)
     logging.basicConfig(
@@ -174,6 +181,16 @@ def main(
             use_provider_failover=True,
         )
 
+    if finalize_fn is None:
+        finalize_fn = build_finalize_fn(
+            command=config.orchestrator.finalize_command,
+            project_paths=config.orchestrator.project_paths,
+            projects_root=config.orchestrator.projects_root,
+            finalize_paths=config.orchestrator.finalize_paths,
+            allowed_push_remotes=config.orchestrator.allowed_push_remotes,
+            timeout_seconds=config.orchestrator.timeout_seconds,
+        )
+
     def notify_inbox_selection(selection: dict) -> None:
         """Expose provider/model selection before the read-only planner call."""
         notify(status_message(
@@ -230,6 +247,7 @@ def main(
         inbox_planner=inbox_planner,
         artifact_cleanup_root=config.artifact_cleanup_root,
         artifact_cleanup_retention_seconds=config.artifact_cleanup_retention_seconds,
+        finalize_fn=finalize_fn,
     )
 
     if outcome.restart_required:

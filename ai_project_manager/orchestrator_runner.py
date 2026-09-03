@@ -992,7 +992,7 @@ def _post_completion_finalization_allowed(project: ProjectRecord) -> bool:
 def _controller_finalize(
     project: ProjectRecord,
     project_path: str,
-    task: OrchestratorTask,
+    goal: str,
     run_id: str,
     command: list,
     finalize_paths: Optional[dict],
@@ -1006,7 +1006,7 @@ def _controller_finalize(
     full_command = list(command) + [
         "--project", project_path,
         "--run-id", run_id,
-        "--goal", task.task,
+        "--goal", goal,
         "--push",
     ]
     for path in paths:
@@ -1057,6 +1057,68 @@ def _controller_finalize(
         "stop_reason": "controller commit, clean status and verified remote completed",
         "finalization": payload,
     }
+
+
+def build_finalize_fn(
+    command: Optional[list],
+    project_paths: Optional[dict] = None,
+    projects_root: Optional[str] = None,
+    finalize_paths: Optional[dict] = None,
+    allowed_push_remotes: Optional[dict] = None,
+    subprocess_run: Optional[SubprocessFn] = None,
+    timeout_seconds: Optional[float] = None,
+    run_git: Optional[RunCommand] = None,
+    run_id_fn: Callable[[], str] = _default_run_id,
+):
+    """Build a ``finalize_fn(project) -> dict`` that commits/pushes a card's
+    already-verified implementation work through the controller-owned
+    finalizer, spending no AI token (see AGENTS.md rule 4/11 and
+    ``AI_PROJECT_RUNTIME.md``'s controller finalization contract).
+
+    This is what ``daemon._promote_completed_implementations_to_testing``
+    calls right before promoting a card whose implementation DoD is fully
+    checked - a plain implementation DoD item (no explicit commit/push
+    wording, unlike ``_finalization_indices`` below) never asked for this
+    step by name, so without it nothing is ever committed and every
+    independent audit finds an unchanged checkout (see the repeated
+    "checkout se nezmenil" rejections this was written to fix).
+
+    Returns ``None`` when no ``command`` (``AI_ORCHESTRATOR_FINALIZE_CMD``)
+    is configured - finalization is then simply skipped, exactly like
+    today, rather than blocking every promotion on an unset config value.
+    """
+    if not command:
+        return None
+    git_cmd = run_git or default_run_command
+    if subprocess_run is None:
+        subprocess_run = functools.partial(_default_subprocess_run, timeout=timeout_seconds)
+
+    def finalize_fn(project: ProjectRecord) -> dict:
+        try:
+            project_path = resolve_project_path(
+                project, project_paths=project_paths, projects_root=projects_root
+            )
+        except ProjectPathError as exc:
+            return {"status": "blocked", "stop_reason": str(exc)}
+        current_head = get_git_head(project_path, run_git=git_cmd)
+        if _controller_finalization_is_verified(
+            (project.checkpoint or {}).get("finalization"), current_head
+        ):
+            # Already committed/pushed for the current HEAD (for example a
+            # research-only card with nothing to commit, or a retry after a
+            # transient Trello write failure) - nothing to do.
+            return {"status": "done", "already_verified": True}
+        run_id = run_id_fn()
+        goal = (
+            f"Controller finalization: commit and push the verified, "
+            f"already-implemented work for {project.name}."
+        )
+        return _controller_finalize(
+            project, project_path, goal, run_id, command,
+            finalize_paths, allowed_push_remotes, subprocess_run, [], git_cmd,
+        )
+
+    return finalize_fn
 
 
 def build_run_fn(
@@ -1148,7 +1210,7 @@ def build_run_fn(
         # controller tests and can deadlock it before any work starts.
         if finalize_command and finalization_indices is not None and not finalization_verified:
             return _controller_finalize(
-                project, project_path, task, run_id, finalize_command,
+                project, project_path, task.task, run_id, finalize_command,
                 finalize_paths, allowed_push_remotes, subprocess_run,
                 finalization_indices or [], git_cmd,
             )

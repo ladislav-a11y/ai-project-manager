@@ -101,6 +101,18 @@ def is_schedulable(project: ProjectRecord) -> bool:
         return False
     if project.status in NOT_SCHEDULABLE_STATUSES:
         return False
+    if project.status == ProjectStatus.IN_PROGRESS:
+        # Mirrors daemon._promote_completed_implementations_to_testing's own
+        # completeness check. A card whose implementation DoD is already
+        # fully checked has nothing left for another implementation
+        # dispatch to do - it is only waiting on controller finalization
+        # (commit/push) before it may be promoted to Testování. Without this
+        # guard a card whose finalization failed (dirty tests, a blocked
+        # push, ...) would be re-dispatched for implementation every single
+        # tick, spending a real provider call for work that is already done.
+        implementation_items = [item for item in project.dod if item.phase == "implementation"]
+        if implementation_items and all(item.checked for item in implementation_items):
+            return False
     return True
 
 

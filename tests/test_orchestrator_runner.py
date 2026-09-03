@@ -14,6 +14,7 @@ from ai_project_manager.orchestrator_runner import (
     OrchestratorProcessError,
     ProjectPathError,
     build_audit_run_fn,
+    build_finalize_fn,
     build_inbox_planner_fn,
     build_run_fn,
     _tick_provider_order,
@@ -178,6 +179,91 @@ def test_run_fn_does_not_controller_finalize_fresh_implementation_card(tmp_path)
     assert result["status"] == "in_progress"
     assert len(calls) == 1
     assert "--implementation-only" in calls[0]
+
+
+def test_build_finalize_fn_returns_none_without_a_configured_command():
+    """No AI_ORCHESTRATOR_FINALIZE_CMD configured means finalization is
+    simply skipped - daemon.py treats a None finalize_fn as "not wired up"
+    and promotes without it, exactly like before this feature existed."""
+    assert build_finalize_fn(None) is None
+    assert build_finalize_fn([]) is None
+
+
+def test_build_finalize_fn_commits_a_fully_implemented_card(tmp_path):
+    """This is the automatic path daemon._promote_completed_implementations_
+    to_testing calls right before promoting Pracuje se -> Testování - it must
+    actually run the controller finalizer and return its verified proof, not
+    just describe what a caller should do."""
+    registry_calls = []
+
+    def fake_subprocess_run(command):
+        registry_calls.append(command)
+        return completed(json.dumps({
+            "status": "completed", "done": True, "committed": True,
+            "clean": True, "tests_passed": True, "pushed": True,
+            "commit_hash": "abc123", "remote_commit": "abc123",
+        }))
+
+    heads = iter(("before123", "before123", "abc123"))
+
+    def fake_git(_command):
+        return completed(next(heads) + "\n")
+
+    project = ProjectRecord(
+        name="Demo",
+        dod=[DoDItem(text="implementation complete", checked=True)],
+        checkpoint={"completed_dod_indices": [0]},
+    )
+    finalize_fn = build_finalize_fn(
+        ["controller-finalize"],
+        project_paths={"Demo": str(tmp_path / "demo-checkout")},
+        finalize_paths={"Demo": ["tracked.py"]},
+        allowed_push_remotes={"Demo": "https://example.invalid/repo.git"},
+        subprocess_run=fake_subprocess_run,
+        run_git=fake_git,
+        run_id_fn=lambda: "fixed-run-id",
+    )
+
+    result = finalize_fn(project)
+
+    assert result["status"] == "done"
+    assert result["checkpoint"]["finalization"]["commit_hash"] == "abc123"
+    assert len(registry_calls) == 1
+    assert "--push" in registry_calls[0]
+    assert registry_calls[0][registry_calls[0].index("--path") + 1] == "tracked.py"
+
+
+def test_build_finalize_fn_skips_an_already_verified_checkout(tmp_path):
+    """A card already finalized for the current HEAD (a research-only card
+    with nothing to commit, or a retry after a transient Trello write
+    failure) must not spend a second finalizer subprocess call."""
+    def fake_subprocess_run(_command):
+        raise AssertionError("must not re-run the finalizer for a verified HEAD")
+
+    def fake_git(_command):
+        return completed("abc123\n")
+
+    project = ProjectRecord(
+        name="Demo",
+        dod=[DoDItem(text="implementation complete", checked=True)],
+        checkpoint={
+            "finalization": {
+                "status": "completed", "done": True, "committed": True,
+                "clean": True, "tests_passed": True, "pushed": True,
+                "commit_hash": "abc123", "remote_commit": "abc123",
+            },
+        },
+    )
+    finalize_fn = build_finalize_fn(
+        ["controller-finalize"],
+        project_paths={"Demo": str(tmp_path / "demo-checkout")},
+        subprocess_run=fake_subprocess_run,
+        run_git=fake_git,
+    )
+
+    result = finalize_fn(project)
+
+    assert result == {"status": "done", "already_verified": True}
 
 
 def test_finalization_refresh_is_needed_when_card_proof_has_old_head(tmp_path):
