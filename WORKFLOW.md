@@ -122,11 +122,11 @@ podúkolu a jeho přímé návaznosti. Planner nesmí do jednoho vstupu smíchat
 projektové identity; při nejasnosti musí intake skončit v Inboxu s požadavkem
 na lidské upřesnění.
 
-Inbox planner je samostatná AI-planning fáze a Hermes je v ní vždy zakázaný;
-volí pouze z povolených dostupných providerů mimo Hermes. PM planneru ani
+Inbox planner je samostatná AI-planning fáze a volí pouze z povolených
+dostupných providerů (Hermes je z PM úplně vyřazen, viz sekci „Hermes -
+vyřazen z produkčního PM routingu" níže, ne jen z této fáze). PM planneru ani
 implementaci/auditu nepředává `--model`: konkrétní model volí provider podle
-typu úkolu a skutečně použitý model se bere až z AO outboxu. Hermes má mimo
-Inbox pevný Nous-only free kontrakt `upstage/solar-pro4:free`; žádný free
+typu úkolu a skutečně použitý model se bere až z AO outboxu. Žádný free
 provider nesmí při nedostupnosti svého povoleného free modelu tiše zvolit
 placený LLM.
 Před každým použitím providera PM oznámí jeho výběr, důvod, typ úkolu a modelový
@@ -209,56 +209,40 @@ ověřených kartách v `Hotovo` jsou závazným vývojovým podkladem pro navaz
 implementaci a diagnostiku; nesmějí však zpětně měnit terminální stav ani
 nahradit aktuální auditní důkaz.
 
-## Hermes kvalifikační pravidla
+## Hermes — vyřazen z produkčního PM routingu
 
-Hermes je podporovaný provider s předností v aktuálním PM pořadí
-`hermes → antigravity → claude → codex`. Musí být spuštěn výhradně přes Nous
-free LLM a model se nesmí odvozovat z výchozí konfigurace CLI: orchestrator i
-PM musí explicitně vynutit `provider=nous` a přesný model
-`upstage/solar-pro4:free`. Jakýkoli jiný provider nebo model je porušení
-contractu. Nefunkční Hermes může spustit běžný failover na dalšího providera,
-ale Hermes sám nesmí použít placený model ani jiný fallback.
-
-Před každým Hermes během musí orchestrator nastavit a zalogovat absolutní
-`TERMINAL_CWD` pro izolovaný scratch/worktree. Samotné `--in`, pracovní
-adresář procesu ani textová odpověď Hermese nejsou důkazem provedené práce.
-Nous stream, který skončí `Response truncated...` nebo opakovaným pádem
-uprostřed tool-call, je provider failure: PM jej nesmí přepsat na chybějící
-metadata ani opakovat celý běh bez změny; orchestrator musí přejít na dalšího
-providera a zachovat důvod v diagnostice.
-Produkční PM adapter nesmí přebírat uživatelskou desktopovou konfiguraci:
-spouští izolovaný headless běh v `--safe-mode`, pouze s nástroji `file,terminal`
-a s limitem `HERMES_MAX_ITERATIONS=20`. Desktopový Hermes se
-nesmí používat souběžně s PM, protože jeho gateway/session zámky mohou CLI běh
-zablokovat až do timeoutu; při aktivní desktopové relaci je nutné ji nejprve
-ukončit, případně použít běžný provider failover. Tato izolace nemění povinný
-provider/model: stále platí výhradně `nous` + `upstage/solar-pro4:free`.
-Headless PM handoff má navíc tvrdý timeout nejvýše 180 sekund; delší hodnota
-z desktopové nebo lokální konfigurace se nesmí převzít. Po jeho překročení se
-Hermes označí jako selhaný provider a PM smí pokračovat failoverem.
-Při aktivním Hermesu se dávka omezuje na jeden konkrétní DoD bod a krátké
-ověření; celé testovací sady a široké dávky patří až do orchestratorového
-auditu nebo do provideru po failoveru.
+Hermes byl po ověření v produkčním provozu vyřazen z PM provider poolu
+(`AI_PM_PROVIDERS` v `scripts/run-ai-project-manager.ps1`,
+`PM_FAILOVER_PROVIDER_ORDER` v `orchestrator_runner.py`, `AUTO_PROVIDER_ORDER`
+v `scheduler.py`), protože se ukázalo, že jej PM nemůže spolehlivě použít jako
+produkčního providera - stejně jako byl dříve vyřazen Gemini (viz sekce
+„Ověřená blokace Gemini" výše). PM proto Hermese už nikdy nevybírá ani
+neregistruje, v žádné fázi (Inbox planning, implementace, audit) a ani přes
+explicitní `-ProviderOverride`. Historická kvalifikační pravidla specifická
+pro Hermes (Nous-only kontrakt `upstage/solar-pro4:free`, `--safe-mode`,
+`HERMES_MAX_ITERATIONS=20`, tvrdý 180s timeout, izolovaný `TERMINAL_CWD`)
+zůstávají popsaná v `ai-orchestrator/AGENTS.md` (pravidlo 11e) pro případ, že
+by ai-orchestrator použil Hermese mimo PM; samostatný PoC vedle PM/
+orchestrátoru (`ai-orchestrator/poc/hermes_agent`) tímto vyřazením není
+dotčen.
 
 Inbox planning/intake je samostatná AI fáze před worker dispatch. Produkční PM
 musí lidský vstup nejprve předat prvnímu dostupnému provideru z pořadí
-`gemini → antigravity → claude → codex`; `hermes` je v této fázi explicitně
-zakázán a pravidlo je vynucené konstantou `INBOX_PLANNING_FORBIDDEN_PROVIDERS`
-i samostatným read-only `plan-inbox` handoffem přes ai-orchestrator. AI planner
-musí vrátit validní atomické úkoly s různými prioritami, jinak zdroj zůstane v
-Inboxu fail-closed. PM uloží skutečný intake provider a model do Card Contractu
-a oznámí je ve Slacku. Hermes se smí použít až na již rozdělené, prioritou
-opatřené a atomické pracovní kartě. Deterministické heuristiky jsou pouze
+`antigravity → claude → codex` (viz `INBOX_PLANNER_PROVIDERS`) a pravidlo je
+vynucené i samostatným read-only `plan-inbox` handoffem přes ai-orchestrator.
+AI planner musí vrátit validní atomické úkoly s různými prioritami, jinak
+zdroj zůstane v Inboxu fail-closed. PM uloží skutečný intake provider a model
+do Card Contractu a oznámí je ve Slacku. Deterministické heuristiky jsou pouze
 testovací/fallback knihovna, nikoli produkční vlastník intake rozhodnutí.
 Handoff je úspěšný teprve po ověření postcondition orchestrátorem: exit code,
 provider/model z usage, povolený rozsah změn a skutečný filesystem/Git diff.
-Přesun karty jiným providerem Hermese neodstraňuje z pořadí: při dalším ticku
+Přesun karty jiným providerem provider z pořadí neodstraňuje: při dalším ticku
 se smí znovu účastnit po úspěšné dostupnostní revalidaci, ale PM nesmí jeho
 stav `ERROR` nebo `LIMITED` slepě přepsat na `AVAILABLE`. V Card Contractu a
 Slacku se rozlišuje `selected_provider` (provider vybraný PM) od
 `actual_provider` a `actual_model` potvrzených outboxem; při interním failoveru
 se musí zobrazit celá `provider_sequence`.
-Pokud Hermes pouze popisuje postup, vrátí „success“ bez postcondition nebo
+Pokud provider pouze popisuje postup, vrátí „success" bez postcondition nebo
 selže na pracovním adresáři, výsledek je `rejected`/`blocked` a nesmí se
 započítat do DoD. Staré diagnostické hlášení o chybějícím `provider`/`model`
 v usage po pádu před dokončením turnu je protokolová chyba k automatickému

@@ -102,22 +102,25 @@ try {
     # was prepared in Připraveno. The intake remains fail-closed on project
     # identity and never touches the personal Inbox.
     $env:AI_PM_ENABLE_INBOX = '1'
-    # Ordered failover policy: Hermes is preferred when available, but is
-    # hard-wired in ai-orchestrator to the Nous free model only.  The PM
-    # provider names intentionally remain stable; ``hermes`` maps to the
-    # production Hermes agent, while ``claude`` maps to claude-code.
-    # Gemini was retired from PM after its successful audit migration. Keep
-    # the canonical AO order unchanged; PM must not register or select it.
-    $env:AI_PM_PROVIDERS = 'hermes,antigravity,claude,codex'
+    # Ordered failover policy. The PM provider names intentionally remain
+    # stable; ``claude`` maps to claude-code. Gemini was retired from PM
+    # after its successful audit migration, and Hermes was retired after
+    # live use showed it could not actually be used as a PM provider (see
+    # PM_FAILOVER_PROVIDER_ORDER/AUTO_PROVIDER_ORDER in
+    # ai_project_manager/orchestrator_runner.py and scheduler.py). Keep the
+    # canonical AO order unchanged; PM must not register or select either.
+    $env:AI_PM_PROVIDERS = 'antigravity,claude,codex'
     if ($ProviderOverride.Trim()) {
         if ($ProviderOverride.Trim().ToLowerInvariant() -eq 'gemini') {
             throw 'Gemini je z PM vyřazen; použijte jiného providera.'
         }
+        if ($ProviderOverride.Trim().ToLowerInvariant() -eq 'hermes') {
+            throw 'Hermes je z PM vyřazen; použijte jiného providera.'
+        }
         $env:AI_PM_PROVIDERS = $ProviderOverride.Trim()
     }
     # Model selection belongs to each provider. PM passes only the task
-    # prompt and provider identity; Hermes alone remains fixed to Nous free
-    # by ai-orchestrator's provider contract.
+    # prompt and provider identity.
     $env:AI_PM_PROVIDER_MODELS = '{}'
     $env:AI_PM_POLL_INTERVAL_SECONDS = [string]$PollIntervalSeconds
     # Cleanup is constrained to direct, expired .pytest-basetemp-* children

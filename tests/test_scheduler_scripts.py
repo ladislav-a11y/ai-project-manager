@@ -57,9 +57,16 @@ def test_runner_seeds_card_project_key_migration_for_the_known_real_production_c
 def test_runner_delegates_model_selection_to_providers() -> None:
     source = (SCRIPTS / "run-ai-project-manager.ps1").read_text(encoding="utf-8")
 
-    assert "$env:AI_PM_PROVIDERS = 'hermes,antigravity,claude,codex'" in source
+    assert "$env:AI_PM_PROVIDERS = 'antigravity,claude,codex'" in source
     assert "$env:AI_PM_PROVIDER_MODELS = '{}'" in source
     assert "Model selection belongs to each provider" in source
+
+
+def test_runner_rejects_retired_providers_via_override() -> None:
+    source = (SCRIPTS / "run-ai-project-manager.ps1").read_text(encoding="utf-8")
+
+    assert "Gemini je z PM vyřazen; použijte jiného providera." in source
+    assert "Hermes je z PM vyřazen; použijte jiného providera." in source
 
 
 def test_runner_preserves_configured_czech_trello_names_as_utf8() -> None:

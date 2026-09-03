@@ -257,11 +257,13 @@ returned by ai-orchestrator, or explicitly records that the provider default
 was not reported. It never guesses a model from the provider name.
 
 Inbox planning follows the same model-ownership rule, but has a separate
-provider allowlist that permanently excludes Hermes. Hermes is reserved for
-already-prepared work and, wherever it is used, ai-orchestrator enforces the
-exact Nous-only free model `upstage/solar-pro4:free`. A free-tier provider must
-remain free-only and fail closed when no permitted free model is available; it
-must never silently fall back to a paid LLM. These rules apply equally to
-Inbox intake, implementation and independent audit.
+provider allowlist. Hermes is retired from PM entirely (not just Inbox
+planning, see `WORKFLOW.md`) after production use showed it could not be used
+reliably as a PM provider; where ai-orchestrator still uses it outside PM
+(e.g. its own `poc/hermes_agent`), it enforces the exact Nous-only free model
+`upstage/solar-pro4:free`. A free-tier provider must remain free-only and fail
+closed when no permitted free model is available; it must never silently fall
+back to a paid LLM. These rules apply equally to Inbox intake, implementation
+and independent audit.
 
 Example: `{"claude":["claude-opus-4-1","claude-sonnet-4"],"codex":["gpt-5.6"]}`.
