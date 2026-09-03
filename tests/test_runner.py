@@ -193,6 +193,90 @@ def test_run_once_normalizes_null_checkpoint_from_external_result():
     assert project.checkpoint == {}
 
 
+def test_run_once_finalizes_before_promoting_to_testing():
+    """Incident: card P5.20 (Station Agent - oprava P5, 2026-09-03). This is
+    the path that actually fires the moment an implementation batch reports
+    "done" within the SAME tick that dispatched it - daemon._promote_
+    completed_implementations_to_testing's own finalize gate is a separate,
+    later catch-up check and never runs for this case, so without a gate
+    HERE too, the very first "implementation reported done" already lands
+    the card in Testovani with nothing committed."""
+    project = ProjectRecord(
+        name="Demo",
+        priority=3,
+        status=ProjectStatus.READY,
+        dod=[
+            DoDItem(text="implementation", phase="implementation", checked=False),
+            DoDItem(text="independent audit", phase="audit", checked=False),
+        ],
+    )
+    client = make_client_with_project(project)
+    registry = ProviderRegistry()
+    registry.mark_available("claude")
+    finalize_calls = []
+
+    def finalize_fn(finalized_project):
+        finalize_calls.append(finalized_project.name)
+        return {
+            "status": "done",
+            "checkpoint": {"completed_dod_indices": [0], "finalization": {"done": True}},
+        }
+
+    outcome = run_once(
+        client,
+        [project],
+        registry,
+        lambda _project, _provider: {
+            "status": "done",
+            "checkpoint": {"completed_dod_indices": [0]},
+        },
+        default_providers=["claude"],
+        finalize_fn=finalize_fn,
+    )
+
+    assert outcome.ran is True
+    assert finalize_calls == ["Demo"]
+    assert project.status == ProjectStatus.TESTING
+    assert project.checkpoint.get("finalization") == {"done": True}
+
+
+def test_run_once_keeps_card_in_progress_when_finalization_fails():
+    """A dirty checkout without a verified commit must never reach
+    Testovani - the audit would just reject it as unchanged. The card stays
+    in Pracuje se with a concrete reason instead."""
+    project = ProjectRecord(
+        name="Demo",
+        priority=3,
+        status=ProjectStatus.READY,
+        dod=[
+            DoDItem(text="implementation", phase="implementation", checked=False),
+            DoDItem(text="independent audit", phase="audit", checked=False),
+        ],
+    )
+    client = make_client_with_project(project)
+    registry = ProviderRegistry()
+    registry.mark_available("claude")
+
+    def finalize_fn(_project):
+        return {"status": "blocked", "stop_reason": "tests failed: 2 failures"}
+
+    outcome = run_once(
+        client,
+        [project],
+        registry,
+        lambda _project, _provider: {
+            "status": "done",
+            "checkpoint": {"completed_dod_indices": [0]},
+        },
+        default_providers=["claude"],
+        finalize_fn=finalize_fn,
+    )
+
+    assert outcome.ran is True
+    assert project.status == ProjectStatus.IN_PROGRESS
+    assert "tests failed: 2 failures" in (project.stop_reason or "")
+
+
 def test_run_once_records_non_mapping_external_result_as_a_run_failure():
     project = ProjectRecord(name="Demo", priority=3, status=ProjectStatus.READY)
     client = make_client_with_project(project)
@@ -1005,6 +1089,94 @@ def test_run_once_audit_returns_incomplete_testing_card_to_work_without_ai_call(
     assert project.returned_from_testing is True
     assert calls == []
     assert "DoD bodů ještě není ověřeno" in project.stop_reason
+
+
+def test_run_once_audit_finalizes_before_dispatching_when_not_yet_verified():
+    """Defense in depth for the incident that got this feature written:
+    card P5.20 (Station Agent - oprava P5, 2026-09-03) reached Testovani
+    with its implementation DoD complete but never committed, because the
+    path that promoted it (runner._apply_run_result, same tick as the
+    implementation dispatch) did not yet call finalize_fn. Even after that
+    gap is closed, a card can still reach Testovani unfinalized through some
+    other path (an older stuck card, a future code change) - this check
+    catches it right before spending a real audit-provider call on a
+    checkout the audit would just find unchanged."""
+    project = ProjectRecord(
+        name="Stuck in testing",
+        priority=5,
+        status=ProjectStatus.TESTING,
+        dod=[
+            DoDItem(text="implementation complete", checked=True),
+            DoDItem(text="independent audit", phase="audit"),
+        ],
+    )
+    client = make_client_with_project(project)
+    registry = ProviderRegistry()
+    registry.mark_available("claude")
+    finalize_calls = []
+    audit_calls = []
+
+    def finalize_fn(finalized_project):
+        finalize_calls.append(finalized_project.name)
+        return {
+            "status": "done",
+            "checkpoint": {"finalization": {"done": True}},
+        }
+
+    def audit_run_fn(audited_project, _provider):
+        audit_calls.append(True)
+        return {"verdict": "accepted", "evidence": "audit passed"}
+
+    outcome = run_once_audit(
+        client,
+        [project],
+        registry,
+        audit_run_fn,
+        default_providers=["claude"],
+        finalize_fn=finalize_fn,
+    )
+
+    assert outcome.ran is True
+    assert finalize_calls == ["Stuck in testing"]
+    assert audit_calls == [True]
+    assert project.checkpoint.get("finalization") == {"done": True}
+
+
+def test_run_once_audit_returns_unfinalized_card_to_work_without_spending_audit_call():
+    project = ProjectRecord(
+        name="Stuck in testing",
+        priority=5,
+        status=ProjectStatus.TESTING,
+        dod=[
+            DoDItem(text="implementation complete", checked=True),
+            DoDItem(text="independent audit", phase="audit"),
+        ],
+    )
+    client = make_client_with_project(project)
+    registry = ProviderRegistry()
+    registry.mark_available("claude")
+    audit_calls = []
+
+    def finalize_fn(_project):
+        return {"status": "blocked", "stop_reason": "tests failed: 2 failures"}
+
+    def audit_run_fn(*_args):
+        audit_calls.append(True)
+        return {"verdict": "accepted", "evidence": "audit passed"}
+
+    outcome = run_once_audit(
+        client,
+        [project],
+        registry,
+        audit_run_fn,
+        default_providers=["claude"],
+        finalize_fn=finalize_fn,
+    )
+
+    assert outcome.ran is True
+    assert audit_calls == []
+    assert project.status == ProjectStatus.IN_PROGRESS
+    assert "tests failed: 2 failures" in (project.stop_reason or "")
 
 
 def test_token_waste_audit_only_card_never_calls_implementation_agent():

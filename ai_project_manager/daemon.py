@@ -817,6 +817,7 @@ def run_tick(
                 holder=holder,
                 providers_for_project=providers_for_project,
                 default_providers=default_providers,
+                finalize_fn=finalize_fn,
             )
 
         if (outcome is None or not outcome.ran) and audit_run_fn is not None:
@@ -837,6 +838,7 @@ def run_tick(
                 holder=holder,
                 providers_for_project=providers_for_project,
                 default_providers=default_providers,
+                finalize_fn=finalize_fn,
             )
 
         if outcome is None or not outcome.ran:
@@ -850,6 +852,7 @@ def run_tick(
                 holder=holder,
                 providers_for_project=providers_for_project,
                 default_providers=default_providers,
+                finalize_fn=finalize_fn,
             )
 
         if outcome.ran:

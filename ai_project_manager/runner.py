@@ -354,7 +354,9 @@ class RunOutcome:
     restart_required: bool = False
 
 
-def _apply_run_result(project: ProjectRecord, result: dict) -> None:
+def _apply_run_result(
+    project: ProjectRecord, result: dict, finalize_fn: Optional[FinalizeFn] = None
+) -> None:
     reported_status = result.get("status")
     if reported_status in {"done", "testing"} and not project.dod:
         materialize_project_dod(project)
@@ -407,11 +409,37 @@ def _apply_run_result(project: ProjectRecord, result: dict) -> None:
                 # An implementation agent cannot close a card. Even a fully
                 # checked implementation DoD must be independently audited by
                 # ai-orchestrator before apply_audit_verdict may move it to
-                # Hotovo.
-                new_status = ProjectStatus.TESTING
-                project.stop_reason = (
-                    "implementation reported done; awaiting ai-orchestrator audit"
-                )
+                # Hotovo. A plain implementation DoD item never asks the
+                # controller finalizer to run by name (see
+                # orchestrator_runner._finalization_indices), so this is the
+                # only place - besides daemon._promote_completed_
+                # implementations_to_testing's own catch-up check for a card
+                # that reaches "all implementation items checked" without a
+                # fresh run_fn call in the same tick - that actually commits
+                # the verified work before Testování. Without it the
+                # independent audit always finds an unchanged checkout (see
+                # incident: card P5.20, Station Agent - oprava P5).
+                if finalize_fn is not None:
+                    finalize_result = finalize_fn(project) or {}
+                    if finalize_result.get("status") != "done":
+                        reason = finalize_result.get("stop_reason") or "controller finalization failed"
+                        new_status = ProjectStatus.IN_PROGRESS
+                        project.stop_reason = (
+                            "implementation DoD complete but controller finalization failed: "
+                            f"{reason}"
+                        )
+                    else:
+                        if not finalize_result.get("already_verified"):
+                            project.checkpoint = finalize_result.get("checkpoint", project.checkpoint)
+                        new_status = ProjectStatus.TESTING
+                        project.stop_reason = (
+                            "implementation reported done; awaiting ai-orchestrator audit"
+                        )
+                else:
+                    new_status = ProjectStatus.TESTING
+                    project.stop_reason = (
+                        "implementation reported done; awaiting ai-orchestrator audit"
+                    )
         elif new_status == ProjectStatus.BLOCKED and (
             not project.stop_reason or project.stop_reason.strip().lower() == "blocked"
         ):
@@ -437,6 +465,7 @@ def run_once(
     holder: str = DEFAULT_HOLDER,
     providers_for_project: Optional[dict] = None,
     default_providers: Optional[list] = None,
+    finalize_fn: Optional[FinalizeFn] = None,
 ) -> RunOutcome:
     """Run exactly one project's worth of work, if any is schedulable.
 
@@ -506,7 +535,7 @@ def run_once(
                         "orchestrator result must be a mapping, got "
                         f"{type(result).__name__}"
                     )
-                _apply_run_result(project, result)
+                _apply_run_result(project, result, finalize_fn=finalize_fn)
             except Exception as exc:  # noqa: BLE001 - run failures are reported on the card, not raised
                 signature = str(exc)
                 halted = guard.record_denial(project.name, signature)
@@ -668,6 +697,7 @@ def run_once_audit(
     holder: str = DEFAULT_HOLDER,
     providers_for_project: Optional[dict] = None,
     default_providers: Optional[list] = None,
+    finalize_fn: Optional[FinalizeFn] = None,
 ) -> RunOutcome:
     """Run the audit-only path for exactly one Testování project, if any
     is currently awaiting an ai-orchestrator verdict.
@@ -734,6 +764,39 @@ def run_once_audit(
                     provider=provider,
                     reason=project.stop_reason,
                 )
+            if finalize_fn is not None:
+                # A card can reach Testování with its implementation DoD
+                # complete but not yet committed - either because it was
+                # promoted before this defense-in-depth check existed
+                # (already the case for older, stuck cards - see incident:
+                # P5.20, Station Agent - oprava P5, 2026-09-03), or because
+                # a future code path adds a new way to reach Testování. Fail
+                # closed here too, one more time, before spending a real
+                # audit-provider call on a checkout the independent audit
+                # would just find unchanged.
+                finalize_result = finalize_fn(project) or {}
+                if finalize_result.get("status") != "done":
+                    reason = finalize_result.get("stop_reason") or "controller finalization failed"
+                    project.stop_reason = (
+                        "implementation DoD complete but controller finalization failed: "
+                        f"{reason}"
+                    )
+                    project.mark_returned_from_testing("finalization_failed")
+                    project.transition_to(ProjectStatus.IN_PROGRESS)
+                    sync_project_to_trello(client, project)
+                    notify(status_message(
+                        "PM odložil audit",
+                        project=project.name,
+                        detail=f"controller finalizace selhala: {reason}",
+                    ))
+                    return RunOutcome(
+                        ran=True,
+                        project_name=project.name,
+                        provider=provider,
+                        reason=project.stop_reason,
+                    )
+                if not finalize_result.get("already_verified"):
+                    project.checkpoint = finalize_result.get("checkpoint", project.checkpoint)
             notify(status_message(
                 "PM zahajuje audit",
                 project=project.name,
