@@ -82,6 +82,9 @@ class TrelloClient(Protocol):
     def move_card(self, card_id: str, list_id: str) -> dict:
         ...
 
+    def archive_card(self, card_id: str) -> dict:
+        ...
+
 
 class TrelloError(RuntimeError):
     pass
@@ -119,7 +122,10 @@ class InMemoryTrelloClient:
         return None
 
     def list_cards(self, list_id: str) -> list[dict]:
-        cards = [c for c in self._cards.values() if c["list_id"] == list_id]
+        cards = [
+            c for c in self._cards.values()
+            if c["list_id"] == list_id and not c.get("closed", False)
+        ]
         return [deepcopy(c) for c in sorted(cards, key=lambda c: c.get("position", 0))]
 
     def list_all_cards(self) -> list[dict]:
@@ -144,6 +150,7 @@ class InMemoryTrelloClient:
             "labels": [{"id": f"label-{n}", "name": n} for n in (labels or [])],
             "url": f"https://trello.com/c/{card_id}",
             "position": len(self._cards) + 1,
+            "closed": False,
             "last_activity_at": datetime.now(timezone.utc).isoformat(),
         }
         self._cards[card_id] = card
@@ -189,6 +196,13 @@ class InMemoryTrelloClient:
 
     def move_card(self, card_id: str, list_id: str) -> dict:
         return self.update_card(card_id, list_id=list_id)
+
+    def archive_card(self, card_id: str) -> dict:
+        if card_id not in self._cards:
+            raise TrelloError(f"unknown card {card_id}")
+        self._cards[card_id]["closed"] = True
+        self._cards[card_id]["last_activity_at"] = datetime.now(timezone.utc).isoformat()
+        return deepcopy(self._cards[card_id])
 
 
 class RealTrelloClient:
@@ -572,3 +586,11 @@ class RealTrelloClient:
 
     def move_card(self, card_id: str, list_id: str) -> dict:
         return self.update_card(card_id, list_id=list_id)
+
+    def archive_card(self, card_id: str) -> dict:
+        raw = self._require_payload_type(
+            self._request("PUT", f"/cards/{card_id}", data={"closed": "true"}),
+            dict,
+            "archived card",
+        )
+        return self._to_card(raw)

@@ -146,6 +146,9 @@ nikdy se neodhaduje.
 Zdrojová Inbox karta je neměnný vstup intake: PM nesmí měnit její název,
 popis, štítky ani seznam. Každý podúkol se zapisuje jako samostatná karta do
 `Připraveno`; zdrojové ID a hash se uchovávají pouze v PM-DATA cílové karty.
+Po úspěšném zápisu celého batchu PM zdrojovou kartu archivuje, aby nezůstala
+v Inboxu a nemohla být znovu plánována; při nedokončeném nebo chybovém splitu
+se zdroj nearchivuje.
 Při retry se již zapsané cíle identifikují jednoznačně podle zdrojového ID a
 `subtask_index`, nikdy podle podobnosti názvů, takže částečně dokončený split
 nevytvoří duplicity.

@@ -428,7 +428,13 @@ def process_inbox(
             ),
             default=0,
         )
-        return bool(expected_count and len(known_indices) >= expected_count)
+        complete = bool(expected_count and len(known_indices) >= expected_count)
+        if complete and persist_project is not None:
+            # A previous tick may have persisted every target but failed while
+            # closing the source. Retry that close before filtering the source
+            # from this tick's candidates.
+            client.archive_card(source_id)
+        return complete and persist_project is not None
 
     # A source remains visible in Inbox after preparation by design. Do not
     # let that immutable source starve another Inbox card on the next tick.
@@ -631,8 +637,8 @@ def process_inbox(
                     project_paths[preparation.project_key] = preparation.project_path
                 Path(preparation.project_path).mkdir(parents=True, exist_ok=True)
             # Persist every split child as an independent Připraveno card.
-            # The source card is immutable input and remains in Inbox, while a
-            # retry recognizes already durable children by source/index.
+            # The source content is immutable; archive it only after every
+            # target is durable. A failed split remains retryable by source/index.
             execution_order = task_execution_order(preparation.tasks)
             ordered_tasks = [
                 (index, preparation.tasks[index]) for index in execution_order
@@ -741,6 +747,8 @@ def process_inbox(
                 for index in range(len(preparation.tasks))
                 if index in prepared_projects
             )
+            if persist_project is not None:
+                client.archive_card(card["id"])
             continue
 
         project = apply_classification(card, result, projects_by_name, default_priority=default_priority)
@@ -756,6 +764,8 @@ def process_inbox(
         # transient failure of the latter write into permanent input loss.
         if persist_project is not None:
             persist_project(project)
+            if result.is_new_project:
+                client.archive_card(card["id"])
             if not result.is_new_project:
                 # The source item is itself processed work. Preserve it as a
                 # durable, identity-bound receipt in Done/Hotovo.

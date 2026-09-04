@@ -117,7 +117,8 @@ def test_process_inbox_allows_multiple_tasks_for_ordinary_splittable_source():
     )
 
     assert changed != []
-    assert client.get_card(source["id"])["list_id"] == name_to_id["Inbox"]
+    assert client.get_card(source["id"])["closed"] is True
+    assert client.list_cards(name_to_id["Inbox"]) == []
     assert len(client.list_cards(name_to_id["New"])) == 2
     assert all(project.trello_card_id != source["id"] for project in changed)
 
@@ -152,6 +153,7 @@ def test_process_inbox_keeps_source_card_immutable_while_preparing_children():
         "list_id": stored["list_id"],
         "labels": [label["name"] for label in stored["labels"]],
     } == source_before
+    assert stored["closed"] is True
     assert changed
     assert all(project.trello_card_id != source["id"] for project in changed)
     assert all(
@@ -198,7 +200,8 @@ def test_process_inbox_fails_closed_when_marked_indivisible_source_returns_multi
     )
 
     assert changed == []
-    assert client.get_card(source["id"])["list_id"] == name_to_id["Inbox"]
+    assert client.get_card(source["id"])["closed"] is False
+    assert [card["id"] for card in client.list_cards(name_to_id["Inbox"])] == [source["id"]]
 
 
 def test_ai_planner_cannot_raise_normal_feature_above_source_priority():
@@ -504,7 +507,8 @@ def test_process_inbox_creates_multiple_ready_tasks_from_one_source_card():
     assert all(project.status == ProjectStatus.NEW for project in changed)
     assert all(project.trello_card_id for project in changed)
     assert all(project.trello_card_id != source["id"] for project in changed)
-    assert [card["id"] for card in client.list_cards(name_to_id["Inbox"])] == [source["id"]]
+    assert client.get_card(source["id"])["closed"] is True
+    assert client.list_cards(name_to_id["Inbox"]) == []
     assert len(client.list_cards(name_to_id["New"])) == 3
     for project in changed:
         metadata = project.extra_data["inbox_preparation"]
@@ -594,6 +598,7 @@ def test_split_retry_keeps_source_until_children_persist_and_does_not_duplicate_
             project_paths={"Station Agent": "D:/station-agent"},
         )
 
+    assert client.get_card(source["id"])["closed"] is False
     assert [card["id"] for card in client.list_cards(name_to_id["Inbox"])] == [source["id"]]
     partial = fetch_all_projects(client, exclude_list_names=("Inbox",))
     assert len(partial) == 1
@@ -610,7 +615,8 @@ def test_split_retry_keeps_source_until_children_persist_and_does_not_duplicate_
     )
 
     assert len({project.trello_card_id for project in changed}) == 3
-    assert [card["id"] for card in client.list_cards(name_to_id["Inbox"])] == [source["id"]]
+    assert client.get_card(source["id"])["closed"] is True
+    assert client.list_cards(name_to_id["Inbox"]) == []
     assert len(client.list_cards(name_to_id["New"])) == 3
 
 
@@ -735,7 +741,8 @@ def test_process_inbox_admits_only_highest_priority_source_card_per_tick():
 
     assert changed
     assert all(project.trello_card_id != high["id"] for project in changed)
-    assert [card["id"] for card in client.list_cards(name_to_id["Inbox"])] == [high["id"], low["id"]]
+    assert client.get_card(high["id"])["closed"] is True
+    assert [card["id"] for card in client.list_cards(name_to_id["Inbox"])] == [low["id"]]
     assert all(
         project.extra_data["inbox_preparation"]["source_card_id"] == high["id"]
         for project in changed
@@ -760,7 +767,8 @@ def test_persisted_new_inbox_project_reuses_created_card_on_next_sync():
     project = changed[0]
     created_card_id = project.trello_card_id
     assert created_card_id != inbox_card["id"]
-    assert [card["id"] for card in client.list_cards(name_to_id["Inbox"])] == [inbox_card["id"]]
+    assert client.get_card(inbox_card["id"])["closed"] is True
+    assert client.list_cards(name_to_id["Inbox"]) == []
 
     project.last_output = "first autonomous result"
     sync_project_to_trello(client, project)
@@ -792,7 +800,8 @@ def test_unlabelled_new_inbox_idea_is_prepared_as_isolated_prioritized_project(t
     )
 
     assert len(changed) >= 1
-    assert [card["id"] for card in client.list_cards(name_to_id["Inbox"])] == [source["id"]]
+    assert client.get_card(source["id"])["closed"] is True
+    assert client.list_cards(name_to_id["Inbox"]) == []
     ready_cards = client.list_cards(name_to_id["New"])
     assert len(ready_cards) == len(changed)
     assert all(card["name"].startswith("P") for card in ready_cards)
@@ -986,6 +995,7 @@ def test_revised_inbox_source_updates_existing_project_without_new_work_card():
     # Simulate a source card that remained in the board Inbox until the
     # previous write completed; the ID is stable while its content changes.
     client.update_card(revised["id"], list_id=name_to_id["Inbox"])
+    client._cards[revised["id"]]["closed"] = False
     process_inbox(
         client,
         projects,
@@ -1052,5 +1062,6 @@ def test_process_inbox_uses_planner_for_new_work_on_existing_project():
     assert changed[0].status == ProjectStatus.NEW
     assert changed[0].trello_card_id != source["id"]
     assert changed[0].extra_data["inbox_preparation"]["source_card_id"] == source["id"]
-    assert [card["id"] for card in client.list_cards(name_to_id["Inbox"])] == [source["id"]]
+    assert client.get_card(source["id"])["closed"] is True
+    assert client.list_cards(name_to_id["Inbox"]) == []
     assert client.get_card(changed[0].trello_card_id)["list_id"] == name_to_id["New"]
