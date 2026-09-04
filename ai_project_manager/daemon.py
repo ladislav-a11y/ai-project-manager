@@ -20,7 +20,7 @@ from typing import Callable, Optional, Sequence
 
 from .guard import OrchestratorGuard
 from .artifact_cleanup import cleanup_test_artifacts
-from .inbox import InboxPlannerFn, process_inbox
+from .inbox import InboxPlannerFn, archive_completed_inbox_sources, process_inbox
 from .lock import ProjectLockManager
 from .providers import ProviderRegistry, ProviderState
 from .provider_state import save_provider_state
@@ -533,6 +533,15 @@ def load_projects_and_inbox(
 
     if not process_inbox_enabled:
         return projects
+
+    archived_sources = archive_completed_inbox_sources(
+        client, projects, inbox_list_name=inbox_list_name
+    )
+    if archived_sources:
+        logger.info(
+            "Inbox intake reconciliation archived completed sources: %s",
+            ", ".join(archived_sources),
+        )
 
     def persist_inbox_project(project):
         card = sync_project_to_trello(client, project)

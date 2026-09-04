@@ -11,6 +11,7 @@ from ai_project_manager.daemon import (
     run_loop,
     run_tick,
 )
+from ai_project_manager.inbox import inbox_content_hash
 from ai_project_manager.recovery import default_backoff
 from ai_project_manager.lock import ProjectLockManager
 from ai_project_manager.models import DoDItem, ProjectRecord, ProjectStatus
@@ -448,6 +449,55 @@ def test_run_tick_ends_before_dispatch_when_inbox_intake_prepares_new_work():
     assert calls == []
     new_cards = client.list_cards(name_to_id["New"])
     assert len(new_cards) == 2
+
+
+def test_inbox_reconciliation_archives_complete_source_before_phase_gate():
+    client = InMemoryTrelloClient()
+    _, name_to_id = build_list_maps(client)
+    source = client.create_card(
+        name_to_id["Inbox"],
+        "Completed intake source",
+        desc="The prepared target already exists.",
+    )
+    target = ProjectRecord(
+        name="P5 — Completed intake target",
+        priority=5,
+        status=ProjectStatus.NEW,
+        main_task="Prepared implementation target",
+        project_key="AI Project Manager",
+        extra_data={
+            "inbox_preparation": {
+                "source_card_id": source["id"],
+                "subtask_index": 0,
+                "subtask_count": 1,
+            },
+            "inbox_receipts": [
+                {
+                    "source_card_id": source["id"],
+                    "source_card_url": source["url"],
+                    "content_sha256": inbox_content_hash(source),
+                    "source_system": "trello_inbox",
+                }
+            ],
+        },
+    )
+    sync_project_to_trello(client, target)
+    planner_calls = []
+
+    projects = load_projects_and_inbox(
+        client,
+        inbox_list_name="Inbox",
+        process_inbox_enabled=True,
+        planner=lambda *_: planner_calls.append(True),
+    )
+
+    assert planner_calls == []
+    assert client.get_card(source["id"])["closed"] is True
+    assert client.list_cards(name_to_id["Inbox"]) == []
+    assert any(
+        project.extra_data.get("inbox_preparation", {}).get("source_card_id") == source["id"]
+        for project in projects
+    )
 
 
 def test_run_tick_ignores_inbox_by_default():

@@ -370,6 +370,52 @@ def _build_inbox_receipt_card(
     return receipt
 
 
+def archive_completed_inbox_sources(client, projects: list[ProjectRecord], inbox_list_name: str = "Inbox") -> list[str]:
+    """Archive sources whose complete prepared batch is already durable.
+
+    This reconciliation is intentionally deterministic and provider-free. It
+    closes the gap where a previous tick finished materializing targets but a
+    later tick skips AI intake because governed work already has phase
+    precedence.
+    """
+    from .trello_sync import build_list_maps
+
+    _, name_to_id = build_list_maps(client)
+    inbox_list_id = name_to_id.get(inbox_list_name)
+    if inbox_list_id is None:
+        return []
+
+    project_records = list(projects)
+    archived: list[str] = []
+    for card in client.list_cards(inbox_list_id):
+        source_id = str(card.get("id") or "")
+        receipt = find_inbox_receipt(project_records, card)
+        if receipt is None or receipt.matched_by != "source_card_id":
+            continue
+        preparations = [
+            preparation
+            for project in project_records
+            for preparation in [(project.extra_data or {}).get("inbox_preparation", {})]
+            if (
+                isinstance(preparation, dict)
+                and preparation.get("source_card_id") == source_id
+            )
+        ]
+        expected_count = max(
+            (int(preparation.get("subtask_count", 0)) for preparation in preparations),
+            default=0,
+        )
+        known_indices = {
+            int(preparation.get("subtask_index"))
+            for preparation in preparations
+            if isinstance(preparation.get("subtask_index"), int)
+        }
+        if expected_count and len(known_indices) >= expected_count:
+            client.archive_card(source_id)
+            archived.append(source_id)
+    return archived
+
+
 def process_inbox(
     client,
     projects: list[ProjectRecord],
