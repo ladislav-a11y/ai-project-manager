@@ -767,6 +767,25 @@ def run_tick(
         if project_paths is not None:
             _fail_closed_invalid_project_identities(client, projects, project_paths)
 
+        if prepared_this_tick_ids:
+            # Explicit tick boundary: a tick that just admitted new Inbox
+            # work into Připraveno must end here, before audit selection,
+            # scheduler selection, and dispatch even look at the board. This
+            # keeps the freshly prepared card visible to a human for a full
+            # tick and stops unrelated already-schedulable work (e.g. an
+            # existing NEW/READY project, which is not gated by
+            # ``intake_gate_statuses`` above) from being audited or
+            # dispatched in the very same tick fresh intake happened. A tick
+            # where intake prepared nothing new falls through unchanged.
+            return RunOutcome(
+                ran=False,
+                reason=(
+                    "Inbox intake připravil novou práci do Připraveno; tick končí "
+                    "před audit/scheduler selection a dispatchem: "
+                    + ", ".join(sorted(str(cid) for cid in prepared_this_tick_ids))
+                ),
+            )
+
         resumed_provider_waits = set(_resume_due_provider_waits(
             client,
             projects,

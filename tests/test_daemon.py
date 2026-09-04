@@ -404,6 +404,52 @@ def test_run_tick_keeps_new_inbox_task_in_ready_until_next_tick():
     assert {label["name"] for label in ready_cards[0]["labels"]} >= {"P3", "AI Project Manager"}
 
 
+def test_run_tick_ends_before_dispatch_when_inbox_intake_prepares_new_work():
+    # ``intake_gate_statuses`` in load_projects_and_inbox only gates intake
+    # while a card is READY/IN_PROGRESS/TESTING/PAUSED/BLOCKED/ERROR - a
+    # pre-existing NEW project does not gate it, so intake still runs and
+    # admits a fresh Inbox card in the same tick. The freshly prepared
+    # project is already excluded from dispatch, but that alone does not
+    # stop this pre-existing, unrelated NEW project from being picked up by
+    # the very same tick's scheduler/dispatch - the tick must end first.
+    client = InMemoryTrelloClient()
+    _, name_to_id = build_list_maps(client)
+    existing = ProjectRecord(
+        name="Existing widget",
+        priority=2,
+        status=ProjectStatus.NEW,
+        main_task="Unrelated existing work already queued before this tick",
+    )
+    sync_project_to_trello(client, existing)
+    client.create_card(
+        name_to_id["Inbox"],
+        "New dashboard feature",
+        desc="Přidat novou funkci dashboardu.",
+        labels=["AI Project Manager"],
+    )
+
+    registry = ProviderRegistry()
+    registry.mark_available("claude")
+    calls = []
+
+    def run_fn(project, provider):
+        calls.append(project.name)
+        return {"status": "in_progress"}
+
+    outcome = run_tick(
+        client,
+        registry,
+        run_fn,
+        default_providers=["claude"],
+        process_inbox_enabled=True,
+    )
+
+    assert outcome.ran is False
+    assert calls == []
+    new_cards = client.list_cards(name_to_id["New"])
+    assert len(new_cards) == 2
+
+
 def test_run_tick_ignores_inbox_by_default():
     client = InMemoryTrelloClient()
     _, name_to_id = build_list_maps(client)
