@@ -779,8 +779,11 @@ def project_from_card(card: dict, list_id_to_name: dict[str, str]) -> ProjectRec
     # The physical workflow location is authoritative, so reject a card
     # before it can be selected from Ready/In Progress (or incorrectly sent
     # through the audit path) when its text assigns controller-only checks to
-    # an implementation agent.
-    if status in {ProjectStatus.READY, ProjectStatus.IN_PROGRESS, ProjectStatus.TESTING}:
+    # an implementation agent. NEW is included because it physically lands in
+    # the same Připraveno list as READY (see STATUS_TO_LIST_CANDIDATES) - a
+    # freshly AI-planned Inbox card must fail closed before it is readable
+    # from that list, not only after its status is later renamed to READY.
+    if status in {ProjectStatus.NEW, ProjectStatus.READY, ProjectStatus.IN_PROGRESS, ProjectStatus.TESTING}:
         routing_issues = (
             dispatch_contract_issues(dod)
             if status == ProjectStatus.IN_PROGRESS
@@ -916,7 +919,12 @@ def card_updates_from_project(project: ProjectRecord, list_name_to_id: dict[str,
         "google_drive_ref": project.google_drive_ref.to_dict() if project.google_drive_ref else None,
         "provider": project.provider,
     })
-    if project.status in {ProjectStatus.READY, ProjectStatus.IN_PROGRESS, ProjectStatus.TESTING}:
+    if project.status in {ProjectStatus.NEW, ProjectStatus.READY, ProjectStatus.IN_PROGRESS, ProjectStatus.TESTING}:
+        # NEW is included alongside READY because both are written onto the
+        # physical Připraveno list (see STATUS_TO_LIST_CANDIDATES): an
+        # AI-planned Inbox card must be rejected here, before its card is
+        # created or moved into Připraveno, not only once it is later
+        # observed back as READY.
         routing_issues = (
             dispatch_contract_issues(project.dod)
             if project.status == ProjectStatus.IN_PROGRESS

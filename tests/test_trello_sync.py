@@ -476,6 +476,30 @@ def test_lifecycle_write_rejects_controller_verification_as_implementation_work(
     assert client.list_cards(client.get_list_id_by_name("Ready")) == []
 
 
+def test_lifecycle_write_rejects_unsafe_planner_dod_before_new_card_reaches_ready():
+    """A freshly AI-planned Inbox card is status=NEW but is physically
+    written onto the same Připraveno list as READY (see
+    STATUS_TO_LIST_CANDIDATES). The same fail-closed DoD routing check that
+    protects READY must reject it here too, before create_card ever runs -
+    otherwise an unsafe planner output could reach Připraveno unchecked."""
+    client = InMemoryTrelloClient()
+    project = ProjectRecord(
+        name="Inbox — unsafe planner output",
+        status=ProjectStatus.NEW,
+        dod=[DoDItem(
+            text=(
+                "ai-orchestrator musí provést syntaxe -> cílené testy -> "
+                "git --no-pager diff -> git --no-pager diff --check -> plný test suite"
+            )
+        )],
+    )
+
+    with pytest.raises(CardContractError, match="unsafe DoD routing"):
+        sync_project_to_trello(client, project)
+
+    assert client.list_cards(client.get_list_id_by_name("Ready")) == []
+
+
 def test_maintenance_migrates_legacy_inbox_audit_text_and_priority_metadata():
     client = InMemoryTrelloClient()
     ready = client.get_list_id_by_name("Ready")
