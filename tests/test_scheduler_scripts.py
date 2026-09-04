@@ -81,10 +81,7 @@ def test_runner_rejects_retired_providers_via_override() -> None:
         "throw \"Gemini je z PM vy$([char]0x0159)azen; "
         "pou$([char]0x017E)ijte jin$([char]0x00E9)ho providera.\""
     ) in source
-    assert (
-        "throw \"Hermes je z PM vy$([char]0x0159)azen; "
-        "pou$([char]0x017E)ijte jin$([char]0x00E9)ho providera.\""
-    ) in source
+    assert 'throw "Hermes provider is removed; use a supported provider."' in source
 
 
 def test_runner_preserves_configured_czech_trello_names_as_utf8() -> None:

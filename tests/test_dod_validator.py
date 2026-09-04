@@ -44,7 +44,7 @@ def test_dod_commit_validation_fails_when_head_remained_unchanged():
     run_git = fake_git({"rev-parse": "4f9c001"})
     res = validate_dod_item(
         0,
-        "Git commit po Hermes integraci",
+        "Git commit po integraci providera",
         repo_path="/fake/repo",
         initial_head="4f9c001",
         evidence="proveden commit",
@@ -92,7 +92,7 @@ def test_dod_commit_validation_passes_when_head_changed():
     run_git = fake_git({"rev-parse": "9a8b7c6"})
     res = validate_dod_item(
         0,
-        "Git commit po Hermes integraci",
+        "Git commit po integraci providera",
         repo_path="/fake/repo",
         initial_head="4f9c001",
         evidence="vytvořen nový commit 9a8b7c6",
@@ -169,24 +169,24 @@ def test_dod_fail_closed_on_empty_or_trivial_evidence():
 
 def test_reproduced_p5_combined_dod_rejection():
     # Exact reproduction of P5 failure:
-    # DoD: "AO: cleanup, commit a záloha po Hermes integraci"
+    # DoD: "AO: cleanup, commit a záloha po integraci providera"
     # Repo dirty, HEAD 4f9c001 (unchanged), remote empty
     run_git = fake_git({
         "rev-parse": "4f9c001",
-        "status": "M ai_orchestrator/hermes.py\n?? scratch.py",
-        "diff": "diff --git a/ai_orchestrator/hermes.py",
+        "status": "M ai_orchestrator/provider_adapter.py\n?? scratch.py",
+        "diff": "diff --git a/ai_orchestrator/provider_adapter.py",
         "remote": "",
     })
     project = ProjectRecord(
-        name="P5 — AO: cleanup, commit a záloha po Hermes integraci",
-        dod=[DoDItem(text="AO: cleanup, commit a záloha po Hermes integraci", checked=False)],
+        name="P5 — AO: cleanup, commit a záloha po integraci providera",
+        dod=[DoDItem(text="AO: cleanup, commit a záloha po integraci providera", checked=False)],
     )
 
     report = validate_project_dod(
         project,
         repo_path="/fake/ai-orchestrator",
         initial_head="4f9c001",
-        evidence="Hermes cleanup a záloha hotova",
+        evidence="cleanup a záloha hotova",
         run_git=run_git,
     )
 

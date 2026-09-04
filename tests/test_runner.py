@@ -7,7 +7,6 @@ from ai_project_manager.models import DoDItem, ProjectRecord, ProjectStatus
 from ai_project_manager.providers import ProviderRegistry
 from ai_project_manager.runner import (
     _capture_live_trello_readback,
-    _model_selection_reason,
     run_once,
     run_once_audit,
 )
@@ -522,8 +521,7 @@ def test_run_once_slack_explains_actual_model_after_provider_failover(monkeypatc
     project = ProjectRecord(name="Demo", priority=3, status=ProjectStatus.READY)
     client = make_client_with_project(project)
     registry = ProviderRegistry()
-    registry.mark_available("hermes")
-    registry.configure_models("hermes", ["upstage/solar-pro4:free"])
+    registry.mark_available("antigravity")
 
     outcome = run_once(
         client,
@@ -533,51 +531,37 @@ def test_run_once_slack_explains_actual_model_after_provider_failover(monkeypatc
             "status": "done",
             "active_provider": "codex",
             "active_model": "gpt-5.6-luna",
-            "provider_sequence": ["hermes", "codex"],
+            "provider_sequence": ["antigravity", "codex"],
         },
-        default_providers=["hermes", "codex"],
+        default_providers=["antigravity", "codex"],
     )
 
     assert outcome.ran is True
     assert len(calls) == 2
     assert "codex | model: gpt-5.6-luna" in calls[1]
-    assert "provider codex byl použit po failoveru z hermes" in calls[1]
+    assert "provider codex byl použit po failoveru z antigravity" in calls[1]
     assert "model gpt-5.6-luna je pro implementaci skutečně použitý model providera" in calls[1]
-    assert "Hermes Nous-only kontraktem" not in calls[1]
     assert project.extra_data["provider_selection"]["provider_reason"] in calls[1]
 
 
-def test_run_once_does_not_report_configured_model_for_provider_without_model_selection():
+def test_run_once_does_not_report_unconfirmed_configured_model():
     project = ProjectRecord(name="Demo", priority=3, status=ProjectStatus.READY)
     client = make_client_with_project(project)
     registry = ProviderRegistry()
-    registry.mark_available("hermes")
-    registry.configure_models("hermes", ["must-not-be-forwarded"])
+    registry.mark_available("antigravity")
+    registry.configure_models("antigravity", ["must-not-be-forwarded"])
 
     outcome = run_once(
         client,
         [project],
         registry,
         lambda _project, _provider: {"status": "done"},
-        default_providers=["hermes"],
+        default_providers=["antigravity"],
     )
 
     assert outcome.ran is True
-    assert project.extra_data["provider_selection"]["model"] == "upstage/solar-pro4:free"
+    assert project.extra_data["provider_selection"]["model"] is None
     assert "must-not-be-forwarded" not in project.extra_data["provider_selection"]["provider_reason"]
-
-
-def test_hermes_model_reason_explicitly_identifies_nous_free_model_for_all_task_types():
-    registry = ProviderRegistry()
-
-    for task_type, label in (("implementation", "implementaci"), ("audit", "audit")):
-        reason = _model_selection_reason("hermes", None, registry, task_type)
-
-        assert f"pro {label}" in reason
-        assert "Hermes Nous free model" in reason
-        assert "upstage/solar-pro4:free" in reason
-        assert "platí stejně pro implementaci i audit" in reason
-        assert "model nevybírá" not in reason
 
 
 def test_run_once_audit_is_the_only_path_to_hotovo():
@@ -743,7 +727,7 @@ def test_run_once_audit_records_provider_capability_limit_for_plan_without_verdi
     )
     client = make_client_with_project(project)
     registry = ProviderRegistry()
-    registry.mark_available("hermes")
+    registry.mark_available("antigravity")
 
     outcome = run_once_audit(
         client,
@@ -754,12 +738,12 @@ def test_run_once_audit_records_provider_capability_limit_for_plan_without_verdi
             "reason": "needs verification",
             "evidence": "pending audit verdict; no live verification was performed",
         },
-        default_providers=["hermes"],
+        default_providers=["antigravity"],
     )
 
     assert outcome.ran is True
     assert registry.is_capability_limited(
-        "hermes", "audit:station agent:propagation a scoring"
+        "antigravity", "audit:station agent:propagation a scoring"
     )
 
 

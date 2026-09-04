@@ -127,9 +127,9 @@ def test_save_then_load_round_trips_available_state(tmp_path):
 def test_save_then_load_round_trips_capability_limits(tmp_path):
     path = tmp_path / "state.json"
     registry = ProviderRegistry()
-    registry.mark_available("hermes")
+    registry.mark_available("antigravity")
     registry.mark_capability_limited(
-        "hermes",
+        "antigravity",
         "audit:station agent:propagation a scoring",
         "audit plan without evidence",
     )
@@ -139,7 +139,7 @@ def test_save_then_load_round_trips_capability_limits(tmp_path):
     reloaded = ProviderRegistry()
     load_provider_state(path, reloaded)
 
-    status = reloaded.get_status("hermes")
+    status = reloaded.get_status("antigravity")
     assert status.capability_limits["audit:station agent:propagation a scoring"]["reason"] == (
         "audit plan without evidence"
     )

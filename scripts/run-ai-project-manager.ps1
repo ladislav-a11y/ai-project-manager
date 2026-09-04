@@ -112,18 +112,15 @@ try {
     $env:AI_PM_ENABLE_INBOX = '1'
     # Ordered failover policy. The PM provider names intentionally remain
     # stable; ``claude`` maps to claude-code. Gemini was retired from PM
-    # after its successful audit migration, and Hermes was retired after
-    # live use showed it could not actually be used as a PM provider (see
-    # PM_FAILOVER_PROVIDER_ORDER/AUTO_PROVIDER_ORDER in
-    # ai_project_manager/orchestrator_runner.py and scheduler.py). Keep the
-    # canonical AO order unchanged; PM must not register or select either.
+    # after its successful audit migration. Keep the provider list explicit;
+    # retired providers must not be registered or selected.
     $env:AI_PM_PROVIDERS = 'antigravity,claude,codex'
     if ($ProviderOverride.Trim()) {
         if ($ProviderOverride.Trim().ToLowerInvariant() -eq 'gemini') {
             throw "Gemini je z PM vy$([char]0x0159)azen; pou$([char]0x017E)ijte jin$([char]0x00E9)ho providera."
         }
         if ($ProviderOverride.Trim().ToLowerInvariant() -eq 'hermes') {
-            throw "Hermes je z PM vy$([char]0x0159)azen; pou$([char]0x017E)ijte jin$([char]0x00E9)ho providera."
+            throw "Hermes provider is removed; use a supported provider."
         }
         $env:AI_PM_PROVIDERS = $ProviderOverride.Trim()
     }

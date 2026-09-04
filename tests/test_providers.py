@@ -78,25 +78,10 @@ def test_model_for_task_rejects_unknown_task_type(clock):
         registry.model_for_task("codex", "some-other-task")
 
 
-def test_supports_model_selection_is_false_only_for_hermes():
-    assert supports_model_selection("hermes") is False
-    assert supports_model_selection("Hermes") is False
-    assert supports_model_selection("HERMES") is False
+def test_supported_providers_use_generic_model_selection_policy():
     assert supports_model_selection("antigravity") is True
     assert supports_model_selection("claude") is True
     assert supports_model_selection("codex") is True
-
-
-def test_hermes_is_excluded_from_task_model_selection_even_when_configured(clock):
-    registry = ProviderRegistry(clock=clock)
-    registry.configure_models("hermes", ["must-not-be-selected", "also-not-selected"])
-
-    for task_type in (TASK_INBOX_PLANNING, TASK_IMPLEMENTATION, TASK_AUDIT):
-        assert registry.model_for_task("hermes", task_type) is None
-
-    # The catalog remains intact for diagnostics/backwards-compatible state;
-    # it simply must not participate in the new per-task selection policy.
-    assert registry.selected_model("hermes") == "must-not-be-selected"
 
 
 def test_mark_limited_sets_state_and_retry_after(clock):

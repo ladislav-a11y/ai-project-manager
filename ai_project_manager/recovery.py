@@ -107,9 +107,8 @@ _PROVIDER_PROTOCOL_ERROR_PATTERNS = re.compile(
     r"protocol error|unexpected eof|econnreset|http 5\d\d|server error|"
     r"temporarily unavailable|service unavailable|internal error|"
     r"exit (?:code|kod) \d+|neúplný výstup|failed to load models cache|"
-    r"no matching outbox result|nous-only|hermes.*(?:porušil|failed|error|"
-    r"nevrátil.*json|json.*(?:objekt|kontrakt))|"
-    r"hermes.*(?:stream|truncated)|usage.*(?:provider|model).*none",
+    r"no matching outbox result|usage.*(?:provider|model).*none|"
+    r"nevrátil.*json|json.*(?:objekt|kontrakt)",
     re.IGNORECASE,
 )
 

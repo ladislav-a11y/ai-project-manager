@@ -32,14 +32,13 @@ from .inbox_preparation import (
 logger = logging.getLogger("ai_project_manager")
 
 # Inbox preparation is a planning/classification phase, not worker work.
-# Keep this policy executable even if an AI planner is added later: Hermes is
-# deliberately reserved for already-prepared atomic cards. Gemini is retired
-# from PM entirely after its migration/audit outcome.
+# Keep retired provider names fail-closed here so stale configuration can never
+# re-enable them through an Inbox-planning alias.
 INBOX_PLANNING_FORBIDDEN_PROVIDERS = frozenset({"hermes", "gemini"})
 
 
 def inbox_planner_providers(providers) -> tuple[str, ...]:
-    """Return providers allowed to plan Inbox input, never including Hermes."""
+    """Return providers allowed to plan Inbox input."""
     return tuple(
         provider for provider in providers
         if str(provider).strip().casefold() not in INBOX_PLANNING_FORBIDDEN_PROVIDERS

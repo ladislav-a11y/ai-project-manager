@@ -586,7 +586,7 @@ def load_projects_and_inbox(
     if changed:
         # Emit one compact Slack event per source card. The intake provider is
         # persisted in each child Card Contract so this event names the AI
-        # that actually planned the human request; Hermes must never appear.
+        # that actually planned the human request; retired providers must never appear.
         by_source: dict[str, list] = {}
         for project in changed:
             metadata = (project.extra_data or {}).get("inbox_preparation", {})

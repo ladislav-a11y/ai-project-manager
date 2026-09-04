@@ -120,7 +120,7 @@ def test_main_once_runs_a_full_tick_through_the_real_entrypoint_wiring(monkeypat
     assert reloaded.provider == "claude"
 
 
-def test_main_auto_provider_alias_selects_hermes_without_persisting_literal_auto(monkeypatch):
+def test_main_auto_provider_alias_selects_first_supported_provider(monkeypatch):
     _set_trello_env(monkeypatch)
     monkeypatch.setenv("AI_PM_PROVIDERS", "auto")
 

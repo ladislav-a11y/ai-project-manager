@@ -183,6 +183,11 @@ Pokud běží PM tick, persistentní PM nebo jeho ai-orchestrator child proces,
 nesmí se současně opravovat kód, workflow pravidla ani runtime konfigurace.
 Nejprve se běh bezpečně ukončí a ověří se, že PM/AO již neběží; teprve potom
 je dovolena oprava. Po změně se PM spouští pouze řízeným `--once` tickem.
+Při ověřování PM/AO se vždy používá skutečný interpreter cílového repozitáře
+`<repo>\.venv\Scripts\python.exe`, pokud existuje, a jeho `Scripts` adresář je
+první v PATH pro všechny testovací subprocessy. Systémový `python` nebo
+WindowsApps alias se nesmí použít bez ověření jeho skutečné absolutní cesty;
+jinak může selhání prostředí vypadat jako chyba implementace.
 AO musí v outboxu vracet `provider_statuses` pro všechny providery v daném
 failover pořadí. Každý `LIMITED` záznam nese absolutní UTC `retry_at`; PM
 zapíše všechny tyto termíny do persistentního stavu a do PM-DATA/Trella
@@ -246,22 +251,13 @@ ověřených kartách v `Hotovo` jsou závazným vývojovým podkladem pro navaz
 implementaci a diagnostiku; nesmějí však zpětně měnit terminální stav ani
 nahradit aktuální auditní důkaz.
 
-## Hermes — vyřazen z produkčního PM routingu
+## Hermes — odstraněn
 
-Hermes byl po ověření v produkčním provozu vyřazen z PM provider poolu
-(`AI_PM_PROVIDERS` v `scripts/run-ai-project-manager.ps1`,
-`PM_FAILOVER_PROVIDER_ORDER` v `orchestrator_runner.py`, `AUTO_PROVIDER_ORDER`
-v `scheduler.py`), protože se ukázalo, že jej PM nemůže spolehlivě použít jako
-produkčního providera - stejně jako byl dříve vyřazen Gemini (viz sekce
-„Ověřená blokace Gemini" výše). PM proto Hermese už nikdy nevybírá ani
-neregistruje, v žádné fázi (Inbox planning, implementace, audit) a ani přes
-explicitní `-ProviderOverride`. Historická kvalifikační pravidla specifická
-pro Hermes (Nous-only kontrakt `upstage/solar-pro4:free`, `--safe-mode`,
-`HERMES_MAX_ITERATIONS=20`, tvrdý 180s timeout, izolovaný `TERMINAL_CWD`)
-zůstávají popsaná v `ai-orchestrator/AGENTS.md` (pravidlo 11e) pro případ, že
-by ai-orchestrator použil Hermese mimo PM; samostatný PoC vedle PM/
-orchestrátoru (`ai-orchestrator/poc/hermes_agent`) tímto vyřazením není
-dotčen.
+Hermes byl z projektu odstraněn úplně: není podporovaným providerem AI Project
+Manageru ani ai-orchestrátoru, není v žádné fázi routingu a jeho PoC, adapter,
+testy i konfigurační blok už nejsou součástí repozitáře. Historické záznamy o
+Hermesu zůstávají pouze jako evidence minulých rozhodnutí a nejsou provozní
+instrukcí.
 
 Inbox planning/intake je samostatná AI fáze před worker dispatch. Produkční PM
 musí lidský vstup nejprve předat prvnímu dostupnému provideru z pořadí

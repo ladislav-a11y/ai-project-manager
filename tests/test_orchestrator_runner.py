@@ -510,12 +510,12 @@ def test_audit_and_implementation_delegate_model_selection_to_provider(tmp_path)
     assert "--model" not in audit_seen["command"]
 
 
-def test_production_audit_starts_with_pm_selected_provider_and_skips_capability_limited_hermes(tmp_path):
+def test_production_audit_starts_with_pm_selected_provider_and_skips_capability_limited_provider(tmp_path):
     registry = ProviderRegistry()
-    for name in ("hermes", "antigravity", "claude", "codex"):
+    for name in ("antigravity", "claude", "codex"):
         registry.mark_available(name)
     registry.mark_capability_limited(
-        "hermes", "audit:station agent:propagation a scoring", "review plan without verdict"
+        "antigravity", "audit:station agent:propagation a scoring", "review plan without verdict"
     )
     project = ProjectRecord(
         name="Station audit", project_key="Station Agent", status=ProjectStatus.TESTING,
@@ -548,7 +548,7 @@ def test_production_audit_starts_with_pm_selected_provider_and_skips_capability_
     assert result["verdict"] == "accepted"
     assert seen["command"][seen["command"].index("--agent") + 1] == "auto"
     assert seen["command"][seen["command"].index("--provider-order") + 1] == (
-        "codex,antigravity,claude-code"
+        "codex,claude-code"
     )
 
 
@@ -869,14 +869,14 @@ def test_run_fn_invokes_real_cli_with_project_goal_spec_and_agent(tmp_path):
 def test_production_run_fn_dispatches_auto_for_same_tick_provider_failover(tmp_path):
     seen = {}
     registry = ProviderRegistry()
-    for name in ("hermes", "antigravity", "claude", "codex"):
+    for name in ("antigravity", "claude", "codex"):
         registry.mark_available(name)
 
     def fake_subprocess_run(command):
         seen["command"] = command
         write_outbox_result(
             tmp_path / "outbox", "Demo",
-            {"status": "in_progress", "checkpoint": {}, "provider_sequence": ["hermes"]},
+            {"status": "in_progress", "checkpoint": {}, "provider_sequence": ["antigravity"]},
             run_id="fixed-run-id",
         )
         return completed()
@@ -890,10 +890,10 @@ def test_production_run_fn_dispatches_auto_for_same_tick_provider_failover(tmp_p
         use_provider_failover=True,
     )
 
-    run_fn(project, "hermes")
+    run_fn(project, "antigravity")
 
     assert seen["command"][seen["command"].index("--agent") + 1] == "auto"
-    assert seen["command"][seen["command"].index("--provider-order") + 1] == "hermes,antigravity,claude-code,codex"
+    assert seen["command"][seen["command"].index("--provider-order") + 1] == "antigravity,claude-code,codex"
     assert "gemini" not in seen["command"][seen["command"].index("--provider-order") + 1]
     assert "--model" not in seen["command"]
 
@@ -901,7 +901,6 @@ def test_production_run_fn_dispatches_auto_for_same_tick_provider_failover(tmp_p
 def test_auto_provider_alias_resolves_to_real_available_failover_order(tmp_path):
     registry = ProviderRegistry()
     registry.mark_available("auto")
-    registry.mark_available("hermes")
     registry.mark_limited("antigravity", timedelta(hours=1))
     registry.mark_available("claude")
     registry.mark_available("codex")
@@ -915,7 +914,7 @@ def test_auto_provider_alias_resolves_to_real_available_failover_order(tmp_path)
         write_outbox_result(
             tmp_path / "outbox",
             "Demo",
-            {"status": "in_progress", "provider_sequence": ["hermes"]},
+            {"status": "in_progress", "provider_sequence": ["claude-code"]},
             run_id="auto-run",
         )
         return completed()
@@ -937,13 +936,12 @@ def test_auto_provider_alias_resolves_to_real_available_failover_order(tmp_path)
     )
 
 
-def test_production_failover_suppresses_pm_selected_model_for_non_hermes_provider(tmp_path):
+def test_production_failover_suppresses_pm_selected_model(tmp_path):
     # Same-tick failover hands the whole provider chain to ai-orchestrator,
     # so a single PM-selected model can never apply across it - this must
-    # hold for every provider, not just Hermes (see the sibling failover
-    # dispatch test above, which asserts the same for the default provider).
+    # A single PM-selected model must never apply across an AO failover chain.
     registry = ProviderRegistry()
-    for name in ("hermes", "antigravity", "claude", "codex"):
+    for name in ("antigravity", "claude", "codex"):
         registry.mark_available(name)
     registry.configure_models("codex", ["gpt-5.6", "gpt-5.4"])
     seen = {}
@@ -973,45 +971,8 @@ def test_production_failover_suppresses_pm_selected_model_for_non_hermes_provide
     assert "--model" not in seen["command"]
 
 
-def test_production_failover_temporarily_gates_failed_hermes(tmp_path):
-    registry = ProviderRegistry()
-    for name in ("hermes", "antigravity", "claude", "codex"):
-        registry.mark_available(name)
-
-    def fake_subprocess_run(command):
-        write_outbox_result(
-            tmp_path / "outbox", "Demo",
-            {
-                "status": "in_progress",
-                "checkpoint": {"completed_dod_indices": []},
-                "active_provider": "codex",
-                "provider_sequence": ["hermes", "antigravity", "claude-code", "codex"],
-                "stop_reason": "pokračování přes codex",
-            },
-            run_id="fixed-run-id",
-        )
-        return completed()
-
-    project = ProjectRecord(
-        name="Demo", status=ProjectStatus.READY,
-        orchestrator_ready_task="Implement feature X",
-    )
-    run_fn, _, _ = make_run_fn(
-        tmp_path, registry, subprocess_run=fake_subprocess_run,
-        use_provider_failover=True,
-    )
-
-    run_fn(project, "hermes")
-
-    status = registry.get_status("hermes")
-    assert status.state == ProviderState.ERROR
-    assert status.retry_after is not None
-    assert "failover" in status.last_error
-
-
 def test_production_failover_excludes_limited_providers_from_next_workflow_step(tmp_path):
     registry = ProviderRegistry()
-    registry.mark_limited("hermes", timedelta(minutes=30))
     registry.mark_available("antigravity")
     registry.mark_limited("claude", timedelta(minutes=30))
     registry.mark_available("codex")
@@ -1040,13 +1001,12 @@ def test_production_failover_excludes_limited_providers_from_next_workflow_step(
 
     order = seen["command"][seen["command"].index("--provider-order") + 1]
     assert order == "antigravity,codex"
-    assert "hermes" not in order
     assert "claude-code" not in order
 
 
 def test_production_waiting_receipt_gates_all_limited_providers_and_preserves_retry_at(tmp_path):
     registry = ProviderRegistry()
-    for name in ("hermes", "antigravity", "claude", "codex"):
+    for name in ("antigravity", "claude", "codex"):
         registry.mark_available(name)
 
     def fake_subprocess_run(command):
@@ -1059,12 +1019,6 @@ def test_production_waiting_receipt_gates_all_limited_providers_and_preserves_re
                 "retry_after_seconds": 30,
                 "active_provider": "codex",
                 "provider_statuses": {
-                    "hermes": {
-                        "state": "LIMITED",
-                        "retry_after_seconds": 3600,
-                        "retry_at": "2026-09-02T12:00:00+00:00",
-                        "reason": "Nous quota",
-                    },
                     "antigravity": {
                         "state": "LIMITED",
                         "retry_after_seconds": 120,
@@ -1098,15 +1052,13 @@ def test_production_waiting_receipt_gates_all_limited_providers_and_preserves_re
         use_provider_failover=True,
     )
 
-    result = run_fn(project, "hermes")
+    result = run_fn(project, "antigravity")
 
     assert result["status"] == "paused"
-    assert result["provider_statuses"]["hermes"]["state"] == "LIMITED"
-    assert registry.get_status("hermes").retry_after.isoformat() == "2026-09-02T12:00:00+00:00"
     assert registry.get_status("antigravity").retry_after.isoformat() == "2026-09-02T11:02:00+00:00"
     assert registry.get_status("claude").retry_after.isoformat() == "2026-09-02T11:15:00+00:00"
     assert registry.get_status("codex").retry_after.isoformat() == "2026-09-02T11:00:30+00:00"
-    assert all(not registry.is_available(name) for name in ("hermes", "antigravity", "claude", "codex"))
+    assert all(not registry.is_available(name) for name in ("antigravity", "claude", "codex"))
 
 
 def test_run_fn_preserves_model_identity_from_orchestrator_receipt(tmp_path):
@@ -1377,7 +1329,7 @@ def test_audit_wait_preserves_actual_failover_provider_from_outbox(tmp_path):
         dod=[DoDItem(text="implemented", checked=True)],
     )
     registry = ProviderRegistry()
-    registry.mark_available("hermes")
+    registry.mark_available("antigravity")
     audit_fn = build_audit_run_fn(
         registry,
         command=["ai-orchestrator", "autonomous"],
@@ -1389,7 +1341,7 @@ def test_audit_wait_preserves_actual_failover_provider_from_outbox(tmp_path):
         use_provider_failover=True,
     )
 
-    result = audit_fn(project, "hermes")
+    result = audit_fn(project, "antigravity")
 
     assert result["status"] == "paused"
     assert result["active_provider"] == "codex"
@@ -1892,7 +1844,7 @@ def test_map_provider_to_agent_passes_through_unknown_providers():
     assert map_provider_to_agent("gemini") == "gemini"
 
 
-def test_inbox_planner_excludes_retired_gemini_and_hermes_and_returns_validated_ai_tasks():
+def test_inbox_planner_excludes_retired_provider_names_and_returns_validated_ai_tasks():
     registry = ProviderRegistry()
     for name in ("hermes", "gemini", "antigravity", "codex"):
         registry.mark_available(name)
@@ -2015,7 +1967,7 @@ def test_inbox_planner_allows_multi_task_plan_for_ordinary_splittable_source():
     assert len(result["tasks"]) == 2
 
 
-def test_inbox_planner_does_not_fallback_to_hermes_when_it_is_the_only_provider():
+def test_inbox_planner_does_not_fallback_to_retired_provider_when_it_is_the_only_provider():
     registry = ProviderRegistry()
     registry.mark_available("hermes")
     calls = []
@@ -2091,7 +2043,7 @@ def test_run_fn_keeps_pm_side_provider_name_for_registry_while_mapping_agent_for
 
 def test_p5_false_completion_regression_audit_rejects_dirty_unchanged_head_empty_remote(tmp_path):
     """Regression test for P5 false completion bug:
-    P5 'AO: cleanup, commit a záloha po Hermes integraci' was marked Hotovo
+    P5 'AO: cleanup, commit a záloha po integraci providera' was marked Hotovo
     despite ai-orchestrator being dirty, HEAD remaining 4f9c001 (no new commit),
     and git remote -v being empty.
     With fail-closed validation, the audit MUST reject this run and refuse
@@ -2101,11 +2053,11 @@ def test_p5_false_completion_regression_audit_rejects_dirty_unchanged_head_empty
     registry = ProviderRegistry()
     registry.mark_available("claude")
     project = ProjectRecord(
-        name="P5 — AO: cleanup, commit a záloha po Hermes integraci",
+        name="P5 — AO: cleanup, commit a záloha po integraci providera",
         status=ProjectStatus.TESTING,
         project_key="AI Orchestrator",
-        main_task="AO: cleanup, commit a záloha po Hermes integraci",
-        dod=[DoDItem(text="AO: cleanup, commit a záloha po Hermes integraci", checked=False)],
+        main_task="AO: cleanup, commit a záloha po integraci providera",
+        dod=[DoDItem(text="AO: cleanup, commit a záloha po integraci providera", checked=False)],
         checkpoint={"completed_dod_indices": [0]},
     )
 
@@ -2114,7 +2066,7 @@ def test_p5_false_completion_regression_audit_rejects_dirty_unchanged_head_empty
         if subcmd == "rev-parse":
             return subprocess.CompletedProcess(args=list(command), returncode=0, stdout="4f9c001\n", stderr="")
         if subcmd == "status":
-            return subprocess.CompletedProcess(args=list(command), returncode=0, stdout="M hermes.py\n?? scratch.py\n", stderr="")
+            return subprocess.CompletedProcess(args=list(command), returncode=0, stdout="M provider_adapter.py\n?? scratch.py\n", stderr="")
         if subcmd == "diff":
             return subprocess.CompletedProcess(args=list(command), returncode=0, stdout="diff content\n", stderr="")
         if subcmd == "remote":
@@ -2127,7 +2079,7 @@ def test_p5_false_completion_regression_audit_rejects_dirty_unchanged_head_empty
             project.name,
             {
                 "status": "completed",
-                "last_output": "Hermes cleanup, commit a záloha hotova",
+                "last_output": "cleanup, commit a záloha hotova",
                 "iterations": [{
                     "audit_performed": True,
                     "audit_rejected_indices": [],
@@ -2170,12 +2122,12 @@ def test_p5_false_completion_regression_run_once_audit_never_moves_to_done(tmp_p
     from ai_project_manager.trello_sync import build_list_maps, project_from_card, sync_project_to_trello
 
     project = ProjectRecord(
-        name="P5 — AO: cleanup, commit a záloha po Hermes integraci",
+        name="P5 — AO: cleanup, commit a záloha po integraci providera",
         priority=5,
         status=ProjectStatus.TESTING,
         project_key="AI Orchestrator",
-        main_task="AO: cleanup, commit a záloha po Hermes integraci",
-        dod=[DoDItem(text="AO: cleanup, commit a záloha po Hermes integraci", checked=False)],
+        main_task="AO: cleanup, commit a záloha po integraci providera",
+        dod=[DoDItem(text="AO: cleanup, commit a záloha po integraci providera", checked=False)],
     )
     client = InMemoryTrelloClient()
     created = sync_project_to_trello(client, project)
@@ -2189,7 +2141,7 @@ def test_p5_false_completion_regression_run_once_audit_never_moves_to_done(tmp_p
         if subcmd == "rev-parse":
             return subprocess.CompletedProcess(args=list(command), returncode=0, stdout="4f9c001\n", stderr="")
         if subcmd == "status":
-            return subprocess.CompletedProcess(args=list(command), returncode=0, stdout="M hermes.py\n", stderr="")
+            return subprocess.CompletedProcess(args=list(command), returncode=0, stdout="M provider_adapter.py\n", stderr="")
         if subcmd == "diff":
             return subprocess.CompletedProcess(args=list(command), returncode=0, stdout="diff content\n", stderr="")
         if subcmd == "remote":
@@ -2202,7 +2154,7 @@ def test_p5_false_completion_regression_run_once_audit_never_moves_to_done(tmp_p
             project.name,
             {
                 "status": "completed",
-                "last_output": "Hermes cleanup hotov",
+                "last_output": "cleanup hotov",
                 "iterations": [{
                     "audit_performed": True,
                     "audit_rejected_indices": [],

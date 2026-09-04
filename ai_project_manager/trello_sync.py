@@ -450,7 +450,7 @@ def _migrate_legacy_prepared_card(data: dict, card: dict, priority: int) -> bool
             ):
                 # Old intake made the worker responsible for live evidence.
                 # That is controller-owned audit work and could deadlock a
-                # Hermes run even when the implementation itself was done.
+                # worker run even when the implementation itself was done.
                 item["text"] = _CURRENT_INBOX_LIVE_TEXT
                 item["phase"] = "audit"
                 changed = True

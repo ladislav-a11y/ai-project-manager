@@ -49,25 +49,14 @@ class ProviderState:
     ERROR = "ERROR"
 
 
-# Providers whose CLI/agent contract offers no model selection at all - they
-# always run their own single preferred LLM internally (e.g. Hermes' stricter
-# Nous-only contract), so the PM must never pass an explicit --model for them
-# regardless of what AI_PM_PROVIDER_MODELS configures. Named as a single
-# generic allowlist rather than a per-callsite hardcoded provider-name check
-# so a future provider with the same constraint is added here once instead of
-# being missed at some dispatch sites.
-PROVIDERS_WITHOUT_MODEL_SELECTION = frozenset({"hermes"})
-
-
 def supports_model_selection(name: str) -> bool:
-    """Whether ``name`` has a fixed internal model contract.
+    """Whether ``name`` may use the PM model catalog for diagnostics.
 
-    This compatibility helper is retained for state/catalog diagnostics.
-    Production dispatch never forwards a PM-selected ``--model`` to any
-    provider. ``False`` identifies Hermes, whose actual model is enforced by
-    ai-orchestrator's Nous-only contract.
+    Production dispatch never forwards a PM-selected ``--model`` to a
+    provider. All supported PM providers use the generic provider-owned model
+    policy, so this compatibility helper is true for every provider name.
     """
-    return name.casefold() not in PROVIDERS_WITHOUT_MODEL_SELECTION
+    return True
 
 
 # The three distinct kinds of task the PM ever dispatches a provider for
@@ -156,10 +145,8 @@ class ProviderRegistry:
     def model_for_task(self, name: str, task_type: str) -> Optional[str]:
         """Return the legacy catalog suggestion for diagnostics only.
 
-        Production dispatch does not call this helper. Providers with a fixed
-        internal LLM are deliberately outside this compatibility policy.
-        In particular, Hermes keeps its hard-coded model even if a stale
-        ``AI_PM_PROVIDER_MODELS`` entry exists for it.
+        Production dispatch does not call this helper; it is retained for
+        diagnostics and compatibility with persisted model catalogs.
 
         A provider with zero or one configured models behaves exactly like
         ``selected_model`` for every task type - this only differentiates
@@ -173,8 +160,6 @@ class ProviderRegistry:
         """
         if task_type not in TASK_TYPES:
             raise ValueError(f"unknown task_type {task_type!r}; expected one of {TASK_TYPES}")
-        if not supports_model_selection(name):
-            return None
         status = self._statuses.get(name)
         if status is None or not status.models:
             return None

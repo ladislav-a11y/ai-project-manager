@@ -101,7 +101,6 @@ def test_picks_highest_priority_unblocked_project():
 def test_auto_alias_selects_first_available_real_provider():
     registry = make_registry(
         auto="AVAILABLE",
-        hermes="AVAILABLE",
         antigravity="LIMITED",
         claude="AVAILABLE",
         codex="AVAILABLE",
@@ -267,7 +266,7 @@ def test_scheduler_never_touches_providers_that_are_not_registered():
     assert decision is None
 
 
-def test_audit_capability_limit_skips_hermes_for_same_task_family():
+def test_audit_capability_limit_skips_provider_for_same_task_family():
     project = ProjectRecord(
         name="P5.04 — propagation a scoring",
         project_key="Station Agent",
@@ -275,15 +274,15 @@ def test_audit_capability_limit_skips_hermes_for_same_task_family():
         status=ProjectStatus.TESTING,
         extra_data={"inbox_preparation": {"scope": "propagation a scoring"}},
     )
-    registry = make_registry(hermes="AVAILABLE", codex="AVAILABLE")
+    registry = make_registry(antigravity="AVAILABLE", codex="AVAILABLE")
     registry.mark_capability_limited(
-        "hermes",
+        "antigravity",
         "audit:station agent:propagation a scoring",
         "no independent verdict",
     )
 
     decision = pick_next_audit_project(
-        [project], registry, default_providers=["hermes", "codex"]
+        [project], registry, default_providers=["antigravity", "codex"]
     )
 
     assert decision is not None

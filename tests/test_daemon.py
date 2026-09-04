@@ -697,7 +697,7 @@ def test_run_tick_only_requeues_resumed_audit_wait_without_same_tick_ai_call():
         priority=3,
         status=ProjectStatus.PAUSED,
         checkpoint={"completed_dod_indices": [0]},
-        provider="hermes",
+        provider="claude",
         stop_reason="provider session limit hit",
         retry_after=(clock.now + timedelta(days=1)).isoformat(),
         extra_data={"resume_status": ProjectStatus.TESTING.value},
@@ -705,7 +705,7 @@ def test_run_tick_only_requeues_resumed_audit_wait_without_same_tick_ai_call():
     )
     client = make_client_with_project(project)
     registry = ProviderRegistry(clock=clock)
-    registry.mark_limited("hermes", retry_after=timedelta(days=1), checkpoint=project.checkpoint)
+    registry.mark_limited("claude", retry_after=timedelta(days=1), checkpoint=project.checkpoint)
     registry.mark_available("antigravity")
     calls = []
 
@@ -713,7 +713,7 @@ def test_run_tick_only_requeues_resumed_audit_wait_without_same_tick_ai_call():
         client,
         registry,
         lambda *_args: calls.append("implementation"),
-        default_providers=["hermes", "antigravity"],
+        default_providers=["claude", "antigravity"],
         audit_run_fn=lambda *_args: calls.append("audit"),
     )
 

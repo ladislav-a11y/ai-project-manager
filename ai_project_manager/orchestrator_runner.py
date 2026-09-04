@@ -111,8 +111,7 @@ _DEFAULT_OUTBOX_DIR = "outbox"
 DEFAULT_PROVIDER_AGENT_MAP = {"claude": "claude-code"}
 
 # PM retired Gemini after its account/project restriction was confirmed. This
-# is passed only to AO failover invocations from PM; AO's canonical default
-# order remains hermes, gemini, antigravity, claude-code, codex for other users.
+# is passed only to AO failover invocations from PM.
 PM_FAILOVER_PROVIDER_ORDER = ("antigravity", "claude-code", "codex")
 
 
@@ -342,7 +341,7 @@ def _inbox_selection_reason(
     """Return explainable provider/model reasons for an Inbox call."""
     provider_reason = (
         f"{provider} je první dostupný provider z povoleného pořadí "
-        f"{', '.join(INBOX_PLANNER_PROVIDERS)}; Hermes je pro Inbox intake zakázán"
+        f"{', '.join(INBOX_PLANNER_PROVIDERS)}; vyřazení provideři jsou fail-closed"
     )
     limited = []
     for candidate in INBOX_PLANNER_PROVIDERS:
@@ -369,14 +368,13 @@ def build_inbox_planner_fn(
     timeout_seconds: float = 180,
     selection_notifier: Optional[Callable[[dict], None]] = None,
 ):
-    """Build the AI-only Inbox planner, explicitly excluding Hermes.
+    """Build the AI-only Inbox planner from the active provider allowlist.
 
     The planner is a separate read-only ai-orchestrator command. It returns a
     validated task plan and never receives a real project checkout.
     """
-    # Inbox intake is deliberately never allowed to use Hermes.  Keep this
-    # allowlist local to the planner so a general provider-order change or a
-    # Hermes-first autonomous failover can never leak into intake.
+    # Keep this allowlist local to the planner so a general provider-order
+    # change can never leak an unsupported provider into intake.
     allowed = INBOX_PLANNER_PROVIDERS
     planner_command = _plan_command(command)
 
@@ -828,7 +826,7 @@ def _mark_limited_result(
 ) -> dict:
     # On a failover wait the selected provider is not necessarily the one
     # that produced the terminal limit. Preserve AO's receipt so PM does not
-    # write the original Hermes selection back as the actual provider.
+    # write the original selection back as the actual provider.
     receipt_statuses = provider_statuses if isinstance(provider_statuses, dict) else {}
     now = datetime.now(timezone.utc)
     limited_names: list[str] = []
@@ -1185,15 +1183,13 @@ def build_run_fn(
     def run_fn(project: ProjectRecord, provider: str) -> dict:
         # The PM scheduler selects the first currently available provider for
         # visibility and priority. Production dispatch must still let
-        # ai-orchestrator try the complete ordered chain in the same tick;
-        # otherwise a Hermes stream failure only becomes an error and the next
-        # tick starts from Hermes again. Tests and explicit callers retain the
-        # old single-agent behavior unless they opt in.
+        # ai-orchestrator try the complete ordered chain in the same tick.
+        # Tests and explicit callers retain the old single-agent behavior
+        # unless they opt in.
         agent_name = "auto" if use_provider_failover else map_provider_to_agent(provider, provider_agent_map)
         # The PM selects a provider, not a model. Each provider owns its
         # model policy and may choose an appropriate model from the task
-        # prompt; Hermes remains governed by ai-orchestrator's Nous-only
-        # contract. Never pass a stale PM-side --model override.
+        # prompt. Never pass a stale PM-side --model override.
         selected_model = None
         task = build_orchestrator_task(project, definition_of_done=definition_of_done, provider=agent_name)
 
@@ -1361,27 +1357,6 @@ def build_run_fn(
             )
         if "stop_reason" not in result and result["status"] != "done":
             result["stop_reason"] = payload.get("error") or str(orchestrator_status)
-        provider_sequence = result.get("provider_sequence")
-        active_provider = result.get("active_provider")
-        # A production auto run may start with Hermes and finish through a
-        # later provider. Persist the failed head as a temporary ERROR so the
-        # next PM tick does not repeat the same expensive failure immediately;
-        # this is a recheck backoff, not a permanent removal of Hermes.
-        if (
-            use_provider_failover
-            and provider == "hermes"
-            and isinstance(provider_sequence, list)
-            and "hermes" in provider_sequence
-            and len(provider_sequence) > 1
-            and active_provider != "hermes"
-        ):
-            provider_registry.mark_error(
-                "hermes",
-                "Hermes selhal; failover na dalšího providera: "
-                + str(result.get("stop_reason") or "provider failover"),
-                retry_after=_PROVIDER_FAILURE_BACKOFF,
-                checkpoint=result.get("checkpoint", project.checkpoint),
-            )
         return result
 
     return run_fn

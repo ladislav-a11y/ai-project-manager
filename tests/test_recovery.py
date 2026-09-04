@@ -136,10 +136,10 @@ def test_provider_protocol_error_is_requeued_preserving_priority_and_checkpoint(
     assert project.review_at is None
 
 
-def test_legacy_hermes_nous_only_diagnostic_is_requeued_for_retry():
+def test_legacy_provider_metadata_diagnostic_is_requeued_for_retry():
     """A stale adapter metadata error must not strand a valid card in human_required."""
     project = _blocked(
-        blocked_by="Hermes porušil Nous-only kontrakt: usage provider=None, model=None",
+        blocked_by="provider metadata was incomplete: usage provider=None, model=None",
     )
 
     outcome = recover_project(project, NOW)
@@ -150,10 +150,10 @@ def test_legacy_hermes_nous_only_diagnostic_is_requeued_for_retry():
     assert project.blocked_by is None
 
 
-def test_hermes_malformed_json_response_is_requeued_for_retry():
+def test_malformed_provider_json_response_is_requeued_for_retry():
     """A schema/protocol response error must not strand the card in human_required."""
     project = _blocked(
-        blocked_by="Hermes nevrátil JSON objekt požadovaný orchestratorovým kontraktem",
+        blocked_by="provider nevrátil JSON objekt požadovaný orchestratorovým kontraktem",
     )
 
     outcome = recover_project(project, NOW)

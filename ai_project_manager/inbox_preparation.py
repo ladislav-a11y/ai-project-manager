@@ -512,7 +512,7 @@ def _remainder_clauses(sentences: list[str]) -> list[str]:
 
     Inbox ideas commonly arrive as a paragraph followed by bullet points.
     Keeping all unmatched text in one ``další požadavky`` task made a large
-    new project effectively one oversized Hermes handoff.  Bullets, lines,
+    new project effectively one oversized provider handoff.  Bullets, lines,
     and semicolon-separated clauses are safe local structure; they do not
     invent content or merge distinct source cards.
     """
@@ -612,8 +612,8 @@ def build_dod(tasks: tuple[PreparedTask, ...]) -> tuple[DoDItem, ...]:
         DoDItem(text=f"Implementovat připravené části Inbox požadavku: {scopes}.", phase="implementation"),
         DoDItem(text="Nezávislý audit ai-orchestratoru provede cílené regresní testy a uvede konkrétní výsledek; nový commit není pro tento auditní bod vyžadován.", phase="audit"),
         # Live/test verification is controller-owned evidence.  Keeping it
-        # out of the implementation phase prevents Hermes (or any other
-        # worker) from receiving a task it is not allowed to complete.
+        # out of the implementation phase prevents a worker from receiving a
+        # task it is not allowed to complete.
         DoDItem(text="Nezávislý audit ai-orchestratoru ověří relevantní chování v živém prostředí a zapíše konkrétní důkaz; nový commit není pro tento auditní bod vyžadován.", phase="audit"),
         DoDItem(text="Nezávislý audit ai-orchestrator vydá accepted / rejected verdikt.", phase="audit"),
     )

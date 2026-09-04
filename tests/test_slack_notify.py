@@ -12,25 +12,24 @@ def test_status_messages_are_timestamped_clear_and_provider_block_is_standalone(
     status = slack_notify.status_message(
         "PM zahajuje práci",
         project="Demo",
-        provider="hermes | model: upstage/solar-pro4:free",
+        provider="antigravity | model: gemini-2.5-pro",
         provider_reason=(
-            "provider je první dostupný v pořadí hermes, codex; "
-            "pro implementaci je vždy použit pevný Hermes Nous free model "
-            "`upstage/solar-pro4:free`; platí stejně pro implementaci i audit"
+            "provider je první dostupný v pořadí antigravity, codex; "
+            "provider si model pro implementaci vybere podle typu úkolu; "
+            "PM nepředává --model"
         ),
         now=now,
     )
     blocked = slack_notify.provider_blocked_message(
-        "hermes", "2026-08-31T17:00:00+00:00", reason="quota", now=now
+        "antigravity", "2026-08-31T17:00:00+00:00", reason="quota", now=now
     )
 
     assert status.startswith("[AI status] 2026-08-31T16:30+00:00")
     assert "PM zahajuje práci" in status
     assert "projekt: Demo" in status
-    assert "provider: hermes | model: upstage/solar-pro4:free" in status
+    assert "provider: antigravity | model: gemini-2.5-pro" in status
     assert "proč: provider je první dostupný" in status
-    assert "pro implementaci je vždy použit pevný Hermes Nous free model" in status
-    assert "upstage/solar-pro4:free" in status
+    assert "provider si model pro implementaci vybere podle typu úkolu" in status
     assert "Provider blokován" in blocked
     assert "blokován do: 2026-08-31T17:00:00+00:00" in blocked
     assert "důvod: quota" in blocked
@@ -86,31 +85,31 @@ def test_result_model_prefers_actual_receipt_and_supports_usage_model():
 
 def test_provider_route_detail_makes_internal_failover_visible():
     assert slack_notify.provider_route_detail({
-        "provider_sequence": ["hermes", "codex"],
+        "provider_sequence": ["antigravity", "codex"],
         "active_provider": "codex",
-    }) == "provider path: hermes -> codex | failover: ano | model path: hermes=nezjištěn -> codex=nezjištěn"
+    }) == "provider path: antigravity -> codex | failover: ano | model path: antigravity=nezjištěn -> codex=nezjištěn"
     assert slack_notify.provider_route_detail({
         "provider_sequence": ["codex"],
         "active_provider": "codex",
     }) == "provider path: codex | failover: ne | model path: codex=nezjištěn"
     assert slack_notify.provider_route_detail(
         {"provider_sequence": ["codex"], "active_provider": "codex"},
-        selected_provider="hermes",
-    ) == "provider path: hermes -> codex | failover: ano | model path: hermes=nezjištěn -> codex=nezjištěn"
+        selected_provider="antigravity",
+    ) == "provider path: antigravity -> codex | failover: ano | model path: antigravity=nezjištěn -> codex=nezjištěn"
 
 
 def test_provider_route_detail_shows_model_for_each_provider():
     rendered = slack_notify.provider_route_detail({
-        "provider_sequence": ["hermes", "claude-code"],
+        "provider_sequence": ["antigravity", "claude-code"],
         "active_provider": "claude-code",
         "active_model": "claude-opus-4-1",
         "usage": {"events": [
-            {"provider": "hermes", "model": "upstage/solar-pro4:free"},
+            {"provider": "antigravity", "model": "gemini-2.5-pro"},
             {"provider": "claude-code", "model": "claude-opus-4-1"},
         ]},
     })
-    assert "provider path: hermes -> claude-code" in rendered
-    assert "model path: hermes=upstage/solar-pro4:free -> claude-code=claude-opus-4-1" in rendered
+    assert "provider path: antigravity -> claude-code" in rendered
+    assert "model path: antigravity=gemini-2.5-pro -> claude-code=claude-opus-4-1" in rendered
 
 
 def test_webhook_url_alone_does_not_enable_real_notifications(monkeypatch, caplog):
