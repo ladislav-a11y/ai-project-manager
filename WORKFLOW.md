@@ -143,12 +143,18 @@ rozsah+text jednoznačně pojmenuje přesně jeden jiný nakonfigurovaný projek
 chybějící nebo víceznačná shoda se vrací zpět k identitě zdrojové karty,
 nikdy se neodhaduje.
 
-Při rozdělení se zdrojová Inbox karta smí dočasně ponechat pouze do okamžiku,
-než jsou bezpečně zapsány všechny podúkoly. Po dokončení splitu se zdroj stane
-prvním kanonickým podúkolem a musí opustit Inbox; nesmí být současně veden jako
-samostatná pracovní karta ani jako duplicitní receipt. Při retry se identita
-smí obnovit jen z jednoznačně shodných již zapsaných podúkolů podle zdrojového
-ID, nikdy z podobnosti názvů.
+Zdrojová Inbox karta je neměnný vstup intake: PM nesmí měnit její název,
+popis, štítky ani seznam. Každý podúkol se zapisuje jako samostatná karta do
+`Připraveno`; zdrojové ID a hash se uchovávají pouze v PM-DATA cílové karty.
+Při retry se již zapsané cíle identifikují jednoznačně podle zdrojového ID a
+`subtask_index`, nikdy podle podobnosti názvů, takže částečně dokončený split
+nevytvoří duplicity.
+
+Návaznost podúkolů je závazná: PM zachová `depends_on_subtask_indices` a
+`execution_order` a scheduler smí přesunout do `Pracuje se` pouze kartu,
+jejíchž předchůdci jsou dokončeni nebo řádně uzavřeni. Planner může zvolit
+konkrétní rozdělení a pořadí, ale nesmí obejít tuto řízenou AI-plánovací a
+dependency kontrolu prioritou ani pořadím v Trellu.
 
 Všechny podúkoly vzniklé z jedné Inbox karty tvoří jeden nedělitelný Inbox
 batch. PM u každého podúkolu zachová `source_card_id`, `subtask_index`,

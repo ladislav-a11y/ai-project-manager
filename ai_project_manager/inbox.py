@@ -382,15 +382,12 @@ def process_inbox(
     projects_root: Optional[str] = None,
     planner: Optional[InboxPlannerFn] = None,
 ) -> list[ProjectRecord]:
-    """Fetch new (not yet processed) cards from the Trello Inbox list,
-    classify each one and fold it into the right project. Returns the
-    list of ProjectRecords that changed (new ones included) so the
-    caller can sync them back.
+    """Prepare at most one new Inbox source batch per tick.
 
-    New work keeps the original card identity and moves to Ready/New. Input
-    folded into an existing project becomes a completed receipt card. The
-    target contract stores the Inbox card ID, making retries idempotent if a
-    write fails between persisting the target and moving the receipt.
+    Inbox cards are immutable inputs. New work is materialized as one or more
+    independent Připraveno cards, each retaining the source identity in its
+    Card Contract. Complete source batches are excluded from later candidate
+    selection, while revisions and incomplete splits remain retryable.
     """
     from .trello_sync import build_list_maps
 
@@ -403,6 +400,39 @@ def process_inbox(
     changed: list[ProjectRecord] = []
     cards = client.list_cards(inbox_list_id)
     batch_priorities = prioritize_inbox_cards(cards, default_priority=default_priority)
+
+    def has_complete_preparation(card: Mapping[str, Any]) -> bool:
+        source_id = str(card.get("id") or "")
+        receipt = find_inbox_receipt(list(projects_by_name.values()), card)
+        if receipt is None or receipt.matched_by != "source_card_id":
+            return False
+        known_indices = {
+            int(preparation.get("subtask_index"))
+            for project in projects_by_name.values()
+            for preparation in [(project.extra_data or {}).get("inbox_preparation", {})]
+            if (
+                isinstance(preparation, dict)
+                and preparation.get("source_card_id") == source_id
+                and isinstance(preparation.get("subtask_index"), int)
+            )
+        }
+        expected_count = max(
+            (
+                int(preparation.get("subtask_count", 0))
+                for project in projects_by_name.values()
+                for preparation in [(project.extra_data or {}).get("inbox_preparation", {})]
+                if (
+                    isinstance(preparation, dict)
+                    and preparation.get("source_card_id") == source_id
+                )
+            ),
+            default=0,
+        )
+        return bool(expected_count and len(known_indices) >= expected_count)
+
+    # A source remains visible in Inbox after preparation by design. Do not
+    # let that immutable source starve another Inbox card on the next tick.
+    cards = [card for card in cards if not has_complete_preparation(card)]
 
     # Intake is deliberately one source project per tick.  This keeps the
     # AI planning boundary small and observable, and prevents a long Inbox
@@ -453,21 +483,12 @@ def process_inbox(
                 if isinstance((project.extra_data or {}).get("inbox_preparation"), dict)
             ]
             expected_split_count = max(expected_split_counts, default=0)
-            canonical_source = any(
-                preparation.get("subtask_index") == 0
-                and project.trello_card_id == source_id
-                for project in projects_by_name.values()
-                for preparation in [(project.extra_data or {}).get("inbox_preparation", {})]
-                if isinstance(preparation, dict)
-            )
-            if not canonical_source or (
-                expected_split_count and len(partial_split) < expected_split_count
-            ):
+            if expected_split_count and len(partial_split) < expected_split_count:
                 # An exact receipt belonging to an already-persisted split
                 # child does not mean the source request is fully handled.
                 # Continue the split preparation so the missing children are
-                # created, stale child metadata is reconciled, and the source
-                # card remains the canonical target.
+                # created and stale child metadata is reconciled.  The source
+                # card remains an immutable Inbox input, never a target.
                 previous = None
         if previous is not None:
             target = previous.project
@@ -506,11 +527,14 @@ def process_inbox(
                     )
                 continue
             if target.trello_card_id == card.get("id"):
-                # A prior write may have persisted the target contract but
-                # failed before moving the original Inbox card.  Re-syncing
-                # that same card completes the intended board transition.
-                if persist_project is not None:
-                    persist_project(target)
+                # Legacy PM-DATA may identify the Inbox source itself as the
+                # target.  The source is now immutable, so never re-sync it;
+                # leave it available for explicit migration/replanning.
+                logger.warning(
+                    "Inbox source has legacy target identity; leaving source immutable "
+                    "id=%s name=%r",
+                    card.get("id"), card.get("name"),
+                )
                 continue
             if persist_project is not None:
                 from .trello_sync import sync_project_to_trello
@@ -606,9 +630,9 @@ def process_inbox(
                         continue
                     project_paths[preparation.project_key] = preparation.project_path
                 Path(preparation.project_path).mkdir(parents=True, exist_ok=True)
-            # Persist split children before mutating/moving the source card.
-            # Thus any failure leaves the canonical source in Inbox, while a
-            # retry can recognize already durable children by source/index.
+            # Persist every split child as an independent Připraveno card.
+            # The source card is immutable input and remains in Inbox, while a
+            # retry recognizes already durable children by source/index.
             execution_order = task_execution_order(preparation.tasks)
             ordered_tasks = [
                 (index, preparation.tasks[index]) for index in execution_order
@@ -695,11 +719,6 @@ def process_inbox(
                         }
                     },
                 )
-                if index == 0:
-                    # Preserve the source card as the first canonical target.
-                    task.trello_card_id = card.get("id")
-                    task.trello_card_url = card.get("url")
-                    task.trello_list_id = card.get("list_id")
                 record_inbox_receipt(task, card, target_card_id=task.trello_card_id)
                 projects_by_name[task.name] = task
                 if persist_project is not None:
@@ -728,11 +747,8 @@ def process_inbox(
         projects_by_name[project.name] = project
 
         if result.is_new_project:
-            # Move this exact card through the workflow. Never create a
-            # duplicate with a new Trello identity for the same Inbox item.
-            project.trello_card_id = card.get("id")
-            project.trello_card_url = card.get("url")
-            project.trello_list_id = card.get("list_id")
+            # Inbox is an immutable source.  Materialize a separate prepared
+            # work card and retain the source identity only in PM-DATA.
             record_inbox_receipt(project, card, target_card_id=project.trello_card_id)
 
         # This ordering is intentional. The marker is an acknowledgement,
