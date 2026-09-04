@@ -23,12 +23,14 @@ fáze a nesmí obejít čekání, audit ani aktivní práci. Pořadí dispatch �
    dopracování se karta vrací do `Pracuje se` s konkrétním feedbackem.
 3. `Pracuje se` — agent provádí implementaci a postupně plní DoD.
 4. `Připraveno` — nový úkol smí být vybrán až po vyřešení předchozího řetězce.
-5. `Hotovo` — pouze po úspěšných testech, přijetí nezávislým auditem a úplném
-   viditelném DoD. U výslovně schválené karty s již dokončeným live ověřením
-   může být controllerová finalizace (commit, záloha a remote) vedena jako
-   navazující krok po `Hotovo`; tato výjimka musí být zapsaná v PM-DATA jako
-   `completion_policy.mode=post_done_finalization` a nikdy nemění auditní
-   autoritu ai-orchestratoru.
+5. `Hotovo` — pouze po výslovně přijatém verdiktu nezávislého auditu
+   ai-orchestratoru a úplném viditelném DoD. `Hotovo` je terminální: karta se
+   do něj dostane jen tímto verdiktem a automatický scheduling z ní nikdy
+   znovu nevychází (stejně jako z Inboxu, dokud jeho intake není výslovně
+   povolený a řízený). Controllerová finalizace (commit, případně push)
+   proběhla už před vstupem do `Testování` (viz `Pracuje se → Testování`
+   níže a sekci „Terminální finalizace"), takže `Hotovo` už žádnou
+   navazující finalizaci nevyžaduje ani nepovoluje.
 
 ## Povinné přechody
 
@@ -36,8 +38,13 @@ fáze a nesmí obejít čekání, audit ani aktivní práci. Pořadí dispatch �
 - Nový úkol z `Připraveno` nezačne, dokud je v `Pracuje se`, `Čeká na AI` nebo
   `Testování` jiný úkol; čekající karta se nejprve obnoví a auditní fronta se
   zpracuje před novou implementací.
-- `Pracuje se → Testování`: všechna implementační DoD jsou ověřena; tento
-  přechod se zapíše ještě před spuštěním testů a auditu.
+- `Pracuje se → Testování`: všechna implementační DoD jsou ověřena a
+  controllerová finalizace v ai-orchestratoru proběhla úspěšně - finalizer se
+  spouští automaticky, jakmile je implementační DoD karty kompletně ověřené,
+  a to i bez výslovné DoD položky jmenující commit/push. Teprve po úspěšné
+  finalizaci se přechod do `Testování` zapíše, ještě před spuštěním testů a
+  auditu. Selhání finalizace (např. neprošlé testy nebo zablokovaný push)
+  kartu ponechá v `Pracuje se` s konkrétním důvodem.
 - `Pracuje se → Čeká na AI`: provider-limit; checkpoint a návratová fáze se
   zachovají.
 - `Testování → Hotovo`: pouze explicitní přijatý verdikt ai-orchestrátoru.
@@ -46,9 +53,17 @@ fáze a nesmí obejít čekání, audit ani aktivní práci. Pořadí dispatch �
 - `Testování → Čeká na AI`: pouze provider-limit; návratová fáze zůstává
   `Testování`.
 
-Terminální finalizace je vlastněna controllerem, nikdy agentem. Standardně
-musí být pro dirty checkout dokončena před `Hotovo`: test, rozsah commitu,
-čistý pracovní strom a záloha/ověřený remote HEAD. Rozsah commitovaných cest
+Terminální finalizace je vlastněna controllerem, nikdy agentem. Spouští se
+automaticky, jakmile je implementační DoD karty kompletně ověřené, těsně před
+jejím povýšením do `Testování` - není omezena na výslovnou DoD položku
+jmenující commit/push; vyvolá ji i běžná implementační položka bez této
+formulace (jinak by karta mohla do `Testování` doputovat s reálnou, ověřenou
+prací, která nikdy nebyla commitnutá, a každý nezávislý audit by pak našel
+nezměněný checkout). Popisná auditní evidence o už existujícím
+HEAD/status/diff/remote sama o sobě nikdy nevyvolá druhý, samostatný
+finalizační požadavek. Standardně pro dirty checkout finalizace před
+`Testování` zahrnuje: test, rozsah commitu, čistý pracovní strom a
+záloha/ověřený remote HEAD. Rozsah commitovaných cest
 se odvozuje ze skutečného `git status` daného projektu, pokud pro něj není
 nakonfigurován explicitní kurátorovaný seznam (`AI_ORCHESTRATOR_FINALIZE_PATHS`)
 - takový seznam zůstává jen přísnější volitelnou výjimkou pro projekt, který
@@ -59,10 +74,15 @@ stagují jednotlivě a explicitně vyjmenované. Push na vzdálený remote naopa
 zůstává vždy vázaný na explicitní `AI_ORCHESTRATOR_ALLOWED_PUSH_REMOTES`
 záznam pro daný projekt - bez něj finalizace zůstane commitnutá jen lokálně,
 `pushed=true` se nesplní a karta se vrátí do `Pracuje se` s konkrétním
-důvodem, dokud povolení nepřidá člověk. U schválené `post_done_finalization`
-karty se tento krok nesmí vydávat za hotový předem a musí se provést
-bezprostředně jako navazující finalizace. Čistý checkout bez změn nevyžaduje
-prázdný commit.
+důvodem, dokud povolení nepřidá člověk. Finalizer ukládá `finalization` důkaz
+s `status=completed`, `done=true`, `commit_hash`, `clean=true`,
+`tests_passed=true`, `pushed=true` a `remote_commit`, který se musí shodovat s
+aktuálním `commit_hash`. `committed=true` znamená nově vytvořený commit;
+`committed=false` je platný idempotentní no-op jen tehdy, když byl repozitář
+už čistý a aktuální HEAD, commit hash, testy, push i remote HEAD souhlasí s
+důkazem. Nezávislý audit tento důkaz spotřebuje a nesmí vyžadovat druhý
+commit; chybějící, zastaralý nebo neshodující se důkaz zůstává fail-closed.
+Čistý checkout bez změn nevyžaduje prázdný commit.
 
 Implementační agent nikdy sám neuzavírá kartu do `Hotovo`. Neúplné nebo
 neověřené DoD se nesmí označit jako hotové. Karta vrácená z auditu se nesmí
@@ -114,6 +134,14 @@ bez neprioritního štítku PM vytvoří stabilní izolovanou identitu ve tvaru
 konfigurovaným `AI_PM_PROJECTS_ROOT` a připraví kartu stejně jako ostatní
 úkoly. Tím se nový nápad nesmí sloučit s podobným existujícím projektem;
 neznámý nebo konfliktní štítek se naopak nikdy nepřepisuje odhadem.
+
+Při rozdělení zdrojové karty na více podúkolů se projektová identita řeší pro
+každý podúkol zvlášť z jeho vlastního rozsahu a textu, nikoli slepým
+zděděním identity zdrojové karty pro celou dávku. Podúkol identitu zdrojové
+karty standardně dědí a je routován jinam jen tehdy, když jeho vlastní
+rozsah+text jednoznačně pojmenuje přesně jeden jiný nakonfigurovaný projekt;
+chybějící nebo víceznačná shoda se vrací zpět k identitě zdrojové karty,
+nikdy se neodhaduje.
 
 Při rozdělení se zdrojová Inbox karta smí dočasně ponechat pouze do okamžiku,
 než jsou bezpečně zapsány všechny podúkoly. Po dokončení splitu se zdroj stane
