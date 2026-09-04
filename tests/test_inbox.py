@@ -110,6 +110,44 @@ def test_preparation_splits_station_agent_card_and_assigns_each_scope_priority()
     assert dod_contract_issues(prepared.dod) == []
 
 
+def test_last_split_task_scope_does_not_influence_assigned_project_identity():
+    """Diagnostic regression confirming the reported root cause.
+
+    ``resolve_project_key`` runs once against the whole source card (an
+    explicit Trello identity label wins outright) and the resulting
+    ``InboxPreparation.project_key`` is then applied uniformly to every
+    split subtask by ``process_inbox``/``prepare_inbox_card``.
+    ``PreparedTask`` carries no per-task identity field of its own, so a
+    trailing/remainder subtask whose own content names a *different*
+    configured project still inherits the source card's identity (here
+    "Station Agent") instead of being routed by its own scope. This test
+    only documents the confirmed behavior; fixing it is out of scope here.
+    """
+    card = {
+        "id": "mixed-source",
+        "name": "Station agent oprava a rozšíření",
+        "desc": (
+            "Auto tune a hold nefunguje. "
+            "Opravit dokumentaci AI Project Manageru v README souboru."
+        ),
+        "labels": [{"name": "Station Agent"}],
+    }
+
+    prepared = prepare_inbox_card(
+        card,
+        project_paths={"Station Agent": "D:/station-agent", "AI Project Manager": "D:/pm"},
+    )
+
+    assert len(prepared.tasks) == 2
+    last_task = prepared.tasks[-1]
+    assert "AI Project Manager" in last_task.task
+    assert last_task.scope != "auto tune a hold"
+    assert not hasattr(last_task, "project_key")
+    # Root cause: a single card-level identity is applied to every subtask
+    # regardless of its own scope/content.
+    assert prepared.project_key == "Station Agent"
+
+
 def test_ambiguous_repair_requires_explicit_project_identity():
     card = {
         "id": "station-live-source",

@@ -651,6 +651,16 @@ def process_inbox(
                         "Zachovat chování mimo tento rozsah."
                     ),
                     dod=list(build_dod((prepared_task,))),
+                    # Diagnostics confirmed (see
+                    # test_last_split_task_scope_does_not_influence_assigned_project_identity):
+                    # ``preparation.project_key`` is resolved once for the
+                    # whole source card and applied to every split subtask
+                    # unchanged, including a trailing remainder task whose
+                    # own scope/content may name a different configured
+                    # project. ``PreparedTask`` carries no per-task identity
+                    # field, so there is currently no way to route an
+                    # individual subtask by its own scope. Left unchanged;
+                    # out of scope for this diagnostic-only ticket.
                     project_key=preparation.project_key,
                     extra_data={
                         "inbox_preparation": {
