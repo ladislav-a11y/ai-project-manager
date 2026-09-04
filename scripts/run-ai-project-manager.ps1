@@ -141,11 +141,19 @@ try {
     if (-not (Test-Path -LiteralPath $finalizeScript -PathType Leaf)) {
         throw "Orchestrator finalizer is missing: $finalizeScript"
     }
-    $finalizeTestCommand = "$PythonExe -B -m pytest -q -p no:cacheprovider"
-    $env:AI_ORCHESTRATOR_FINALIZE_CMD = "`"$orchestratorPython`" `"$finalizeScript`" --test-command `"$finalizeTestCommand`""
+    # No --test-command here: that would fix the test interpreter to
+    # $PythonExe (this PM checkout's own venv) for every registered
+    # project's finalization, not just this one. finalize.py's own
+    # per-project auto-detection (orchestrator.autonomous._detect_test_command)
+    # already resolves each target project's own .venv interpreter from its
+    # --project path, so leaving --test-command unset is what generalizes
+    # correctly across projects instead of hardcoding today's project here.
+    $env:AI_ORCHESTRATOR_FINALIZE_CMD = "`"$orchestratorPython`" `"$finalizeScript`""
     $env:AI_ORCHESTRATOR_ALLOWED_PUSH_REMOTES = (@{
         'AI Project Manager' = 'https://github.com/ladislav-a11y/ai-project-manager.git'
         'Station Agent' = 'https://github.com/ladislav-a11y/station-agent.git'
+        'AI Orchestrator' = 'https://github.com/ladislav-a11y/ai-orchestrator.git'
+        'ai-orchestrator' = 'https://github.com/ladislav-a11y/ai-orchestrator.git'
     } | ConvertTo-Json -Compress)
     $finalizePaths = [ordered]@{
         'AI Project Manager' = @(
@@ -169,6 +177,23 @@ try {
             'tests/test_recovery_e2e.py',
             'tests/test_trello_sync.py',
             'WORKFLOW.md'
+        )
+        # AI Orchestrator's current implementation scope is deliberately
+        # explicit: the handoff document in that checkout is pre-existing
+        # untracked context and must never enter this controller commit.
+        'AI Orchestrator' = @(
+            'orchestrator/autonomous.py',
+            'tests/test_autonomous.py',
+            'tests/test_cli.py',
+            'tests/test_failover.py',
+            'tests/test_service.py'
+        )
+        'ai-orchestrator' = @(
+            'orchestrator/autonomous.py',
+            'tests/test_autonomous.py',
+            'tests/test_cli.py',
+            'tests/test_failover.py',
+            'tests/test_service.py'
         )
     }
     $env:AI_ORCHESTRATOR_FINALIZE_PATHS = $finalizePaths | ConvertTo-Json -Compress
