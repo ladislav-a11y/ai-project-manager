@@ -52,6 +52,35 @@ _PROJECT_IDENTITY_ALIASES = {
 }
 
 
+# The AI planner (see ``orchestrator_runner.build_inbox_planner_fn``) plans
+# from exactly one Inbox source card and must describe exactly one
+# indivisible task for it. This is deliberately stricter than the local
+# deterministic ``split_tasks`` fallback below, which remains free to divide
+# one card into several dependency-ordered subtasks for tests and
+# backwards-compatible callers; only AI-produced plans are bound by this
+# fail-closed contract, enforced before any card is written into Připraveno.
+INDIVISIBLE_SOURCE_TASK_COUNT = 1
+
+
+def enforce_indivisible_inbox_source_contract(tasks) -> Optional[str]:
+    """Return a concrete Czech rejection reason, or ``None`` if the AI
+    planner's task list honours the one-source-card/one-task contract.
+
+    Callers must fail closed on a non-``None`` result: leave the source card
+    in Inbox and perform no Trello write, rather than materializing a
+    multi-task AI plan into Připraveno.
+    """
+    if not isinstance(tasks, (list, tuple)):
+        return "Výstup AI planneru není pole úkolů."
+    count = len(tasks)
+    if count != INDIVISIBLE_SOURCE_TASK_COUNT:
+        return (
+            f"AI planner vrátil {count} úkolů; zdrojová Inbox karta je "
+            "nedělitelná a smí mít právě jeden úkol."
+        )
+    return None
+
+
 @dataclass(frozen=True)
 class PreparedTask:
     """One independently dispatchable task derived from one Inbox card."""

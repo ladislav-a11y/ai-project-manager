@@ -15,6 +15,7 @@ from ai_project_manager.inbox import (
 from ai_project_manager.inbox_preparation import (
     PreparedTask,
     derive_priority,
+    enforce_indivisible_inbox_source_contract,
     prepare_inbox_card,
     prioritize_inbox_cards,
     task_execution_order,
@@ -44,6 +45,65 @@ def test_batch_prioritization_puts_pm_repairs_before_new_features():
     assert priorities["pm-bug"][0] == 5
     assert priorities["feature"][0] == 3
     assert "závazná nejvyšší priorita" in priorities["pm-bug"][1]
+
+
+def test_indivisible_source_contract_accepts_exactly_one_task():
+    task = PreparedTask(
+        title="scope", task="Udělat věc.", next_step="Začít.", scope="scope",
+    )
+    assert enforce_indivisible_inbox_source_contract((task,)) is None
+
+
+def test_indivisible_source_contract_rejects_zero_or_multiple_tasks():
+    task = PreparedTask(
+        title="scope", task="Udělat věc.", next_step="Začít.", scope="scope",
+    )
+    assert enforce_indivisible_inbox_source_contract(()) is not None
+    reason = enforce_indivisible_inbox_source_contract((task, task))
+    assert reason is not None
+    assert "nedělitelná" in reason
+    assert enforce_indivisible_inbox_source_contract("not a list") is not None
+
+
+def test_process_inbox_fails_closed_when_ai_planner_returns_multiple_tasks():
+    """Fail-closed indivisible Inbox source contract: an AI plan describing
+    more than one task for a single source card must never reach Připraveno;
+    the card stays in Inbox with no project written."""
+    client = InMemoryTrelloClient()
+    _, name_to_id = build_list_maps(client)
+
+    source = client.create_card(
+        name_to_id["Inbox"],
+        "nový nápad",
+        desc="Popis nápadu, který AI planner nesprávně rozdělí na víc úkolů.",
+    )
+
+    def planner(card, projects):
+        return {
+            "provider": "claude",
+            "model": None,
+            "tasks": (
+                PreparedTask(
+                    title="část 1", task="Udělat první část.", next_step="Začít.",
+                    scope="část 1",
+                ),
+                PreparedTask(
+                    title="část 2", task="Udělat druhou část.", next_step="Pokračovat.",
+                    scope="část 2",
+                ),
+            ),
+        }
+
+    changed = process_inbox(
+        client,
+        [],
+        persist_project=lambda project: sync_project_to_trello(client, project),
+        projects_root="D:/orchestrator",
+        planner=planner,
+    )
+
+    assert changed == []
+    assert client.get_card(source["id"])["list_id"] == name_to_id["Inbox"]
 
 
 def test_ai_planner_cannot_raise_normal_feature_above_source_priority():

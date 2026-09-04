@@ -20,6 +20,7 @@ from .models import DoDItem, ProjectRecord, ProjectStatus
 from .inbox_preparation import (
     PreparedTask,
     build_dod,
+    enforce_indivisible_inbox_source_contract,
     inbox_source_text,
     prepare_inbox_card,
     prioritize_inbox_cards,
@@ -536,6 +537,16 @@ def process_inbox(
                 )
                 continue
             planned_tasks = tuple(planner_result["tasks"])
+            contract_violation = enforce_indivisible_inbox_source_contract(planned_tasks)
+            if contract_violation:
+                # Fail-closed: reject before any Připraveno write rather than
+                # materialize a plan that splits one indivisible Inbox source
+                # into several AI-proposed tasks.
+                logger.warning(
+                    "Inbox card left in Inbox: %s id=%s name=%r",
+                    contract_violation, card.get("id"), card.get("name"),
+                )
+                continue
         if planner is not None or result.is_new_project or partial_split:
             preparation_card = card
             if partial_split:

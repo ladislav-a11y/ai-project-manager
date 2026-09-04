@@ -65,7 +65,11 @@ from .dod_validator import (
     validate_project_dod,
 )
 from .models import ProjectRecord
-from .inbox_preparation import PreparedTask, task_execution_order
+from .inbox_preparation import (
+    PreparedTask,
+    enforce_indivisible_inbox_source_contract,
+    task_execution_order,
+)
 from .orchestrator_handoff import (
     AUDIT_VERDICT_ACCEPTED,
     AUDIT_VERDICT_REJECTED,
@@ -264,7 +268,10 @@ def _json_object(text: str) -> Optional[dict]:
 
 def _planner_tasks(payload: dict) -> Optional[list[PreparedTask]]:
     tasks = payload.get("tasks")
-    if not isinstance(tasks, list) or not 1 <= len(tasks) <= 32:
+    # Fail-closed indivisible source contract: an AI plan for one Inbox
+    # source card must describe exactly one task. Any other count is
+    # rejected here, before a single ``PreparedTask`` is built.
+    if enforce_indivisible_inbox_source_contract(tasks) is not None:
         return None
     result: list[PreparedTask] = []
     for item in tasks:
@@ -451,7 +458,11 @@ def build_inbox_planner_fn(
             plan_payload = _json_object(str(envelope.get("output") or ""))
             tasks = _planner_tasks(plan_payload or {})
             if tasks is None:
-                provider_registry.mark_error(provider, "AI Inbox planner vrátil neplatný task plán", timedelta(minutes=30))
+                contract_violation = enforce_indivisible_inbox_source_contract(
+                    (plan_payload or {}).get("tasks")
+                )
+                reason = contract_violation or "AI Inbox planner vrátil neplatný task plán"
+                provider_registry.mark_error(provider, reason, timedelta(minutes=30))
                 continue
             actual_model = envelope.get("model")
             if not isinstance(actual_model, str) or not actual_model.strip():
