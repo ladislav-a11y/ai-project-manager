@@ -109,6 +109,14 @@ def run_one(
     # OUTBOX_DIR are pinned below against inherited production state.
     os.environ.pop("AI_PM_SLACK_ENABLED", None)
     os.environ.pop("SLACK_WEBHOOK_URL", None)
+    # Same class of leak as above, for the controller finalizer added
+    # later: this machine's live scheduler setup may already export a real
+    # AI_ORCHESTRATOR_FINALIZE_CMD. Inheriting it would make main()'s real
+    # build_finalize_fn() run the actual controller finalizer against this
+    # script's throwaway (non-git) checkout directories, failing on
+    # "cannot verify repository HEAD before execution" instead of proving
+    # path resolution as intended.
+    os.environ.pop("AI_ORCHESTRATOR_FINALIZE_CMD", None)
     os.environ["AI_ORCHESTRATOR_CMD"] = f'"{sys.executable}" "{stub}" "{outbox_dir}"'
     # Pinned explicitly (not left to the "specs"/"outbox" relative
     # defaults): this machine's own live scheduler setup already exports

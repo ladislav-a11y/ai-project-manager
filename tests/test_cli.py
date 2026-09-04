@@ -80,6 +80,14 @@ def _set_trello_env(monkeypatch):
     monkeypatch.setenv("TRELLO_BOARD_ID", "test-board")
     monkeypatch.setenv("AI_PM_PROVIDERS", "claude")
     monkeypatch.delenv("AI_PM_PROVIDER_MODELS", raising=False)
+    # This machine's own live scheduler setup may already export a real
+    # AI_ORCHESTRATOR_FINALIZE_CMD (see .secrets/scheduler.clixml via
+    # scripts/run-ai-project-manager.ps1). Inheriting it here would make
+    # main()'s real build_finalize_fn() run the actual controller
+    # finalizer against these tests' throwaway (non-git) checkout
+    # directories, failing on "cannot verify repository HEAD before
+    # execution" instead of the behavior each test actually verifies.
+    monkeypatch.delenv("AI_ORCHESTRATOR_FINALIZE_CMD", raising=False)
 
 
 def test_main_once_runs_a_full_tick_through_the_real_entrypoint_wiring(monkeypatch):

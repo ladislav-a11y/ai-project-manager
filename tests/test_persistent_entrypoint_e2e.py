@@ -132,6 +132,13 @@ def test_live_e2e_persistent_entrypoint_readback_slack_trello_log_process(tmp_pa
         # Do not inherit the production launcher's multi-provider model
         # catalog into this single-provider test process.
         env.pop("AI_PM_PROVIDER_MODELS", None)
+        # Nor its real controller finalize command: this machine's live
+        # scheduler setup may already export AI_ORCHESTRATOR_FINALIZE_CMD.
+        # Inheriting it would make main()'s real build_finalize_fn() run
+        # the actual controller finalizer for a project with no configured
+        # checkout at all, failing closed instead of reaching the
+        # "testing" status this test verifies.
+        env.pop("AI_ORCHESTRATOR_FINALIZE_CMD", None)
 
         result = subprocess.run(
             [sys.executable, str(harness), str(readback_path)],
