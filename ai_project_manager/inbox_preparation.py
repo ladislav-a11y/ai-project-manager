@@ -610,7 +610,12 @@ def prepare_inbox_card(
         if planned_tasks is not None:
             child_text = f"{task.scope}: {task.task}"
             child_priority = float(task.priority)
-            if not is_repair_request(child_text) and child_priority > priority:
+            if is_repair_request(text) and child_priority < priority:
+                child_priority = priority
+                priority_reason_suffix = (
+                    f"; zachována priorita opravného zdrojového zadání P{priority:g}"
+                )
+            elif not is_repair_request(child_text) and child_priority > priority:
                 child_priority = priority
                 priority_reason_suffix = (
                     f"; omezeno na prioritu zdrojového zadání P{priority:g}"

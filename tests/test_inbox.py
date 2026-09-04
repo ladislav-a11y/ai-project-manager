@@ -73,6 +73,33 @@ def test_ai_planner_cannot_raise_normal_feature_above_source_priority():
     assert "omezeno na prioritu zdrojového zadání" in prepared.tasks[0].priority_reason
 
 
+def test_ai_planner_cannot_demote_corrective_source_priority():
+    prepared = prepare_inbox_card(
+        {
+            "id": "ao-repair",
+            "name": "P5 — AI Orchestrator audit nesouladu a reroute",
+            "desc": "Opravit chybný audit a reroute v AI Orchestratoru.",
+            "labels": [
+                {"name": "AI Orchestrator"},
+                {"name": "P5"},
+            ],
+        },
+        planned_tasks=(
+            PreparedTask(
+                "audit",
+                "Provést audit nesouladu a připravit reroute.",
+                "Prověřit auditní tok.",
+                "AI Orchestrator",
+                priority=4.0,
+                priority_reason="AI planner navrhl P4",
+            ),
+        ),
+    )
+
+    assert prepared.priority == 5
+    assert prepared.tasks[0].priority == 5
+
+
 def test_priority_rubric_handles_pm_abbreviation_and_functional_display_change():
     assert derive_priority(
         {"labels": [{"name": "AI Project Manager"}]},
