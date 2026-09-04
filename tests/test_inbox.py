@@ -359,6 +359,58 @@ def test_process_inbox_creates_multiple_ready_tasks_from_one_source_card():
         assert metadata["dod"] == [item.to_dict() for item in project.dod]
 
 
+def test_process_inbox_routes_infra_subtask_away_from_station_agent_source_identity():
+    """Regression for the reported card: 3 Station Agent tasks + 1 PM/AO fix.
+
+    A Station Agent-labelled source card that splits into three
+    Station-Agent-scoped subtasks plus one subtask naming a different
+    configured project (here the AI Orchestrator infrastructure) must not
+    let the infra subtask inherit the source card's "Station Agent"
+    identity: it gets its own resolved ``project_key``, and the Trello
+    label/child-project path created for it must reflect that (not
+    Station Agent).
+    """
+    client = InMemoryTrelloClient()
+    _, name_to_id = build_list_maps(client)
+    source = client.create_card(
+        name_to_id["Inbox"],
+        "Station agent live chyby a rozšíření",
+        desc=(
+            "Bearing a vzdálenost. Auto tune a hold nefunguje. "
+            "Přidat DX cluster poskytovatele. "
+            "Opravit chybu v AI Orchestrator, který nesprávně routuje "
+            "inbox podúkoly na chybný projekt."
+        ),
+        labels=["Station Agent"],
+    )
+
+    changed = process_inbox(
+        client,
+        [],
+        persist_project=lambda project: sync_project_to_trello(client, project),
+        project_paths={"Station Agent": "D:/station-agent", "AI Orchestrator": "D:/ai-orchestrator"},
+    )
+
+    assert len(changed) == 4
+    station_agent_tasks = [p for p in changed if p.project_key == "Station Agent"]
+    infra_tasks = [p for p in changed if p.project_key == "AI Orchestrator"]
+    assert len(station_agent_tasks) == 3
+    assert len(infra_tasks) == 1
+    infra_task = infra_tasks[0]
+    assert infra_task.project_key != "Station Agent"
+    assert "AI Orchestrator" in infra_task.main_task
+
+    infra_card = client.get_card(infra_task.trello_card_id)
+    infra_labels = {label["name"] for label in infra_card["labels"]}
+    assert "AI Orchestrator" in infra_labels
+    assert "Station Agent" not in infra_labels
+
+    for task in station_agent_tasks:
+        card = client.get_card(task.trello_card_id)
+        labels = {label["name"] for label in card["labels"]}
+        assert "Station Agent" in labels
+
+
 def test_split_retry_keeps_source_until_children_persist_and_does_not_duplicate_them():
     client = InMemoryTrelloClient()
     _, name_to_id = build_list_maps(client)
