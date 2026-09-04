@@ -612,7 +612,7 @@ def process_inbox(
                     task.next_step = prepared_task.next_step
                     task.orchestrator_ready_task = (
                         f"Implementovat tento samostatný rozsah v projektu "
-                        f"{preparation.project_key or prepared_task.title}: {prepared_task.task} "
+                        f"{task.project_key or prepared_task.title}: {prepared_task.task} "
                         "Zachovat chování mimo tento rozsah."
                     )
                     task.dod = list(build_dod((prepared_task,)))
@@ -647,21 +647,14 @@ def process_inbox(
                     next_step=prepared_task.next_step,
                     orchestrator_ready_task=(
                         f"Implementovat tento samostatný rozsah v projektu "
-                        f"{preparation.project_key or prepared_task.title}: {prepared_task.task} "
+                        f"{prepared_task.project_key or prepared_task.title}: {prepared_task.task} "
                         "Zachovat chování mimo tento rozsah."
                     ),
                     dod=list(build_dod((prepared_task,))),
-                    # Diagnostics confirmed (see
-                    # test_last_split_task_scope_does_not_influence_assigned_project_identity):
-                    # ``preparation.project_key`` is resolved once for the
-                    # whole source card and applied to every split subtask
-                    # unchanged, including a trailing remainder task whose
-                    # own scope/content may name a different configured
-                    # project. ``PreparedTask`` carries no per-task identity
-                    # field, so there is currently no way to route an
-                    # individual subtask by its own scope. Left unchanged;
-                    # out of scope for this diagnostic-only ticket.
-                    project_key=preparation.project_key,
+                    # Each subtask is routed by its own resolved identity
+                    # (see ``inbox_preparation._task_project_key``), not by
+                    # blindly inheriting the source card's identity.
+                    project_key=prepared_task.project_key,
                     extra_data={
                         "inbox_preparation": {
                             "source_card_id": source_reference["source_card_id"],

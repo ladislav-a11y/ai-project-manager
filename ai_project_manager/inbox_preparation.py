@@ -66,6 +66,10 @@ class PreparedTask:
     # all listed sibling tasks are in Hotovo; priority orders only tasks that
     # are otherwise dependency-ready.
     depends_on: tuple[int, ...] = ()
+    # Resolved per-task project identity (see ``_task_project_key``).  ``None``
+    # until ``prepare_inbox_card`` assigns it; a task never invents its own
+    # identity, it only narrows the source card's resolution to its own scope.
+    project_key: Optional[str] = None
 
 
 @dataclass(frozen=True)
@@ -464,6 +468,26 @@ def _remainder_clauses(sentences: list[str]) -> list[str]:
     return clauses
 
 
+def _task_project_key(
+    task: PreparedTask,
+    source_key: Optional[str],
+    project_paths: Optional[Mapping[str, str]],
+) -> Optional[str]:
+    """Resolve one subtask's own project identity from its own scope/content.
+
+    A subtask inherits the source card's identity by default. It is routed
+    elsewhere only when its own scope+text unambiguously names exactly one
+    *other* configured project; an absent or ambiguous match still falls
+    back to the source identity instead of guessing.
+    """
+    if not project_paths:
+        return source_key
+    matches = _configured_project_matches(f"{task.scope} {task.task}", project_paths)
+    if len(matches) == 1:
+        return matches[0]
+    return source_key
+
+
 def split_tasks(source_name: str, text: str, project_key: Optional[str]) -> tuple[PreparedTask, ...]:
     """Split materially different workstreams, retaining every source clause."""
     sentences = _sentences(text)
@@ -640,6 +664,10 @@ def prepare_inbox_card(
         prepared_tasks.append(
             replace(task, priority=child_priority, priority_reason=child_reason)
         )
+    prepared_tasks = [
+        replace(task, project_key=_task_project_key(task, project_key, project_paths))
+        for task in prepared_tasks
+    ]
     tasks = tuple(_unique_child_priorities(prepared_tasks))
     return InboxPreparation(
         source_name=source_name,

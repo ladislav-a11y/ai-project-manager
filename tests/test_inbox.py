@@ -137,18 +137,16 @@ def test_preparation_splits_station_agent_card_and_assigns_each_scope_priority()
     assert dod_contract_issues(prepared.dod) == []
 
 
-def test_last_split_task_scope_does_not_influence_assigned_project_identity():
-    """Diagnostic regression confirming the reported root cause.
+def test_subtask_routes_to_its_own_project_identity_instead_of_source():
+    """Regression for the fixed root cause (was: diagnostic-only).
 
-    ``resolve_project_key`` runs once against the whole source card (an
-    explicit Trello identity label wins outright) and the resulting
-    ``InboxPreparation.project_key`` is then applied uniformly to every
-    split subtask by ``process_inbox``/``prepare_inbox_card``.
-    ``PreparedTask`` carries no per-task identity field of its own, so a
-    trailing/remainder subtask whose own content names a *different*
-    configured project still inherits the source card's identity (here
-    "Station Agent") instead of being routed by its own scope. This test
-    only documents the confirmed behavior; fixing it is out of scope here.
+    ``resolve_project_key`` still runs once against the whole source card
+    to bound priority and to fail closed on an ambiguous/missing identity,
+    but each ``PreparedTask`` now carries its own resolved ``project_key``.
+    A trailing/remainder subtask whose own content unambiguously names a
+    *different* configured project is routed there instead of blindly
+    inheriting the source card's identity (here "Station Agent"), while an
+    undifferentiated subtask still inherits the source identity.
     """
     card = {
         "id": "mixed-source",
@@ -166,12 +164,16 @@ def test_last_split_task_scope_does_not_influence_assigned_project_identity():
     )
 
     assert len(prepared.tasks) == 2
-    last_task = prepared.tasks[-1]
+    first_task, last_task = prepared.tasks
     assert "AI Project Manager" in last_task.task
     assert last_task.scope != "auto tune a hold"
-    assert not hasattr(last_task, "project_key")
-    # Root cause: a single card-level identity is applied to every subtask
-    # regardless of its own scope/content.
+    # The undifferentiated subtask still inherits the source identity...
+    assert first_task.project_key == "Station Agent"
+    # ...but the subtask naming a different configured project is routed
+    # by its own scope instead of the source card's identity.
+    assert last_task.project_key == "AI Project Manager"
+    # The source-level identity (used for priority bounds, generation, and
+    # fail-closed checks) remains the whole card's own resolution.
     assert prepared.project_key == "Station Agent"
 
 
