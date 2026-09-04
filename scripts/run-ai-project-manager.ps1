@@ -167,7 +167,8 @@ try {
             'tests/test_inbox.py',
             'tests/test_orchestrator_runner.py',
             'tests/test_recovery_e2e.py',
-            'tests/test_trello_sync.py'
+            'tests/test_trello_sync.py',
+            'WORKFLOW.md'
         )
     }
     $env:AI_ORCHESTRATOR_FINALIZE_PATHS = $finalizePaths | ConvertTo-Json -Compress
