@@ -68,6 +68,7 @@ from .models import ProjectRecord
 from .inbox_preparation import (
     PreparedTask,
     enforce_indivisible_inbox_source_contract,
+    is_explicit_indivisible_inbox_source,
     task_execution_order,
 )
 from .orchestrator_handoff import (
@@ -266,12 +267,13 @@ def _json_object(text: str) -> Optional[dict]:
             return None
 
 
-def _planner_tasks(payload: dict) -> Optional[list[PreparedTask]]:
+def _planner_tasks(payload: dict, *, indivisible: bool) -> Optional[list[PreparedTask]]:
     tasks = payload.get("tasks")
-    # Fail-closed indivisible source contract: an AI plan for one Inbox
-    # source card must describe exactly one task. Any other count is
-    # rejected here, before a single ``PreparedTask`` is built.
-    if enforce_indivisible_inbox_source_contract(tasks) is not None:
+    # Fail-closed indivisible source contract: an AI plan for a source card
+    # explicitly marked ``[indivisible]`` must describe exactly one task. An
+    # ordinary splittable source only needs a non-empty task list. Any
+    # violation is rejected here, before a single ``PreparedTask`` is built.
+    if enforce_indivisible_inbox_source_contract(tasks, indivisible=indivisible) is not None:
         return None
     result: list[PreparedTask] = []
     for item in tasks:
@@ -379,6 +381,7 @@ def build_inbox_planner_fn(
     planner_command = _plan_command(command)
 
     def plan(card: dict, projects: list[ProjectRecord]) -> Optional[dict]:
+        indivisible = is_explicit_indivisible_inbox_source(card)
         request = {
             "card": {
                 "id": str(card.get("id") or ""),
@@ -456,10 +459,11 @@ def build_inbox_planner_fn(
                     provider_registry.mark_error(provider, reason, timedelta(minutes=30))
                 continue
             plan_payload = _json_object(str(envelope.get("output") or ""))
-            tasks = _planner_tasks(plan_payload or {})
+            tasks = _planner_tasks(plan_payload or {}, indivisible=indivisible)
             if tasks is None:
                 contract_violation = enforce_indivisible_inbox_source_contract(
-                    (plan_payload or {}).get("tasks")
+                    (plan_payload or {}).get("tasks"),
+                    indivisible=indivisible,
                 )
                 reason = contract_violation or "AI Inbox planner vrátil neplatný task plán"
                 provider_registry.mark_error(provider, reason, timedelta(minutes=30))

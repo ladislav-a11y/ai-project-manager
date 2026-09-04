@@ -22,6 +22,7 @@ from .inbox_preparation import (
     build_dod,
     enforce_indivisible_inbox_source_contract,
     inbox_source_text,
+    is_explicit_indivisible_inbox_source,
     prepare_inbox_card,
     prioritize_inbox_cards,
     visible_inbox_description,
@@ -537,11 +538,15 @@ def process_inbox(
                 )
                 continue
             planned_tasks = tuple(planner_result["tasks"])
-            contract_violation = enforce_indivisible_inbox_source_contract(planned_tasks)
+            contract_violation = enforce_indivisible_inbox_source_contract(
+                planned_tasks,
+                indivisible=is_explicit_indivisible_inbox_source(card),
+            )
             if contract_violation:
                 # Fail-closed: reject before any Připraveno write rather than
-                # materialize a plan that splits one indivisible Inbox source
-                # into several AI-proposed tasks.
+                # materialize a plan that violates the applicable Inbox
+                # source contract (empty plan, or a multi-task plan for a
+                # source explicitly marked ``[indivisible]``).
                 logger.warning(
                     "Inbox card left in Inbox: %s id=%s name=%r",
                     contract_violation, card.get("id"), card.get("name"),

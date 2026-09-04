@@ -1946,53 +1946,73 @@ def test_inbox_planner_excludes_retired_gemini_and_hermes_and_returns_validated_
     assert "hermes" not in calls[0][0]
 
 
-def test_inbox_planner_fails_closed_on_multi_task_plan_indivisible_source_contract():
-    """One Inbox source card is indivisible for the AI planner: a plan
-    describing more than one task must be rejected before it can reach
-    ``process_inbox`` and be materialized into Připraveno."""
+def _two_task_subprocess(command, **kwargs):
+    return completed(
+        json.dumps(
+            {
+                "success": True,
+                "provider": "claude",
+                "model": "claude-haiku",
+                "output": json.dumps(
+                    {
+                        "tasks": [
+                            {
+                                "scope": "část 1",
+                                "task": "Udělat první část.",
+                                "next_step": "Začít.",
+                                "priority": 2,
+                                "priority_reason": "výchozí priorita",
+                            },
+                            {
+                                "scope": "část 2",
+                                "task": "Udělat druhou část.",
+                                "next_step": "Pokračovat.",
+                                "priority": 3,
+                                "priority_reason": "výchozí priorita",
+                            },
+                        ]
+                    }
+                ),
+            }
+        )
+    )
+
+
+def test_inbox_planner_fails_closed_on_multi_task_plan_when_source_explicitly_marked_indivisible():
+    """A source card carrying the explicit ``[indivisible]`` marker is bound
+    to exactly one AI-planned task; a multi-task plan must be rejected
+    before it can reach ``process_inbox`` and be materialized into
+    Připraveno."""
     registry = ProviderRegistry()
     registry.mark_available("claude")
-
-    def fake_subprocess(command, **kwargs):
-        return completed(
-            json.dumps(
-                {
-                    "success": True,
-                    "provider": "claude",
-                    "model": "claude-haiku",
-                    "output": json.dumps(
-                        {
-                            "tasks": [
-                                {
-                                    "scope": "část 1",
-                                    "task": "Udělat první část.",
-                                    "next_step": "Začít.",
-                                    "priority": 2,
-                                    "priority_reason": "výchozí priorita",
-                                },
-                                {
-                                    "scope": "část 2",
-                                    "task": "Udělat druhou část.",
-                                    "next_step": "Pokračovat.",
-                                    "priority": 3,
-                                    "priority_reason": "výchozí priorita",
-                                },
-                            ]
-                        }
-                    ),
-                }
-            )
-        )
 
     planner = build_inbox_planner_fn(
         registry,
         ["python", "orchestrator.py", "autonomous", "--no-commit"],
-        subprocess_run=fake_subprocess,
+        subprocess_run=_two_task_subprocess,
     )
 
-    assert planner({"id": "source", "name": "Nápad", "desc": "Úkol"}, []) is None
+    assert planner({"id": "source", "name": "Nápad [indivisible]", "desc": "Úkol"}, []) is None
     status = registry.get_status("claude")
     assert "nedělitelná" in status.last_error
+
+
+def test_inbox_planner_allows_multi_task_plan_for_ordinary_splittable_source():
+    """A source card without the explicit ``[indivisible]`` marker is an
+    ordinary splittable request: the AI planner may describe several
+    tasks for it."""
+    registry = ProviderRegistry()
+    registry.mark_available("claude")
+
+    planner = build_inbox_planner_fn(
+        registry,
+        ["python", "orchestrator.py", "autonomous", "--no-commit"],
+        subprocess_run=_two_task_subprocess,
+    )
+
+    result = planner({"id": "source", "name": "Nápad", "desc": "Úkol"}, [])
+    assert result is not None
+    assert len(result["tasks"]) == 2
 
 
 def test_inbox_planner_does_not_fallback_to_hermes_when_it_is_the_only_provider():

@@ -16,6 +16,7 @@ from ai_project_manager.inbox_preparation import (
     PreparedTask,
     derive_priority,
     enforce_indivisible_inbox_source_contract,
+    is_explicit_indivisible_inbox_source,
     prepare_inbox_card,
     prioritize_inbox_cards,
     task_execution_order,
@@ -51,30 +52,84 @@ def test_indivisible_source_contract_accepts_exactly_one_task():
     task = PreparedTask(
         title="scope", task="Udělat věc.", next_step="Začít.", scope="scope",
     )
-    assert enforce_indivisible_inbox_source_contract((task,)) is None
+    assert enforce_indivisible_inbox_source_contract((task,), indivisible=True) is None
+    assert enforce_indivisible_inbox_source_contract((task,), indivisible=False) is None
 
 
-def test_indivisible_source_contract_rejects_zero_or_multiple_tasks():
+def test_indivisible_source_contract_rejects_zero_tasks_regardless_of_marker():
+    assert enforce_indivisible_inbox_source_contract((), indivisible=True) is not None
+    assert enforce_indivisible_inbox_source_contract((), indivisible=False) is not None
+    assert enforce_indivisible_inbox_source_contract("not a list", indivisible=False) is not None
+
+
+def test_indivisible_source_contract_rejects_multiple_tasks_only_when_marked():
     task = PreparedTask(
         title="scope", task="Udělat věc.", next_step="Začít.", scope="scope",
     )
-    assert enforce_indivisible_inbox_source_contract(()) is not None
-    reason = enforce_indivisible_inbox_source_contract((task, task))
+    # An ordinary splittable source is free to have several planned tasks.
+    assert enforce_indivisible_inbox_source_contract((task, task), indivisible=False) is None
+    # A source explicitly marked indivisible stays bound to exactly one.
+    reason = enforce_indivisible_inbox_source_contract((task, task), indivisible=True)
     assert reason is not None
     assert "nedělitelná" in reason
-    assert enforce_indivisible_inbox_source_contract("not a list") is not None
 
 
-def test_process_inbox_fails_closed_when_ai_planner_returns_multiple_tasks():
-    """Fail-closed indivisible Inbox source contract: an AI plan describing
-    more than one task for a single source card must never reach Připraveno;
-    the card stays in Inbox with no project written."""
+def test_explicit_indivisible_marker_is_detected_in_title_or_description():
+    assert is_explicit_indivisible_inbox_source({"name": "Nápad [indivisible]", "desc": ""})
+    assert is_explicit_indivisible_inbox_source({"name": "Nápad", "desc": "Text. [Indivisible]"})
+    assert not is_explicit_indivisible_inbox_source({"name": "Nápad", "desc": "Běžný požadavek."})
+
+
+def test_process_inbox_allows_multiple_tasks_for_ordinary_splittable_source():
+    """An ordinary Inbox source card (no explicit ``[indivisible]`` marker)
+    may be split by the AI planner into several dependency-ordered tasks."""
     client = InMemoryTrelloClient()
     _, name_to_id = build_list_maps(client)
 
     source = client.create_card(
         name_to_id["Inbox"],
         "nový nápad",
+        desc="Popis nápadu, který AI planner smí rozdělit na víc úkolů.",
+    )
+
+    def planner(card, projects):
+        return {
+            "provider": "claude",
+            "model": None,
+            "tasks": (
+                PreparedTask(
+                    title="část 1", task="Udělat první část.", next_step="Začít.",
+                    scope="část 1",
+                ),
+                PreparedTask(
+                    title="část 2", task="Udělat druhou část.", next_step="Pokračovat.",
+                    scope="část 2",
+                ),
+            ),
+        }
+
+    changed = process_inbox(
+        client,
+        [],
+        persist_project=lambda project: sync_project_to_trello(client, project),
+        projects_root="D:/orchestrator",
+        planner=planner,
+    )
+
+    assert changed != []
+    assert client.get_card(source["id"])["list_id"] != name_to_id["Inbox"]
+
+
+def test_process_inbox_fails_closed_when_marked_indivisible_source_returns_multiple_tasks():
+    """Fail-closed indivisible Inbox source contract: an AI plan describing
+    more than one task for a card explicitly marked ``[indivisible]`` must
+    never reach Připraveno; the card stays in Inbox with no project written."""
+    client = InMemoryTrelloClient()
+    _, name_to_id = build_list_maps(client)
+
+    source = client.create_card(
+        name_to_id["Inbox"],
+        "nový nápad [indivisible]",
         desc="Popis nápadu, který AI planner nesprávně rozdělí na víc úkolů.",
     )
 

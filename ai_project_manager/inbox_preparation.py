@@ -53,30 +53,56 @@ _PROJECT_IDENTITY_ALIASES = {
 
 
 # The AI planner (see ``orchestrator_runner.build_inbox_planner_fn``) plans
-# from exactly one Inbox source card and must describe exactly one
-# indivisible task for it. This is deliberately stricter than the local
-# deterministic ``split_tasks`` fallback below, which remains free to divide
-# one card into several dependency-ordered subtasks for tests and
-# backwards-compatible callers; only AI-produced plans are bound by this
-# fail-closed contract, enforced before any card is written into Připraveno.
+# from exactly one Inbox source card. By default a source is an ordinary
+# splittable request and the planner may describe several
+# dependency-ordered tasks for it, mirroring the local deterministic
+# ``split_tasks`` fallback below. A source card becomes bound to the
+# stricter fail-closed one-task contract only when it carries the explicit
+# ``[indivisible]`` marker (see ``is_explicit_indivisible_inbox_source``);
+# that opt-in, never inferred from wording/length, is enforced before any
+# card is written into Připraveno.
 INDIVISIBLE_SOURCE_TASK_COUNT = 1
 
+_INDIVISIBLE_SOURCE_MARKER_RE = re.compile(r"(?<!\w)\[\s*indivisible\s*\]", re.IGNORECASE)
 
-def enforce_indivisible_inbox_source_contract(tasks) -> Optional[str]:
+
+def is_explicit_indivisible_inbox_source(card: Mapping) -> bool:
+    """Return whether *card* carries the explicit ``[indivisible]`` marker.
+
+    Detection is a literal, deterministic bracketed token in the card title
+    or visible description - never inferred from the request's length,
+    wording, or perceived complexity. Only a source card that opts in this
+    way is bound to the fail-closed one-task contract; an ordinary Inbox
+    source stays free to split into several AI-planned tasks.
+    """
+    title = str(card.get("name") or "")
+    if _INDIVISIBLE_SOURCE_MARKER_RE.search(title):
+        return True
+    return bool(_INDIVISIBLE_SOURCE_MARKER_RE.search(visible_inbox_description(card)))
+
+
+def enforce_indivisible_inbox_source_contract(tasks, *, indivisible: bool) -> Optional[str]:
     """Return a concrete Czech rejection reason, or ``None`` if the AI
-    planner's task list honours the one-source-card/one-task contract.
+    planner's task list honours the applicable Inbox source contract.
 
+    ``indivisible`` must be the caller's own explicit determination (see
+    ``is_explicit_indivisible_inbox_source``) - this function never infers
+    it. A non-indivisible source only requires a non-empty task list; a
+    source explicitly marked indivisible must describe exactly one task.
     Callers must fail closed on a non-``None`` result: leave the source card
     in Inbox and perform no Trello write, rather than materializing a
-    multi-task AI plan into Připraveno.
+    contract-violating AI plan into Připraveno.
     """
     if not isinstance(tasks, (list, tuple)):
         return "Výstup AI planneru není pole úkolů."
     count = len(tasks)
-    if count != INDIVISIBLE_SOURCE_TASK_COUNT:
+    if count == 0:
+        return "AI planner nevrátil žádný úkol."
+    if indivisible and count != INDIVISIBLE_SOURCE_TASK_COUNT:
         return (
             f"AI planner vrátil {count} úkolů; zdrojová Inbox karta je "
-            "nedělitelná a smí mít právě jeden úkol."
+            "explicitně označena jako nedělitelná ([indivisible]) a smí mít "
+            "právě jeden úkol."
         )
     return None
 
