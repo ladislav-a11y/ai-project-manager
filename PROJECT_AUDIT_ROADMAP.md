@@ -607,3 +607,76 @@ byl jednorázově ručně opraven přímo v živém Trellu: opravné a PM karty 
 jedinečné `P5.01` až `P5.05`; Bazar požadavky 1 až 17 mají jedinečné `P2.01`
 až `P2.17`, tedy požadavek 5 je `P2.05`. Po tomto repair zásahu už PM
 priority nepřiděluje ani nemění; pouze respektuje hodnotu získanou při intake.
+
+---
+
+## 9. Analýza routingu: Inbox planning → PM → ai-orchestrator → provider/model
+(Inbox požadavek „AI Project Manager / ai-orchestrator — analýza routingu",
+2026-09-05; navazuje na mapování v sekci 8, doplňuje ho o aktuální řádkové
+odkazy a o místa, která sekce 8 dosud nepojmenovala. Toto je čistě analytická/
+dokumentační karta — žádné chování mimo tento zápis nebylo měněno.)
+
+### 9.1 Celá cesta v pořadí volání
+
+1. **Inbox planning** (`orchestrator_runner.build_inbox_planner_fn`,
+   `orchestrator_runner.py:363-`) — čte novou Inbox kartu, vybírá providera
+   z pevného `INBOX_PLANNER_PROVIDERS = ("antigravity", "claude", "codex")`
+   (`orchestrator_runner.py:318`) a zapisuje `selection = {"provider":...,
+   "model": _inbox_model_hint(...), ...}` (`orchestrator_runner.py:413-421`).
+2. **PM/scheduler** (`scheduler.pick_next_project` /
+   `pick_next_audit_project`) vybírá jen **providera** (první dostupný v
+   `AI_PM_PROVIDERS`/`AI_PM_PROVIDERS_FOR_PROJECT`) — nikdy model.
+3. **`ProjectRecord`** (`models.py:140-203`) nese `provider: Optional[str]`
+   jako jediné trvalé, Trello-perzistované pole vztahující se k volbě LLM.
+   **Žádné pole `model` v `ProjectRecord` neexistuje** — `to_dict`/`from_dict`
+   (`models.py:262-301`) ho tedy ani nemůže serializovat.
+4. **Card Contract** (`card_contract.py:203-213`, `KNOWN_FIELDS`) přesně
+   odpovídá bodu 3: obsahuje `"provider"`, ale žádné `"model"`. Trello (jediný
+   zdroj pravdy dle runtime kontraktu) tedy **nikdy** neperzistuje deklarovaný
+   model — jen providera.
+5. **Dispatch** (`orchestrator_runner.build_run_fn`/`build_audit_run_fn`,
+   `orchestrator_runner.py:1137-`/`1392-`) sestaví `full_command` s `--agent
+   {agent_name}` (`orchestrator_runner.py:1239-1254`, `1463-`), ale **bez
+   `--model`** — v obou funkcích existuje pouze mrtvá lokální proměnná
+   `selected_model = None` (`orchestrator_runner.py:1193`, `1437`), která se
+   nikam dál nepoužije (grep na `selected_model` v tomto souboru vrací
+   výhradně tyto dva přiřazovací řádky). Ai-orchestrator tedy dostává jen
+   providera/agenta a text úkolu; konkrétní model si volí sám.
+6. **Návrat z ai-orchestrátoru**: pokud outbox obsahuje `active_model`/
+   `model`/`usage.total.model`, PM ho pouze **zapíše do reportovacích
+   textů** (Trello `next_step`/Slack), nikdy zpětně neovlivní už odeslaný
+   dispatch (`runner.py:103-152`, `slack_notify.py:124-231`).
+
+### 9.2 Přesná místa, kde se deklarovaná volba providera/modelu ztrácí nebo
+nahrazuje hodnotou „provider default" / „model nezjištěn"
+
+| # | Místo (soubor:řádek) | Co se děje |
+|---|---|---|
+| 1 | `orchestrator_runner.py:321-332` (`_inbox_model_hint`) | Před voláním Inbox planneru se sestaví jen **operátorský hint** — `f"provider default (návrh katalogu: {configured}; ...)"` nebo `"provider default (provider rozhodne...)"`. `configured` pochází z `provider_registry.model_for_task(...)`, ale tato hodnota se nikam dál nepředává jako skutečný `--model`; je to čistě informativní text. |
+| 2 | `orchestrator_runner.py:1193` a `:1437` | `selected_model = None` je nastaveno v `run_fn`/`audit_run_fn`, ale nikdy dál použito — je to mrtvý zbytek z dřívějšího návrhu (sekce 8.3-8.5), kdy se model ještě vybíral přes `model_for_task`. Jediné aktivní chování dnes je, že se `--model` do `full_command` vůbec nepřidává. |
+| 3 | `providers.py:145-168` (`model_for_task`) | Vlastní docstring přiznává: „Production dispatch does not call this helper; it is retained for diagnostics...". Jediný produkční volající je `_inbox_model_hint` (bod 1) — pro hint text, ne pro argv. |
+| 4 | `runner.py:103-105` (`_display_model`) | `return model or "provider default (nezjištěn)"` — kdykoli ai-orchestrátor ve výsledku nevrátí potvrzený `active_model`/`model`, human-facing text v Trellu/Slacku dostane doslova řetězec „provider default (nezjištěn)". |
+| 5 | `slack_notify.py:190-193` (`provider_route_detail`) | `model_by_provider.get(name, 'nezjištěn')` — pro každého providera v `provider_sequence`, pro kterého žádná `usage.events` položka ani `active_model` neobsahuje jeho model, se ve „model path" zobrazí doslova `nezjištěn`. |
+| 6 | `daemon.py:178-193` (`_run_recovery_pass`, návrat po vypršení `retry_after`) | Při obnově karty z čekání na providera se `project.extra_data["provider_selection"]` explicitně přepíše na `selected_model=None, model=None, actual_provider=None, actual_model=None, source="provider_default"` — jakákoli dříve zaznamenaná model/„actual" hodnota se tímto krokem zahodí, protože nový běh z checkpointu je nový výběr, ne pokračování stejného potvrzeného modelu. |
+| 7 | `card_contract.py:203-213` (`KNOWN_FIELDS`) + `models.py:140-203` (`ProjectRecord`) | Structural: **Trello karta jako jediný zdroj pravdy nemá pole pro model vůbec** — jen `provider`. I kdyby nějaká vrstva model chvilkově znala (`extra_data["provider_selection"]["model"]`), přežije to jen v neverzovaném `extra_data`, ne jako kanonické pole s vlastní validací/migrací jako `provider`. |
+| 8 | `ai_project_manager/inbox.py:34-45` (`INBOX_PLANNING_FORBIDDEN_PROVIDERS`, `inbox_planner_providers`) | Nepoužívaný duplikát politiky „žádný Hermes/Gemini v Inbox planningu" — `orchestrator_runner.py` tuto funkci nikdy nevolá (žádný `from .inbox import` v `orchestrator_runner.py`). Efektivní chování je dnes shodné s `INBOX_PLANNER_PROVIDERS` (bod 1 sekce 9.1), ale je to nezávislá kopie, ne sdílený zdroj — riziko budoucího rozjetí, ne ztráta dnes. Již zaznamenáno v sekci 8.2; potvrzeno stále platným v této iteraci. |
+
+### 9.3 Shrnutí: je to bug, nebo záměr?
+
+Žádné z míst v 9.2 není tichá regrese — kód na každém z nich má komentář nebo
+docstring vysvětlující záměr „PM nepředává `--model`, provider si vybere sám"
+(viz sekce 8.6, aktuální kontrakt). „provider default (nezjištěn)" a
+„nezjištěn" jsou tedy **záměrově** čitelné zástupné texty pro operátora, ne
+ztracená data — reálná hodnota modelu nikdy neexistovala k okamžiku dispatch,
+protože PM ji cíleně nezjišťuje předem. Jediná položka, která přesahuje čistý
+záměr, je bod 2 (mrtvé `selected_model = None` proměnné) a bod 8 (nepoužívaný
+duplicitní modul `inbox.py`) — obě jsou neškodný mrtvý kód, ne funkční chyba,
+a jejich úklid je mimo rozsah této analytické karty (viz bod 10 v sekci 7.4).
+
+### 9.4 Co zůstává mimo rozsah této karty
+
+Tato karta je čistě analytická — žádný ze zdrojových souborů uvedených výše
+nebyl touto iterací upraven. Případný úklid mrtvého kódu (`selected_model`
+proměnné, duplicitní `inbox.py` funkce) nebo rozšíření Card Contractu o
+kanonické pole pro potvrzený model patří do samostatné, výslovně schválené
+karty — ne do této, jejímž jediným DoD je doložit, kde se volba ztrácí.

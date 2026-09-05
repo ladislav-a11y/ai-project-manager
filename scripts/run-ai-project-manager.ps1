@@ -173,7 +173,8 @@ try {
             'tests/test_orchestrator_runner.py',
             'tests/test_recovery_e2e.py',
             'tests/test_trello_sync.py',
-            'WORKFLOW.md'
+            'WORKFLOW.md',
+            'PROJECT_AUDIT_ROADMAP.md'
         )
         # AI Orchestrator's current implementation scope is deliberately
         # explicit: the handoff document in that checkout is pre-existing
