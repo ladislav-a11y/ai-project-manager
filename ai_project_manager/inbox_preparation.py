@@ -109,7 +109,7 @@ def enforce_indivisible_inbox_source_contract(tasks, *, indivisible: bool) -> Op
 
 @dataclass(frozen=True)
 class PreparedTask:
-    """One independently dispatchable task derived from one Inbox card."""
+    """One independently dispatchable card-sized work result from Inbox."""
 
     title: str
     task: str
@@ -121,6 +121,10 @@ class PreparedTask:
     # all listed sibling tasks are in Hotovo; priority orders only tasks that
     # are otherwise dependency-ready.
     depends_on: tuple[int, ...] = ()
+    # The work result is implementation-owned. The standard independent AO
+    # audit is attached to the same Trello card later by build_dod.
+    work_type: str = "implementation"
+    split_reason: str = "Jeden koherentní pracovní výsledek z původního zadání."
     # Resolved per-task project identity (see ``_task_project_key``).  ``None``
     # until ``prepare_inbox_card`` assigns it; a task never invents its own
     # identity, it only narrows the source card's resolution to its own scope.

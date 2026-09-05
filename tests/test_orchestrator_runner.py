@@ -37,7 +37,7 @@ def ProjectRecord(*args, **kwargs):
 
 
 def test_inbox_planner_provider_allowlist_never_contains_hermes():
-    assert INBOX_PLANNER_PROVIDERS == ("antigravity", "claude", "codex")
+    assert INBOX_PLANNER_PROVIDERS == ("antigravity", "claude-code", "codex")
     assert "hermes" not in INBOX_PLANNER_PROVIDERS
 
 
@@ -1916,6 +1916,8 @@ def test_inbox_planner_excludes_retired_provider_names_and_returns_validated_ai_
                                     "next_step": "Reprodukovat regresi.",
                                     "priority": 4.01,
                                     "priority_reason": "potvrzená regrese; P5 pracovní oprava",
+                                    "work_type": "implementation",
+                                    "split_reason": "Jeden koherentní výsledek opravy.",
                                 }
                             ]
                         }
@@ -1950,7 +1952,7 @@ def _two_task_subprocess(command, **kwargs):
         json.dumps(
             {
                 "success": True,
-                "provider": "claude",
+                "provider": "claude-code",
                 "model": "claude-haiku",
                 "output": json.dumps(
                     {
@@ -1961,6 +1963,8 @@ def _two_task_subprocess(command, **kwargs):
                                 "next_step": "Začít.",
                                 "priority": 2,
                                 "priority_reason": "výchozí priorita",
+                                "work_type": "implementation",
+                                "split_reason": "Samostatný výsledek první části.",
                             },
                             {
                                 "scope": "část 2",
@@ -1968,6 +1972,8 @@ def _two_task_subprocess(command, **kwargs):
                                 "next_step": "Pokračovat.",
                                 "priority": 3,
                                 "priority_reason": "výchozí priorita",
+                                "work_type": "implementation",
+                                "split_reason": "Samostatný výsledek druhé části.",
                             },
                         ]
                     }
@@ -1983,7 +1989,7 @@ def test_inbox_planner_fails_closed_on_multi_task_plan_when_source_explicitly_ma
     before it can reach ``process_inbox`` and be materialized into
     Připraveno."""
     registry = ProviderRegistry()
-    registry.mark_available("claude")
+    registry.mark_available("claude-code")
 
     planner = build_inbox_planner_fn(
         registry,
@@ -1992,7 +1998,7 @@ def test_inbox_planner_fails_closed_on_multi_task_plan_when_source_explicitly_ma
     )
 
     assert planner({"id": "source", "name": "Nápad [indivisible]", "desc": "Úkol"}, []) is None
-    status = registry.get_status("claude")
+    status = registry.get_status("claude-code")
     assert "nedělitelná" in status.last_error
 
 
@@ -2001,7 +2007,7 @@ def test_inbox_planner_allows_multi_task_plan_for_ordinary_splittable_source():
     ordinary splittable request: the AI planner may describe several
     tasks for it."""
     registry = ProviderRegistry()
-    registry.mark_available("claude")
+    registry.mark_available("claude-code")
 
     planner = build_inbox_planner_fn(
         registry,

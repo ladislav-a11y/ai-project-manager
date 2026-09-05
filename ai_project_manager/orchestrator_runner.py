@@ -304,10 +304,14 @@ def _planner_tasks(payload: dict, *, indivisible: bool) -> Optional[list[Prepare
         priority = item.get("priority")
         priority_reason = item.get("priority_reason")
         depends_on = item.get("depends_on", [])
+        work_type = item.get("work_type")
+        split_reason = item.get("split_reason")
         if not all(
             isinstance(value, str) and value.strip()
-            for value in (scope, task, next_step, priority_reason)
+            for value in (scope, task, next_step, priority_reason, work_type, split_reason)
         ):
+            return None
+        if work_type not in {"implementation", "research", "configuration", "integration", "tests"}:
             return None
         if not isinstance(depends_on, list):
             return None
@@ -324,6 +328,8 @@ def _planner_tasks(payload: dict, *, indivisible: bool) -> Optional[list[Prepare
                 priority=float(priority),
                 priority_reason=str(priority_reason).strip(),
                 depends_on=tuple(depends_on),
+                work_type=str(work_type).strip(),
+                split_reason=str(split_reason).strip(),
             )
         )
     if len({task.priority for task in result}) != len(result):
@@ -335,7 +341,7 @@ def _planner_tasks(payload: dict, *, indivisible: bool) -> Optional[list[Prepare
     return result
 
 
-INBOX_PLANNER_PROVIDERS = ("antigravity", "claude", "codex")
+INBOX_PLANNER_PROVIDERS = ("antigravity", "claude-code", "codex")
 
 
 def _inbox_model_hint(provider: str, provider_registry: ProviderRegistry) -> str:
@@ -411,7 +417,15 @@ def build_inbox_planner_fn(
                 ],
             },
             "existing_projects": [
-                {"name": project.name, "project_key": project.project_key, "main_task": project.main_task}
+                {
+                    "name": project.name,
+                    "project_key": project.project_key,
+                    "status": project.status.value,
+                    "main_task": project.main_task,
+                    "next_step": project.next_step,
+                    "orchestrator_ready_task": project.orchestrator_ready_task,
+                    "dod": [item.to_dict() for item in project.dod],
+                }
                 for project in projects
                 if project.status.value != "done"
             ],

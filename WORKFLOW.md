@@ -153,6 +153,17 @@ Při retry se již zapsané cíle identifikují jednoznačně podle zdrojového 
 `subtask_index`, nikdy podle podobnosti názvů, takže částečně dokončený split
 nevytvoří duplicity.
 
+Každá nově připravená cílová karta představuje jeden koherentní pracovní
+výsledek. Implementace, konfigurace, integrace, potřebné testy a dokumentace
+se proto nesmějí rozdělit jen podle souboru, vrstvy nebo workflow fáze.
+Standardní nezávislý audit ai-orchestratoru, testování, live evidence a verdikt
+accepted/rejected patří do auditní fáze téže karty a samy o sobě nevytvářejí
+další intake kartu. Nová karta v PM-DATA v inbox_preparation zachovává
+work_type (implementation, research, configuration, integration nebo tests)
+a neprázdný split_reason; hodnota audit je pro intake nepřípustná.
+split_reason vysvětluje buď jeden koherentní výsledek, nebo konkrétní důvod
+skutečného rozdělení na samostatné výsledky.
+
 Návaznost podúkolů je závazná: PM zachová `depends_on_subtask_indices` a
 `execution_order` a scheduler smí přesunout do `Pracuje se` pouze kartu,
 jejíchž předchůdci jsou dokončeni nebo řádně uzavřeni. Planner může zvolit
