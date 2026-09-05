@@ -210,6 +210,7 @@ def main(
     inbox_planner = build_inbox_planner_fn(
         provider_registry,
         command=config.orchestrator.command,
+        project_paths=config.orchestrator.project_paths,
         timeout_seconds=180,
         selection_notifier=notify_inbox_selection,
     )

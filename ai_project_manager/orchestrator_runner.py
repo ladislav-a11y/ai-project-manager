@@ -55,7 +55,7 @@ import subprocess
 import uuid
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Callable, Optional
+from typing import Callable, Mapping, Optional
 
 from .dod_validator import (
     RunCommand,
@@ -286,7 +286,12 @@ def _json_object(text: str) -> Optional[dict]:
             return None
 
 
-def _planner_tasks(payload: dict, *, indivisible: bool) -> Optional[list[PreparedTask]]:
+def _planner_tasks(
+    payload: dict,
+    *,
+    indivisible: bool,
+    allowed_project_keys: Optional[set[str]] = None,
+) -> Optional[list[PreparedTask]]:
     tasks = payload.get("tasks")
     # Fail-closed indivisible source contract: an AI plan for a source card
     # explicitly marked ``[indivisible]`` must describe exactly one task. An
@@ -298,6 +303,7 @@ def _planner_tasks(payload: dict, *, indivisible: bool) -> Optional[list[Prepare
     for item in tasks:
         if not isinstance(item, dict):
             return None
+        project_key = item.get("project_key")
         scope = item.get("scope")
         task = item.get("task")
         next_step = item.get("next_step")
@@ -313,6 +319,9 @@ def _planner_tasks(payload: dict, *, indivisible: bool) -> Optional[list[Prepare
             return None
         if work_type not in {"implementation", "research", "configuration", "integration", "tests"}:
             return None
+        if allowed_project_keys is not None:
+            if not isinstance(project_key, str) or project_key.strip() not in allowed_project_keys:
+                return None
         if not isinstance(depends_on, list):
             return None
         if isinstance(priority, bool) or not isinstance(priority, (int, float)):
@@ -330,6 +339,7 @@ def _planner_tasks(payload: dict, *, indivisible: bool) -> Optional[list[Prepare
                 depends_on=tuple(depends_on),
                 work_type=str(work_type).strip(),
                 split_reason=str(split_reason).strip(),
+                project_key=(str(project_key).strip() if isinstance(project_key, str) else None),
             )
         )
     if len({task.priority for task in result}) != len(result):
@@ -390,6 +400,7 @@ def build_inbox_planner_fn(
     provider_registry: ProviderRegistry,
     command: list,
     *,
+    project_paths: Optional[Mapping[str, str]] = None,
     subprocess_run: Optional[Callable[..., "subprocess.CompletedProcess"]] = None,
     timeout_seconds: float = 180,
     selection_notifier: Optional[Callable[[dict], None]] = None,
@@ -428,6 +439,13 @@ def build_inbox_planner_fn(
                 }
                 for project in projects
                 if project.status.value != "done"
+            ],
+            "configured_projects": [
+                {
+                    "project_key": str(project_key),
+                    "project_path": str(project_path),
+                }
+                for project_key, project_path in (project_paths or {}).items()
             ],
         }
         available = tuple(
@@ -491,7 +509,11 @@ def build_inbox_planner_fn(
                     provider_registry.mark_error(provider, reason, timedelta(minutes=30))
                 continue
             plan_payload = _json_object(str(envelope.get("output") or ""))
-            tasks = _planner_tasks(plan_payload or {}, indivisible=indivisible)
+            tasks = _planner_tasks(
+                plan_payload or {},
+                indivisible=indivisible,
+                allowed_project_keys=(set(project_paths) if project_paths else None),
+            )
             if tasks is None:
                 contract_violation = enforce_indivisible_inbox_source_contract(
                     (plan_payload or {}).get("tasks"),

@@ -53,7 +53,7 @@ class TrelloConfig:
     key: str
     token: str
     board_id: str
-    inbox_list_name: str = "Inbox"
+    inbox_list_name: str = "INBOX / Nápady"
 
 
 @dataclass
@@ -217,7 +217,7 @@ def load_config(env: Optional[Mapping[str, str]] = None) -> Config:
 
     Recognized variables:
       TRELLO_KEY, TRELLO_TOKEN, TRELLO_BOARD_ID   (required)
-      TRELLO_INBOX_LIST                            (default "Inbox")
+      TRELLO_INBOX_LIST                            (default "INBOX / Nápady")
       AI_ORCHESTRATOR_CMD                          (default "ai-orchestrator")
       AI_ORCHESTRATOR_FINALIZE_CMD                 (optional controller finalize command)
       AI_ORCHESTRATOR_ALLOWED_PUSH_REMOTES         (optional JSON identity -> exact remote URL)
@@ -245,7 +245,7 @@ def load_config(env: Optional[Mapping[str, str]] = None) -> Config:
         key=_require(env, "TRELLO_KEY"),
         token=_require(env, "TRELLO_TOKEN"),
         board_id=_require(env, "TRELLO_BOARD_ID"),
-        inbox_list_name=_non_empty(env, "TRELLO_INBOX_LIST", "Inbox"),
+        inbox_list_name=_non_empty(env, "TRELLO_INBOX_LIST", "INBOX / Nápady"),
     )
 
     orchestrator_cmd = env.get("AI_ORCHESTRATOR_CMD", "ai-orchestrator")

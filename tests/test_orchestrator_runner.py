@@ -1911,6 +1911,7 @@ def test_inbox_planner_excludes_retired_provider_names_and_returns_validated_ai_
                         {
                             "tasks": [
                                 {
+                                    "project_key": "AI Project Manager",
                                     "scope": "regrese",
                                     "task": "Opravit potvrzenou regresi.",
                                     "next_step": "Reprodukovat regresi.",
@@ -1929,6 +1930,10 @@ def test_inbox_planner_excludes_retired_provider_names_and_returns_validated_ai_
     planner = build_inbox_planner_fn(
         registry,
         ["python", "orchestrator.py", "autonomous", "--no-commit"],
+        project_paths={
+            "AI Project Manager": r"D:\orchestrator\ai-project-manager",
+            "AI Orchestrator": r"D:\orchestrator\ai-orchestrator",
+        },
         subprocess_run=fake_subprocess,
         selection_notifier=selections.append,
     )
@@ -1945,6 +1950,17 @@ def test_inbox_planner_excludes_retired_provider_names_and_returns_validated_ai_
     assert calls[0][0] == ["python", "orchestrator.py", "plan-inbox", "--agent", "antigravity"]
     assert "gemini" not in calls[0][0]
     assert "hermes" not in calls[0][0]
+    planner_request = json.loads(calls[0][1]["input"])
+    assert planner_request["configured_projects"] == [
+        {
+            "project_key": "AI Project Manager",
+            "project_path": r"D:\orchestrator\ai-project-manager",
+        },
+        {
+            "project_key": "AI Orchestrator",
+            "project_path": r"D:\orchestrator\ai-orchestrator",
+        },
+    ]
 
 
 def _two_task_subprocess(command, **kwargs):

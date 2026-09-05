@@ -37,7 +37,7 @@ def test_load_config_reads_trello_credentials_from_env_without_hardcoding():
     assert config.trello.key == "trello-key"
     assert config.trello.token == "trello-token"
     assert config.trello.board_id == "board-123"
-    assert config.trello.inbox_list_name == "Inbox"
+    assert config.trello.inbox_list_name == "INBOX / Nápady"
 
 
 def test_load_config_missing_trello_credential_raises_config_error():

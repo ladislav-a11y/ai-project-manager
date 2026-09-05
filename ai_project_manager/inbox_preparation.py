@@ -41,6 +41,9 @@ _PROJECT_IDENTITY_ALIASES = {
         "ai project manager",
         "ai project manageru",
         "ai project managerem",
+        "project manager",
+        "project manageru",
+        "project managerem",
     ),
     "AI Orchestrator": (
         "ai orchestrator",
@@ -539,6 +542,10 @@ def _task_project_key(
     *other* configured project; an absent or ambiguous match still falls
     back to the source identity instead of guessing.
     """
+    if task.project_key:
+        if not project_paths or task.project_key in project_paths:
+            return task.project_key
+        return None
     if not project_paths:
         return source_key
     matches = _configured_project_matches(f"{task.scope} {task.task}", project_paths)
@@ -659,7 +666,16 @@ def prepare_inbox_card(
         project_path = _generated_project_path(project_key, projects_root)
         human_reason = None
         generated_project = True
-    priority, priority_reason = priority_override or derive_priority(card, text, default_priority)
+    priority, priority_reason = priority_override or derive_priority(
+        card,
+        f"{source_name}\n{text}",
+        default_priority,
+    )
+    source_priority_reason = priority_reason.casefold()
+    source_is_repair = is_repair_request(f"{source_name}\n{text}") or any(
+        marker in source_priority_reason
+        for marker in ("oprava", "regrese", "rework")
+    )
     raw_tasks = planned_tasks or split_tasks(source_name, text, project_key)
     if planned_tasks is not None:
         prefix = project_key or source_name
@@ -693,7 +709,7 @@ def prepare_inbox_card(
         if planned_tasks is not None:
             child_text = f"{task.scope}: {task.task}"
             child_priority = float(task.priority)
-            if is_repair_request(text) and child_priority < priority:
+            if source_is_repair and child_priority < priority:
                 child_priority = priority
                 priority_reason_suffix = (
                     f"; zachována priorita opravného zdrojového zadání P{priority:g}"

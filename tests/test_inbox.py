@@ -162,6 +162,49 @@ def test_process_inbox_keeps_source_card_immutable_while_preparing_children():
     )
 
 
+def test_unlabelled_user_source_is_read_only_and_resolved_from_its_title():
+    client = InMemoryTrelloClient()
+    _, name_to_id = build_list_maps(client)
+    original_description = (
+        "Implementovat správný LLM podle typu a složitosti pokud to provider umožňuje\n\n"
+        "Zachovat jejich výběr a důvod v notifikacích Slacku a Trella."
+    )
+    source = client.create_card(
+        name_to_id["Inbox"],
+        "úprava Project manager",
+        desc=original_description,
+    )
+
+    changed = process_inbox(
+        client,
+        [],
+        persist_project=lambda project: sync_project_to_trello(client, project),
+        project_paths={"AI Project Manager": "D:/pm"},
+        planner=lambda *_: {
+            "provider": "codex",
+            "model": None,
+            "tasks": (
+                PreparedTask(
+                    title="Ověřit možnosti providerů",
+                    task="Zjistit dostupné modely a způsob jejich volby.",
+                    next_step="Provést rešerši.",
+                    scope="AI Project Manager – rešerše providerů",
+                    work_type="research",
+                ),
+            ),
+        },
+    )
+
+    stored = client.get_card(source["id"])
+    assert stored["name"] == "úprava Project manager"
+    assert stored["desc"] == original_description
+    assert stored["labels"] == []
+    assert stored["closed"] is True
+    assert changed
+    assert all(project.trello_card_id != source["id"] for project in changed)
+    assert all(project.project_key == "AI Project Manager" for project in changed)
+
+
 def test_process_inbox_fails_closed_when_marked_indivisible_source_returns_multiple_tasks():
     """Fail-closed indivisible Inbox source contract: an AI plan describing
     more than one task for a card explicitly marked ``[indivisible]`` must
@@ -382,6 +425,70 @@ def test_station_title_identity_wins_over_cause_mentioned_in_description():
     assert prepared.generated_project is False
     assert prepared.project_path is None
     assert prepared.human_required_reason is None
+
+
+def test_project_manager_title_resolves_without_manual_label():
+    card = {
+        "id": "pm-repair-source",
+        "name": "úprava Project manager",
+        "desc": "Implementovat správný LLM podle typu a složitosti úkolu.",
+    }
+
+    prepared = prepare_inbox_card(
+        card,
+        project_paths={
+            "AI Project Manager": "D:/pm",
+            "AI Orchestrator": "D:/orchestrator",
+        },
+        projects_root="D:/projects",
+        allow_new_project=True,
+        planned_tasks=(
+            PreparedTask(
+                title="Rešerše providerů",
+                task="Zjistit dostupné modely.",
+                next_step="Provést rešerši.",
+                scope="AI Project Manager – provideři",
+                priority=1,
+                priority_reason="běžná rešerše",
+                work_type="research",
+            ),
+        ),
+    )
+
+    assert prepared.project_key == "AI Project Manager"
+    assert prepared.generated_project is False
+    assert prepared.project_path is None
+    assert prepared.human_required_reason is None
+    assert prepared.tasks[0].priority == 5
+    assert "zachována priorita opravného zdrojového zadání P5" in prepared.tasks[0].priority_reason
+
+
+def test_ai_planned_project_key_wins_when_task_text_mentions_multiple_projects():
+    card = {
+        "id": "cross-project-source",
+        "name": "úprava Project manager",
+        "desc": "Prověřit providerové rozhraní a navazující plánování.",
+    }
+
+    prepared = prepare_inbox_card(
+        card,
+        project_paths={
+            "AI Project Manager": "D:/pm",
+            "AI Orchestrator": "D:/orchestrator",
+        },
+        planned_tasks=(
+            PreparedTask(
+                title="AI Orchestrator — provider receipt",
+                task="V AI Orchestratoru ověřit rozhraní používané AI Project Managerem.",
+                next_step="Zdokumentovat provider receipt.",
+                scope="AI Orchestrator — providerové rozhraní pro AI Project Manager",
+                project_key="AI Orchestrator",
+            ),
+        ),
+    )
+
+    assert prepared.project_key == "AI Project Manager"
+    assert prepared.tasks[0].project_key == "AI Orchestrator"
 
 
 def test_large_inbox_split_uses_unique_decimal_subpriorities_without_flattening_bands():

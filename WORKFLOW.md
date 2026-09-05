@@ -175,9 +175,18 @@ batch. PM u každého podúkolu zachová `source_card_id`, `subtask_index`,
 `subtask_count`, `execution_order` a `depends_on_subtask_indices`. V každém
 workflow seznamu musí být celý batch fyzicky souvislý; řazení podle priority
 nesmí proložit kartu jiného Inbox projektu. Karta navíc viditelně uvádí číslo
-podúkolu a jeho přímé návaznosti. Planner nesmí do jednoho vstupu smíchat dvě
-projektové identity; při nejasnosti musí intake skončit v Inboxu s požadavkem
-na lidské upřesnění.
+podúkolu a jeho přímé návaznosti. Jeden batch smí obsahovat více projektových
+identit pouze tehdy, když lidské zadání skutečně vyžaduje změny v několika
+jednoznačně určených projektech. Každý podúkol přitom smí mít právě jednu
+projektovou identitu a změny různých repozitářů se nikdy nesmějí spojit do
+jedné karty. Pokud teprve rešerše určí vlastníka následné změny, planner jej
+nesmí odhadnout: nejprve připraví bezpečně přiřaditelnou rešeršní práci a
+následný plán se zpřesní z jejího skutečného výsledku.
+
+Podrobný verzovaný postup pro AI rozklad zadání je uložen v
+`D:\orchestrator\ai-orchestrator\orchestrator\inbox_planning_recipe.md`.
+`plan-inbox` jej načítá celý při každém volání; chybějící nebo prázdný recept
+znamená fail-closed a žádná cílová karta se nevytvoří.
 
 Inbox planner je samostatná AI-planning fáze a volí pouze z povolených
 dostupných providerů (Hermes je z PM úplně vyřazen, viz sekci „Hermes -

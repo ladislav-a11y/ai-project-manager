@@ -1,7 +1,7 @@
 # AI Project Manager
 
 Autonomní řídicí vrstva nad Trello boardem a `ai-orchestrator`. Trello je
-zdroj pravdy pro projekty i jediný ruční vstup (`Inbox`). Jeden scheduler tick
+zdroj pravdy pro projekty i jediný ruční vstup (`INBOX / Nápady`). Jeden scheduler tick
 načte Inbox a projekty, připraví nové Inbox požadavky do `Připraveno` s prioritou
 v názvu; při každém ticku nejdříve obnoví `Čeká na AI`, potom zpracuje auditní
 `Testování` a teprve po vyprázdnění těchto fází vybere práci v `Pracuje se` nebo
@@ -36,7 +36,7 @@ Nejdůležitější volitelné proměnné:
 
 | Proměnná | Výchozí hodnota | Význam |
 | --- | --- | --- |
-| `TRELLO_INBOX_LIST` | `Inbox` | Název jediného ručního vstupu |
+| `TRELLO_INBOX_LIST` | `INBOX / Nápady` | Název jediného ručního vstupu |
 | `AI_PM_ENABLE_INBOX` | `0` | Povolení řízeného intake hlavního boardového Inboxu |
 | `AI_ORCHESTRATOR_CMD` | `ai-orchestrator` | Příkaz orchestrátoru; předávají se další argumenty |
 | `AI_PM_PROVIDERS` | `auto` | Čárkou oddělené providery |
