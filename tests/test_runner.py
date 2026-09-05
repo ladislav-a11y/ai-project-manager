@@ -504,6 +504,38 @@ def test_run_once_notifies_slack_start_and_done_when_explicitly_enabled(monkeypa
     assert "total=n/a" in calls[1]
 
 
+def test_run_once_reports_the_task_classification_model_tier(monkeypatch):
+    """Real routing, not just design: the pre-call reason names the model
+    quality tier task_classification.classify_task resolved for this card's
+    complexity, not only the generic "provider picks per task type" text."""
+    monkeypatch.setenv("SLACK_WEBHOOK_URL", "https://hooks.slack.invalid/prod")
+    monkeypatch.setenv("AI_PM_SLACK_ENABLED", "1")
+    calls = []
+
+    class FakeResponse:
+        status_code = 200
+
+    def fake_post(*args, **kwargs):
+        calls.append(kwargs.get("json", {}).get("text", ""))
+        return FakeResponse()
+
+    monkeypatch.setattr(slack_notify.requests, "post", fake_post)
+
+    # No DoD items yet -> infer_complexity is "low" -> implementation's tier
+    # rule maps that to "economical" (task_classification._MODEL_TIER_RULES).
+    project = ProjectRecord(name="Demo", priority=3, status=ProjectStatus.READY)
+    client = make_client_with_project(project)
+    registry = ProviderRegistry()
+    registry.mark_available("claude")
+
+    outcome = run_once(
+        client, [project], registry, lambda _p, _pr: {"status": "done"}, default_providers=["claude"]
+    )
+
+    assert outcome.ran is True
+    assert "cílová úroveň economical pro náročnost low" in calls[0]
+
+
 def test_run_once_slack_explains_actual_model_after_provider_failover(monkeypatch):
     monkeypatch.setenv("SLACK_WEBHOOK_URL", "https://hooks.slack.invalid/prod")
     monkeypatch.setenv("AI_PM_SLACK_ENABLED", "1")

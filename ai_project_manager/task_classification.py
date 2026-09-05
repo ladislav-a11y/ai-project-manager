@@ -6,13 +6,19 @@ for at least Inbox planning/implementation/audit and low/medium/high
 complexity, which providers are allowed and which model quality tier should
 be requested.
 
-This is an additive rules layer only, exactly like ``ProviderRegistry.
-model_for_task``/``model_for_tier`` (``providers.py``): nothing in
-``orchestrator_runner.py`` calls it yet, so existing Inbox planning,
-implementation and audit dispatch behavior is unchanged. A provider
-allowlist here never widens what a task type may already use elsewhere
-(e.g. it does not override the separate, capability-limit filter audit
-dispatch applies per project/scope - see PROJECT_AUDIT_ROADMAP.md 8.2).
+``scheduler.pick_next_project``/``pick_next_audit_project`` filter their
+provider order through ``classify_task(...).allowed_providers(...)`` and
+``runner.py`` reports the resolved ``model_tier`` alongside its existing
+provider/model explanation, so this is real routing, not just a design
+layer. Today's forbidden-provider sets for implementation and audit are
+both empty, so wiring this in does not change which provider gets picked -
+only Inbox planning's existing Hermes/Gemini exclusion is expressed through
+it. A provider allowlist here never widens what a task type may already use
+elsewhere (e.g. it does not override the separate, capability-limit filter
+audit dispatch applies per project/scope - see PROJECT_AUDIT_ROADMAP.md
+8.2). PM still never forwards ``--model`` to ai-orchestrator (8.6): the
+model tier is diagnostic/reporting only, exactly like the pre-existing
+``model_for_task``/``_inbox_model_hint`` behavior.
 
 The Inbox-planning forbidden-provider set is imported from ``inbox.py``
 (``INBOX_PLANNING_FORBIDDEN_PROVIDERS``) rather than re-declared, so this
@@ -23,7 +29,7 @@ copy of that policy.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import FrozenSet, Tuple
+from typing import TYPE_CHECKING, FrozenSet, Tuple
 
 from .inbox import INBOX_PLANNING_FORBIDDEN_PROVIDERS
 from .providers import (
@@ -35,6 +41,9 @@ from .providers import (
     TASK_INBOX_PLANNING,
     TASK_TYPES,
 )
+
+if TYPE_CHECKING:
+    from .models import ProjectRecord
 
 COMPLEXITY_LOW = "low"
 COMPLEXITY_MEDIUM = "medium"
@@ -115,3 +124,31 @@ def classify_task(task_type: str, complexity: str) -> TaskClassification:
         forbidden_providers=_FORBIDDEN_PROVIDER_RULES[task_type],
         model_tier=_MODEL_TIER_RULES[task_type][complexity],
     )
+
+
+# Deterministic, structural complexity signal: the number of implementation
+# checklist items a card carries. This mirrors the only other complexity-like
+# proxy already trusted in this codebase - orchestrator_handoff.
+# needs_orchestrator_handoff's character-count threshold on
+# orchestrator_ready_task - and, like it, is a concrete fact about the card's
+# own Definition of Done rather than a guess inferred from title/description
+# wording (see inbox_preparation.is_explicit_indivisible_inbox_source, which
+# explicitly refuses that kind of inference for a different decision).
+_LOW_COMPLEXITY_MAX_IMPLEMENTATION_ITEMS = 1
+_MEDIUM_COMPLEXITY_MAX_IMPLEMENTATION_ITEMS = 3
+
+
+def infer_complexity(project: "ProjectRecord") -> str:
+    """Return the ``COMPLEXITIES`` value implied by ``project``'s DoD size.
+
+    Counts only ``phase == "implementation"`` items - the same slice
+    ``orchestrator_handoff.implementation_dod`` and ``dod_fully_verified``
+    already treat as the actual unit of work; audit-phase items (e.g. a
+    rejection's rework marker) do not by themselves make a card more complex.
+    """
+    implementation_items = sum(1 for item in project.dod if item.phase == "implementation")
+    if implementation_items <= _LOW_COMPLEXITY_MAX_IMPLEMENTATION_ITEMS:
+        return COMPLEXITY_LOW
+    if implementation_items <= _MEDIUM_COMPLEXITY_MAX_IMPLEMENTATION_ITEMS:
+        return COMPLEXITY_MEDIUM
+    return COMPLEXITY_HIGH

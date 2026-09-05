@@ -197,6 +197,15 @@ Při ověřování PM/AO se vždy používá skutečný interpreter cílového r
 první v PATH pro všechny testovací subprocessy. Systémový `python` nebo
 WindowsApps alias se nesmí použít bez ověření jeho skutečné absolutní cesty;
 jinak může selhání prostředí vypadat jako chyba implementace.
+Pytest `--basetemp` se nikdy nesmí umístit do checkoutu `D:\orchestrator\<repo>`
+ani se po `PermissionError` nesmí opakovat stejná cesta. Před prvním testem se
+musí ověřit zapisovatelný, izolovaný kořen mimo checkout (preferovaný kořen je
+`C:\Users\Admin\.codex\worktrees\6003\<repo>`); každý běh dostane nový,
+jednoznačný podadresář a ten se po dokončení uklidí. Pokud zapisovatelný kořen
+nelze ověřit, test se nespouští podruhé naslepo a stav se nahlásí jako problém
+prostředí, nikoli jako chyba implementace. Dočasné pytest adresáře vytvořené
+historickými běhy se nesmí hromadně mazat bez samostatného ověření vlastnictví
+a bezpečného cíle.
 AO musí v outboxu vracet `provider_statuses` pro všechny providery v daném
 failover pořadí. Každý `LIMITED` záznam nese absolutní UTC `retry_at`; PM
 zapíše všechny tyto termíny do persistentního stavu a do PM-DATA/Trella

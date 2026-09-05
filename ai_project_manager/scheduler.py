@@ -14,7 +14,8 @@ from dataclasses import dataclass
 from typing import Optional
 
 from .models import ProjectRecord, ProjectStatus
-from .providers import ProviderRegistry
+from .providers import ProviderRegistry, TASK_AUDIT, TASK_IMPLEMENTATION
+from .task_classification import classify_task, infer_complexity
 
 # Statuses that represent projects the scheduler should never pick up,
 # regardless of priority.
@@ -197,7 +198,8 @@ def pick_next_project(
             (providers_for_project or {}).get(project.name, fallback_providers),
             provider_registry,
         )
-        for provider_name in allowed_providers:
+        classification = classify_task(TASK_IMPLEMENTATION, infer_complexity(project))
+        for provider_name in classification.allowed_providers(tuple(allowed_providers)):
             if provider_registry.is_available(provider_name):
                 return SchedulingDecision(project=project, provider=provider_name)
 
@@ -248,8 +250,9 @@ def pick_next_audit_project(
             (providers_for_project or {}).get(project.name, fallback_providers),
             provider_registry,
         )
+        classification = classify_task(TASK_AUDIT, infer_complexity(project))
         capability_key = audit_capability_key(project)
-        for provider_name in allowed_providers:
+        for provider_name in classification.allowed_providers(tuple(allowed_providers)):
             if (
                 provider_registry.is_available(provider_name)
                 and not provider_registry.is_capability_limited(provider_name, capability_key)

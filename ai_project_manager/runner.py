@@ -37,6 +37,7 @@ from .scheduler import (
     pick_next_audit_project,
     pick_next_project,
 )
+from .task_classification import classify_task, infer_complexity
 from .trello_sync import project_from_card, sync_project_to_trello
 from .slack_notify import (
     notify,
@@ -119,18 +120,35 @@ def _model_selection_reason(
     provider_registry: ProviderRegistry,
     task_type: str,
     *,
+    complexity: Optional[str] = None,
     confirmed: bool = False,
 ) -> str:
-    """Explain the LLM choice independently from the provider choice."""
+    """Explain the LLM choice independently from the provider choice.
+
+    ``complexity`` (see ``task_classification.infer_complexity``) resolves
+    the target model quality tier through ``task_classification.
+    classify_task`` and names it in the explanation. It deliberately never
+    names a provider's configured catalog entry for that tier here - unlike
+    Inbox planning's ``_inbox_model_hint``, an unconfirmed catalog value must
+    not leak into this reason (see
+    test_run_once_does_not_report_unconfirmed_configured_model) precisely
+    because PM never forwards ``--model`` for implementation/audit, so that
+    value is not even a real hint of what will run. Once ai-orchestrator
+    confirms an actual model, the ``confirmed`` branch above reports it.
+    """
     task_label = _task_type_label(task_type)
     if confirmed and model:
         return (
             f"model {model} je pro {task_label} skutečně použitý model providera "
             "potvrzený ai-orchestrátorem"
         )
+    tier_detail = ""
+    if complexity is not None:
+        model_tier = classify_task(task_type, complexity).model_tier
+        tier_detail = f"; cílová úroveň {model_tier} pro náročnost {complexity}"
     return (
         f"provider si model pro {task_label} vybere podle typu úkolu; "
-        "PM nepředává --model"
+        f"PM nepředává --model{tier_detail}"
     )
 
 
@@ -149,7 +167,7 @@ def _provider_selection_reason(
     resolved_order = expand_provider_aliases(list(ordered), provider_registry)
     provider_reason = f"provider je první dostupný v pořadí {', '.join(resolved_order or ordered)}"
     model_reason = _model_selection_reason(
-        provider, None, provider_registry, task_type
+        provider, None, provider_registry, task_type, complexity=infer_complexity(project)
     )
     return f"{provider_reason}; {model_reason}"
 
@@ -184,6 +202,7 @@ def _actual_provider_selection_reason(
         actual_model,
         provider_registry,
         task_type,
+        complexity=infer_complexity(project),
         confirmed=bool(confirmed_model),
     )
     return f"{provider_reason}; {model_reason}"

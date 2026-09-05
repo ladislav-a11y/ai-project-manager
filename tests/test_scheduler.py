@@ -266,6 +266,61 @@ def test_scheduler_never_touches_providers_that_are_not_registered():
     assert decision is None
 
 
+def test_pick_next_project_routes_through_task_classification(monkeypatch):
+    """Implementation dispatch must consult classify_task, not just the raw
+    provider order - proving the routing is real, not a design-only layer
+    (see task_classification.py's module docstring)."""
+    from ai_project_manager import scheduler as scheduler_module
+    from ai_project_manager.task_classification import TaskClassification
+
+    def fake_classify_task(task_type, complexity):
+        assert task_type == "implementation"
+        return TaskClassification(
+            task_type=task_type,
+            complexity=complexity,
+            forbidden_providers=frozenset({"hermes"}),
+            model_tier="economical",
+        )
+
+    monkeypatch.setattr(scheduler_module, "classify_task", fake_classify_task)
+
+    project = ProjectRecord(name="Demo", priority=3, status=ProjectStatus.READY, main_task="do work")
+    registry = ProviderRegistry()
+    registry.mark_available("hermes")
+    registry.mark_available("claude")
+
+    decision = pick_next_project([project], registry, default_providers=["hermes", "claude"])
+
+    assert decision is not None
+    assert decision.provider == "claude"
+
+
+def test_pick_next_audit_project_routes_through_task_classification(monkeypatch):
+    from ai_project_manager import scheduler as scheduler_module
+    from ai_project_manager.task_classification import TaskClassification
+
+    def fake_classify_task(task_type, complexity):
+        assert task_type == "audit"
+        return TaskClassification(
+            task_type=task_type,
+            complexity=complexity,
+            forbidden_providers=frozenset({"hermes"}),
+            model_tier="quality",
+        )
+
+    monkeypatch.setattr(scheduler_module, "classify_task", fake_classify_task)
+
+    project = ProjectRecord(name="Demo", priority=3, status=ProjectStatus.TESTING)
+    registry = ProviderRegistry()
+    registry.mark_available("hermes")
+    registry.mark_available("claude")
+
+    decision = pick_next_audit_project([project], registry, default_providers=["hermes", "claude"])
+
+    assert decision is not None
+    assert decision.provider == "claude"
+
+
 def test_audit_capability_limit_skips_provider_for_same_task_family():
     project = ProjectRecord(
         name="P5.04 — propagation a scoring",

@@ -9,12 +9,14 @@ from ai_project_manager.providers import (
     TASK_IMPLEMENTATION,
     TASK_INBOX_PLANNING,
 )
+from ai_project_manager.models import DoDItem, ProjectRecord
 from ai_project_manager.task_classification import (
     COMPLEXITIES,
     COMPLEXITY_HIGH,
     COMPLEXITY_LOW,
     COMPLEXITY_MEDIUM,
     classify_task,
+    infer_complexity,
 )
 
 
@@ -102,3 +104,40 @@ def test_classification_end_to_end_with_registry():
 
     classification = classify_task(TASK_IMPLEMENTATION, COMPLEXITY_LOW)
     assert registry.model_for_tier("codex", classification.model_tier) == "gpt-eco"
+
+
+def _project_with_implementation_items(count: int) -> ProjectRecord:
+    return ProjectRecord(
+        name="Demo",
+        priority=3,
+        dod=[DoDItem(text=f"item {index}") for index in range(count)],
+    )
+
+
+def test_infer_complexity_is_low_with_zero_or_one_implementation_items():
+    assert infer_complexity(_project_with_implementation_items(0)) == COMPLEXITY_LOW
+    assert infer_complexity(_project_with_implementation_items(1)) == COMPLEXITY_LOW
+
+
+def test_infer_complexity_is_medium_with_a_few_implementation_items():
+    assert infer_complexity(_project_with_implementation_items(2)) == COMPLEXITY_MEDIUM
+    assert infer_complexity(_project_with_implementation_items(3)) == COMPLEXITY_MEDIUM
+
+
+def test_infer_complexity_is_high_with_many_implementation_items():
+    assert infer_complexity(_project_with_implementation_items(4)) == COMPLEXITY_HIGH
+    assert infer_complexity(_project_with_implementation_items(10)) == COMPLEXITY_HIGH
+
+
+def test_infer_complexity_ignores_audit_phase_items():
+    project = ProjectRecord(
+        name="Demo",
+        priority=3,
+        dod=[
+            DoDItem(text="implementation item"),
+            DoDItem(text="run tests", phase="audit"),
+            DoDItem(text="run more tests", phase="audit"),
+            DoDItem(text="run even more tests", phase="audit"),
+        ],
+    )
+    assert infer_complexity(project) == COMPLEXITY_LOW

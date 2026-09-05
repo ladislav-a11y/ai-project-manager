@@ -521,10 +521,33 @@ pravidel*, ne novou dispatch logiku.
 - Testy: `tests/test_task_classification.py` (pravidla klasifikace) a nové
   testy `model_for_tier` v `tests/test_providers.py`-stylu modulu.
 - Mimo rozsah této karty (viz 9.3-9.4, beze změny): úklid mrtvé proměnné
-  `selected_model = None` v `orchestrator_runner.py`, přidání kanonického
-  pole pro model do Card Contractu/`ProjectRecord`, a jakékoli skutečné
-  zapojení této pravidlové vrstvy do produkčního dispatch (to by vyžadovalo
-  samostatně schválenou změnu kontraktu 8.6, ne jen jeho návrh).
+  `selected_model = None` v `orchestrator_runner.py` a přidání kanonického
+  pole pro model do Card Contractu/`ProjectRecord`.
+
+**Dodatek (samostatně schválená karta „Implementovat klasifikaci typu a
+složitosti a skutečný výběr povoleného providera a případného modelu v
+cestě PM → ai-orchestrator", 2026-09-05):** skutečné zapojení do dispatch
+cesty je teď hotové, tedy nad rámec toho, co bylo zaznamenáno výše jako
+mimo rozsah:
+- `scheduler.pick_next_project`/`pick_next_audit_project` teď filtrují
+  svůj `allowed_providers` pořadí přes
+  `classify_task(TASK_IMPLEMENTATION/TASK_AUDIT, infer_complexity(project))
+  .allowed_providers(...)`, než zkontrolují dostupnost — skutečný výběr
+  providera, ne jen návrh. Protože zakázané množiny pro implementaci a
+  audit jsou dnes obě prázdné, chování se dnes neliší; je to jen skutečně
+  zapojené, ne jen navržené.
+- `task_classification.infer_complexity(project)` je nová, deterministická
+  náročnost odvozená z počtu `phase == "implementation"` položek v DoD
+  karty (1 = low, 2-3 = medium, 4+ = high) — stejný typ konkrétního,
+  strukturálního signálu jako `orchestrator_handoff.
+  needs_orchestrator_handoff`'s znakový práh, nikdy uhodnutý z názvu/popisu.
+- `runner._model_selection_reason` teď do reportovaného důvodu (Trello/Slack)
+  přidává `classify_task(...).model_tier` pro danou náročnost — nikdy ale
+  nejmenuje `ProviderRegistry.model_for_tier`'s katalogový návrh v této
+  nepotvrzené větvi (na rozdíl od Inbox plánování), protože PM u
+  implementace/auditu stále nikdy nepředává `--model` (8.6 zůstává beze
+  změny) a nepotvrzená katalogová hodnota by nebyl skutečný hint (viz
+  `tests/test_runner.py::test_run_once_does_not_report_unconfirmed_configured_model`).
 
 ---
 
