@@ -971,6 +971,53 @@ def test_production_failover_suppresses_pm_selected_model(tmp_path):
     assert "--model" not in seen["command"]
 
 
+def test_production_failover_temporarily_gates_failed_head_provider(tmp_path):
+    # Generalizes the retired Hermes-only cooldown (see git history) to
+    # every provider in the post-Hermes routing: a head provider that fails
+    # over to a later one in the same AO run must not be immediately
+    # re-tried by the next PM tick before a cooldown backoff elapses.
+    registry = ProviderRegistry()
+    for name in ("antigravity", "claude", "codex"):
+        registry.mark_available(name)
+
+    def fake_subprocess_run(command):
+        write_outbox_result(
+            tmp_path / "outbox", "Demo",
+            {
+                "status": "in_progress",
+                "checkpoint": {"completed_dod_indices": []},
+                "active_provider": "codex",
+                "provider_sequence": ["antigravity", "claude-code", "codex"],
+                "stop_reason": "pokračování přes codex",
+            },
+            run_id="fixed-run-id",
+        )
+        return completed()
+
+    project = ProjectRecord(
+        name="Demo", status=ProjectStatus.READY,
+        orchestrator_ready_task="Implement feature X",
+    )
+    run_fn, _, _ = make_run_fn(
+        tmp_path, registry, subprocess_run=fake_subprocess_run,
+        use_provider_failover=True,
+    )
+
+    run_fn(project, "antigravity")
+
+    failed_status = registry.get_status("antigravity")
+    assert failed_status.state == ProviderState.ERROR
+    assert failed_status.retry_after is not None
+    assert "failover" in failed_status.last_error
+
+    also_failed_status = registry.get_status("claude")
+    assert also_failed_status.state == ProviderState.ERROR
+    assert also_failed_status.retry_after is not None
+
+    # The provider that actually completed the run must remain untouched.
+    assert registry.get_status("codex").state == ProviderState.AVAILABLE
+
+
 def test_production_failover_excludes_limited_providers_from_next_workflow_step(tmp_path):
     registry = ProviderRegistry()
     registry.mark_available("antigravity")

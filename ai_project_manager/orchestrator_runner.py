@@ -1357,6 +1357,33 @@ def build_run_fn(
             )
         if "stop_reason" not in result and result["status"] != "done":
             result["stop_reason"] = payload.get("error") or str(orchestrator_status)
+        provider_sequence = result.get("provider_sequence")
+        active_provider = result.get("active_provider")
+        # A production auto run may start with one provider and finish
+        # through a later one in the same tick's failover chain. Persist
+        # every failed head as a temporary ERROR so the next PM tick does
+        # not repeat the same expensive failure immediately; this is a
+        # recheck backoff, not a permanent removal of the provider.
+        # Generalizes the retired Hermes-only cooldown (see git history) to
+        # every provider in the new (post-Hermes) routing.
+        if (
+            use_provider_failover
+            and isinstance(provider_sequence, list)
+            and active_provider in provider_sequence
+        ):
+            for failed_agent in provider_sequence[: provider_sequence.index(active_provider)]:
+                if not isinstance(failed_agent, str) or not failed_agent:
+                    continue
+                failed_pm_name = _pm_provider_name(failed_agent, provider_registry, provider_agent_map)
+                if not failed_pm_name:
+                    continue
+                provider_registry.mark_error(
+                    failed_pm_name,
+                    f"{failed_agent} selhal; failover na dalšího providera: "
+                    + str(result.get("stop_reason") or "provider failover"),
+                    retry_after=_PROVIDER_FAILURE_BACKOFF,
+                    checkpoint=result.get("checkpoint", project.checkpoint),
+                )
         return result
 
     return run_fn
