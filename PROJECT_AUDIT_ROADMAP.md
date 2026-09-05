@@ -472,6 +472,60 @@ jedinečné `P5.01` až `P5.05`; Bazar požadavky 1 až 17 mají jedinečné `P2
 až `P2.17`, tedy požadavek 5 je `P2.05`. Po tomto repair zásahu už PM
 priority nepřiděluje ani nemění; pouze respektuje hodnotu získanou při intake.
 
+### 8.7 Pravidla klasifikace typu úkolu a náročnosti (Inbox požadavek „AI
+Project Manager / ai-orchestrator — pravidla klasifikace", 2026-09-05)
+
+Nový modul `ai_project_manager/task_classification.py` formalizuje pravidla,
+podle kterých by měl PM/ai-orchestrator volit **povoleného providera** a
+**cílovou kvalitativní úroveň modelu** pro daný typ úkolu a náročnost.
+Přesně jako `ProviderRegistry.model_for_task` (8.3/8.5), je to **čistě
+přídavná pravidlová/diagnostická vrstva** — žádné produkční dispatch místo
+(`build_inbox_planner_fn`, `build_run_fn`, `build_audit_run_fn`) tento modul
+nevolá, takže aktuální kontrakt z 8.6 („PM nikdy nepředává `--model`, provider
+si model vybírá sám") zůstává beze změny. Toto je záměrné: 8.6 explicitně
+zakazuje PM přidávat `--model` do argv, takže tato karta doplňuje *návrh
+pravidel*, ne novou dispatch logiku.
+
+- **`classify_task(task_type, complexity) -> TaskClassification`** —
+  `task_type` je stávající uzavřená množina `providers.TASK_TYPES`
+  (`inbox_planning`, `implementation`, `audit`); `complexity` je nová
+  uzavřená množina `task_classification.COMPLEXITIES` = `low`, `medium`,
+  `high`. Neznámá hodnota u obou parametrů selže `ValueError` (fail-closed,
+  stejně jako `model_for_task`), místo aby se hádal výchozí stav.
+- **Výběr povoleného providera** (`TaskClassification.forbidden_providers` /
+  `.allowed_providers(base_order)`): jediné task-type-specifické omezení je
+  u Inbox plánování — Hermes a Gemini zůstávají fail-closed vyloučeni pro
+  všechny tři úrovně náročnosti (odpovídá 8.2/8.6). Implementace a audit
+  žádné vlastní omezení nepřidávají; audit má svůj samostatný
+  capability-limit filtr už v `scheduler.py` (8.2), který tato vrstva
+  nenahrazuje ani neduplikuje. Zakázaná množina pro Inbox plánování se
+  **znovu nepíše potřetí** — modul importuje existující
+  `inbox.INBOX_PLANNING_FORBIDDEN_PROVIDERS` (dříve nepoužívaný duplikát,
+  zaznamenaný jako nález v 9.2 bod 8), takže teď má aspoň jednoho reálného
+  volajícího navíc k `orchestrator_runner.INBOX_PLANNER_PROVIDERS`, místo tří
+  nezávislých kopií téže politiky.
+- **Výběr kvalitativní úrovně modelu** (`TaskClassification.model_tier`,
+  jedna z `providers.MODEL_TIER_ECONOMICAL/BALANCED/QUALITY`, vyhodnocená
+  novou metodou `ProviderRegistry.model_for_tier(name, model_tier)`):
+  - Inbox plánování vždy `economical` bez ohledu na náročnost — je to
+    read-only klasifikační průchod jednou kartou, ne samotná implementace
+    (odpovídá dnešnímu `model_for_task`/`_inbox_model_hint`: vždy `models[0]`).
+  - Audit vždy `quality` bez ohledu na náročnost — nezávislá auditní brána,
+    kde záleží víc na správnosti než na propustnosti (odpovídá dnešnímu
+    `model_for_task`: vždy `models[-1]`).
+  - Implementace je jediný typ úkolu, kde náročnost skutečně mění
+    požadovanou úroveň: `low -> economical`, `medium -> balanced`,
+    `high -> quality`. `balanced` vybírá prostřední položku katalogu jen
+    pokud má provider nakonfigurované aspoň 3 modely; jinak padá zpět na
+    `economical` (index 0), aby se u kratšího katalogu nic neuhodlo.
+- Testy: `tests/test_task_classification.py` (pravidla klasifikace) a nové
+  testy `model_for_tier` v `tests/test_providers.py`-stylu modulu.
+- Mimo rozsah této karty (viz 9.3-9.4, beze změny): úklid mrtvé proměnné
+  `selected_model = None` v `orchestrator_runner.py`, přidání kanonického
+  pole pro model do Card Contractu/`ProjectRecord`, a jakékoli skutečné
+  zapojení této pravidlové vrstvy do produkčního dispatch (to by vyžadovalo
+  samostatně schválenou změnu kontraktu 8.6, ne jen jeho návrh).
+
 ---
 
 ## 8. Mapování: rozhodování PM/PO o provideru a modelu LLM podle typu úkolu (oprava PM [Inbox 6a96e12f])

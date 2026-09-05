@@ -161,6 +161,8 @@ try {
             'ai_project_manager/inbox.py',
             'ai_project_manager/inbox_preparation.py',
             'ai_project_manager/orchestrator_runner.py',
+            'ai_project_manager/providers.py',
+            'ai_project_manager/task_classification.py',
             'ai_project_manager/trello_sync.py',
             'scripts/run-ai-project-manager.ps1',
             'scripts/verify_once_resolves_project_path.py',
@@ -172,6 +174,7 @@ try {
             'tests/test_inbox.py',
             'tests/test_orchestrator_runner.py',
             'tests/test_recovery_e2e.py',
+            'tests/test_task_classification.py',
             'tests/test_trello_sync.py',
             'WORKFLOW.md',
             'PROJECT_AUDIT_ROADMAP.md'

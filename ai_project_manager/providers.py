@@ -69,6 +69,16 @@ TASK_AUDIT = "audit"
 TASK_TYPES = (TASK_INBOX_PLANNING, TASK_IMPLEMENTATION, TASK_AUDIT)
 
 
+# Model quality tiers used by the task/complexity classification rules (see
+# PROJECT_AUDIT_ROADMAP.md section 8.7). Kept as an explicit closed set for
+# the same reason as TASK_TYPES: an unknown/misspelled tier must fail fast
+# rather than silently falling back to a guessed catalog index.
+MODEL_TIER_ECONOMICAL = "economical"
+MODEL_TIER_BALANCED = "balanced"
+MODEL_TIER_QUALITY = "quality"
+MODEL_TIERS = (MODEL_TIER_ECONOMICAL, MODEL_TIER_BALANCED, MODEL_TIER_QUALITY)
+
+
 @dataclass
 class ProviderStatus:
     name: str
@@ -165,6 +175,30 @@ class ProviderRegistry:
             return None
         if task_type == TASK_AUDIT:
             return status.models[-1]
+        return status.models[0]
+
+    def model_for_tier(self, name: str, model_tier: str) -> Optional[str]:
+        """Return the legacy catalog suggestion for an explicit quality tier.
+
+        Diagnostics-only, same status as ``model_for_task``: production
+        dispatch never forwards this as ``--model``. This generalizes
+        ``model_for_task``'s economical/quality split with a ``"balanced"``
+        middle tier so the task/complexity classification rules in
+        ``task_classification.py`` (PROJECT_AUDIT_ROADMAP.md section 8.7) can
+        ask for a tier directly instead of a task type. A provider with fewer
+        than three configured models has no real middle entry, so
+        ``"balanced"`` falls back to the economical default (index 0) rather
+        than guessing.
+        """
+        if model_tier not in MODEL_TIERS:
+            raise ValueError(f"unknown model_tier {model_tier!r}; expected one of {MODEL_TIERS}")
+        status = self._statuses.get(name)
+        if status is None or not status.models:
+            return None
+        if model_tier == MODEL_TIER_QUALITY:
+            return status.models[-1]
+        if model_tier == MODEL_TIER_BALANCED and len(status.models) >= 3:
+            return status.models[len(status.models) // 2]
         return status.models[0]
 
     def get_status(self, name: str) -> ProviderStatus:
