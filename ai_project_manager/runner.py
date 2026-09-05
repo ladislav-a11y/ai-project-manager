@@ -624,6 +624,8 @@ def run_once(
                 timezone.utc
             ).isoformat()
             project.extra_data["provider_selection"]["provider_reason"] = actual_provider_reason
+            route_detail = provider_route_detail(result, selected_provider=provider)
+            project.extra_data["provider_selection"]["route_detail"] = route_detail
             project.extra_data["provider_selection"]["live_evidence"] = {
                 "source": "ai-orchestrator outbox",
                 "active_provider": actual_provider,
@@ -641,7 +643,7 @@ def run_once(
                         provider_reason=actual_provider_reason,
                         detail=(
                             "výsledek zapsán do Trella | "
-                            + provider_route_detail(result, selected_provider=provider)
+                            + route_detail
                         ),
                     )
                     + usage_suffix(result)
@@ -660,7 +662,7 @@ def run_once(
                         provider_reason=actual_provider_reason,
                         detail=(
                             f"další pokus: {project.retry_after} | "
-                            + provider_route_detail(result, selected_provider=provider)
+                            + route_detail
                         ),
                     ) + usage_suffix(result),
                 ])
@@ -674,7 +676,7 @@ def run_once(
                         provider_reason=actual_provider_reason,
                         detail=(
                             f"další krok: {next_step} | "
-                            f"{provider_route_detail(result, selected_provider=provider)}"
+                            f"{route_detail}"
                         ),
                     )
                     + usage_suffix(result)
@@ -946,6 +948,8 @@ def run_once_audit(
             project.extra_data["provider_selection"]["actual_provider"] = actual_provider
             project.extra_data["provider_selection"]["actual_model"] = actual_model
             project.extra_data["provider_selection"]["provider_reason"] = actual_provider_reason
+            route_detail = provider_route_detail(result, selected_provider=provider)
+            project.extra_data["provider_selection"]["route_detail"] = route_detail
             if isinstance(result.get("provider_statuses"), dict):
                 project.extra_data["provider_selection"]["provider_statuses"] = result["provider_statuses"]
             sync_project_to_trello(client, project)
@@ -962,7 +966,7 @@ def run_once_audit(
                         provider_reason=actual_provider_reason,
                         detail=(
                             "přesunuto do Hotovo | "
-                            + provider_route_detail(result, selected_provider=provider)
+                            + route_detail
                         ),
                     )
                     + usage_suffix(result)
@@ -980,7 +984,7 @@ def run_once_audit(
                     provider_reason=actual_provider_reason,
                     detail=(
                         f"další pokus: {project.retry_after} | "
-                        + provider_route_detail(result, selected_provider=provider)
+                        + route_detail
                     ),
                 ) + usage_suffix(result))
             else:
@@ -993,7 +997,7 @@ def run_once_audit(
                         detail=(
                             f"vráceno do {project.status.value} | "
                             f"důvod: {project.stop_reason} | "
-                            f"{provider_route_detail(result, selected_provider=provider)}"
+                            f"{route_detail}"
                         ),
                     )
                     + usage_suffix(result)

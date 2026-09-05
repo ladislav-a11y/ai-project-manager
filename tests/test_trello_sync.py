@@ -1319,6 +1319,56 @@ def test_waiting_visible_notes_show_reason_time_next_attempt_and_human_step():
     assert reloaded.human_action_step == "Add the API key to the vault and unblock the card"
 
 
+def test_provider_selection_visible_notes_show_real_provider_model_and_failover():
+    """DoD: the real provider/model and a truthful reason (including any
+    failover route) must be visible on the card itself, not only inside the
+    hidden PM-DATA block - matching what Slack already reports."""
+    client = InMemoryTrelloClient()
+    project = ProjectRecord(
+        name="Demo",
+        status=ProjectStatus.IN_PROGRESS,
+        extra_data={
+            "provider_selection": {
+                "provider": "claude-code",
+                "selected_provider": "claude-code",
+                "actual_provider": "codex",
+                "model": "gpt-5-codex",
+                "actual_model": "gpt-5-codex",
+                "provider_reason": (
+                    "provider codex byl použit po failoveru z claude-code; "
+                    "model gpt-5-codex je pro implementaci skutečně použitý "
+                    "model providera potvrzený ai-orchestrátorem"
+                ),
+                "route_detail": (
+                    "provider path: claude-code -> codex | failover: ano | "
+                    "model path: claude-code=nezjištěn -> codex=gpt-5-codex"
+                ),
+            }
+        },
+    )
+
+    created = sync_project_to_trello(client, project)
+    visible = created["desc"].split("<!-- PM-DATA", 1)[0]
+
+    assert "Provider: codex" in visible
+    assert "Model: gpt-5-codex" in visible
+    assert "po failoveru z claude-code" in visible
+    assert "provider path: claude-code -> codex" in visible
+    assert "failover: ano" in visible
+
+
+def test_provider_selection_visible_notes_absent_without_selection():
+    """No provider_selection recorded yet must never fabricate a provider
+    section on the card."""
+    client = InMemoryTrelloClient()
+    project = ProjectRecord(name="Demo", status=ProjectStatus.READY)
+
+    created = sync_project_to_trello(client, project)
+    visible = created["desc"].split("<!-- PM-DATA", 1)[0]
+
+    assert "## Provider a model" not in visible
+
+
 def test_free_text_notes_preserved_alongside_structured_block():
     client = InMemoryTrelloClient()
     project = ProjectRecord(name="Demo", priority=0, status=ProjectStatus.NEW, main_task="task")

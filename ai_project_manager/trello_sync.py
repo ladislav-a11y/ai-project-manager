@@ -709,6 +709,33 @@ def _waiting_visible_notes(project: ProjectRecord) -> str:
     return "\n".join(lines)
 
 
+def _provider_selection_visible_notes(project: ProjectRecord) -> str:
+    """Surface the real provider/model, failover route and reason above
+    PM-DATA, so a human scanning the board sees the same truthful routing
+    decision Slack already reports (see slack_notify.provider_route_detail)
+    without needing to open the hidden JSON block.
+    """
+    selection = (project.extra_data or {}).get("provider_selection")
+    if not isinstance(selection, dict):
+        return ""
+    actual_provider = selection.get("actual_provider") or selection.get("provider")
+    if not actual_provider:
+        return ""
+    model = selection.get("actual_model") or selection.get("model")
+    lines = [
+        "## Provider a model",
+        f"Provider: {actual_provider}",
+        f"Model: {model or 'provider default (nezjištěn)'}",
+    ]
+    reason = selection.get("provider_reason")
+    if reason:
+        lines.append(f"Důvod: {reason}")
+    route_detail = selection.get("route_detail")
+    if route_detail:
+        lines.append(str(route_detail))
+    return "\n".join(lines)
+
+
 def project_from_card(card: dict, list_id_to_name: dict[str, str]) -> ProjectRecord:
     """Build a ProjectRecord snapshot from a raw Trello card dict."""
     raw_desc = card.get("desc", "")
@@ -945,6 +972,10 @@ def card_updates_from_project(project: ProjectRecord, list_name_to_id: dict[str,
     batch_notes = _inbox_batch_visible_notes(project)
     if batch_notes:
         visible_notes = f"{batch_notes}\n\n{visible_notes}" if visible_notes else batch_notes
+
+    provider_notes = _provider_selection_visible_notes(project)
+    if provider_notes:
+        visible_notes = f"{visible_notes}\n\n{provider_notes}" if visible_notes else provider_notes
 
     data = _bound_contract_history(data)
     desc = _bounded_description(visible_notes, data)
