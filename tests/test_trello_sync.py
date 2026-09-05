@@ -457,6 +457,33 @@ def test_conflicting_governance_is_rejected_without_write():
     assert client.get_card(card["id"]) == before
 
 
+def test_maintenance_migrates_existing_rejected_audit_into_no_repeat_hold():
+    client = InMemoryTrelloClient()
+    testing = client.get_list_id_by_name("Testing")
+    card = client.create_card(testing, "P5 — rejected audit")
+    project = ProjectRecord(
+        name="P5 — rejected audit",
+        status=ProjectStatus.TESTING,
+        main_task="Verify live condition",
+        dod=[
+            DoDItem(text="implementation", checked=True),
+            DoDItem(text="independent audit verifies live evidence", phase="audit"),
+        ],
+        open_feedback=["ai-orchestrator audit rejected DoD index(es) [1]: live evidence missing"],
+        stop_reason="ai-orchestrator audit rejected DoD index(es) [1]: live evidence missing",
+        trello_card_id=card["id"],
+        trello_card_url=card["url"],
+    )
+    sync_project_to_trello(client, project)
+
+    assert "audit_waiting_for_change" not in _parse_data_block(client.get_card(card["id"])["desc"])
+    assert maintain_board_contract(client) == []
+
+    reloaded = project_from_card(client.get_card(card["id"]), {testing: "Testing"})
+    assert reloaded.extra_data["audit_waiting_for_change"] is True
+    assert "audit neopakuje automaticky" in reloaded.next_step
+
+
 def test_lifecycle_write_rejects_controller_verification_as_implementation_work():
     client = InMemoryTrelloClient()
     project = ProjectRecord(

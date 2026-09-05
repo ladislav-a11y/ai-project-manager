@@ -79,6 +79,8 @@ def test_rejected_audit_only_item_does_not_reopen_implementation():
     assert project.status == ProjectStatus.TESTING
     assert [item.checked for item in project.dod] == [True, True]
     assert project.checkpoint["completed_dod_indices"] == [0, 1]
+    assert project.extra_data["audit_waiting_for_change"] is True
+    assert "audit neopakuje automaticky" in project.next_step
 
 
 def test_actionable_audit_rejection_creates_rework_item_and_returns_to_implementation():

@@ -42,6 +42,11 @@ _VALID_REJECT_TARGETS = {
 }
 
 _AUDIT_REWORK_PREFIX = "Nápravný úkol: "
+# An audit-only rejection means the implementation is complete but the
+# independent verifier lacks a required runtime condition.  Keep the card in
+# Testování for durable traceability, while preventing the next PM tick from
+# purchasing the identical audit again before the condition changes.
+AUDIT_WAITING_FOR_CHANGE_KEY = "audit_waiting_for_change"
 
 # Below this length an orchestrator_ready_task is considered small enough
 # to not necessarily need a full autonomous handoff; at/above it, or with
@@ -525,6 +530,7 @@ def apply_audit_verdict(
     project.open_feedback = [*project.open_feedback, feedback_entry]
     project.stop_reason = reason.strip()
     if target == ProjectStatus.IN_PROGRESS:
+        project.extra_data.pop(AUDIT_WAITING_FOR_CHANGE_KEY, None)
         # An implementation rejection is a request for actual rework. Keep
         # audit-only rejections immutable, but reopen exactly the rejected
         # implementation items and remove them from the resumable checkpoint.
@@ -574,6 +580,14 @@ def apply_audit_verdict(
                 project.dod.append(DoDItem(text=rework_text))
             project.next_step = rework_text
         project.mark_returned_from_testing("audit_rejected")
+    elif target == ProjectStatus.TESTING:
+        project.extra_data[AUDIT_WAITING_FOR_CHANGE_KEY] = True
+        project.next_step = (
+            "Po odstranění podmínky uvedené v auditním feedbacku znovu vyžádat "
+            "nezávislý audit; do té doby se audit neopakuje automaticky."
+        )
+    else:
+        project.extra_data.pop(AUDIT_WAITING_FOR_CHANGE_KEY, None)
     project.transition_to(target)
 
 
