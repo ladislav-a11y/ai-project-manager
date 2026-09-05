@@ -80,10 +80,13 @@ from .orchestrator_handoff import (
 )
 from .providers import (
     ProviderRegistry,
+    TASK_AUDIT,
+    TASK_IMPLEMENTATION,
     TASK_INBOX_PLANNING,
     detect_limit,
 )
 from .scheduler import audit_capability_key
+from .task_classification import classify_task, infer_complexity
 
 # command (argv, already including --project/--goal/--spec/--agent/
 # --model/--run-id when a model is configured) -> a
@@ -165,6 +168,7 @@ def _tick_provider_order(
     provider_registry: ProviderRegistry,
     project: Optional[ProjectRecord] = None,
     provider_agent_map: Optional[dict] = None,
+    task_type: str = TASK_IMPLEMENTATION,
 ) -> list[str]:
     """Start AO with only providers currently allowed by PM.
 
@@ -173,6 +177,16 @@ def _tick_provider_order(
     its persisted ``retry_after`` deadline.  The PM name ``claude`` is
     translated to AO's ``claude-code`` agent while availability remains keyed
     by the PM registry name.
+
+    ``task_type`` mirrors the same ``classify_task(...).allowed_providers(...)``
+    filter ``scheduler.pick_next_project``/``pick_next_audit_project`` already
+    apply when picking the head of this order (see task_classification.py):
+    without it, a task-type-forbidden provider could still be reintroduced
+    into AO's own failover chain here even though the scheduler never would
+    have selected it first. Today's forbidden sets for implementation/audit
+    are both empty, so this does not change behavior yet - it only makes the
+    already-selected, real, filtered choice reach ai-orchestrator intact
+    through the rest of the failover order, not just its first entry.
     """
     if provider.casefold() == "auto":
         # ``auto`` is a PM-only alias.  AO accepts ``--agent auto`` to enable
@@ -199,6 +213,12 @@ def _tick_provider_order(
     if project is not None:
         capability_key = audit_capability_key(project)
         order = [name for name in order if not provider_registry.is_capability_limited(name, capability_key)]
+        classification = classify_task(task_type, infer_complexity(project))
+        order = [
+            name for name in order
+            if (_pm_provider_name(name, provider_registry, provider_agent_map) or name).casefold()
+            not in classification.forbidden_providers
+        ]
     return order
 
 
@@ -1496,7 +1516,12 @@ def build_audit_run_fn(
         if use_provider_failover:
             full_command += [
                 "--provider-order",
-                ",".join(_tick_provider_order(provider, provider_registry, project, provider_agent_map)),
+                ",".join(
+                    _tick_provider_order(
+                        provider, provider_registry, project, provider_agent_map,
+                        task_type=TASK_AUDIT,
+                    )
+                ),
             ]
         full_command += [
             "--run-id", run_id,
