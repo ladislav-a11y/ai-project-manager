@@ -558,11 +558,13 @@ def load_projects_and_inbox(
 
     # Inbox is still inspected on every tick, but AI planning is a separate
     # admission step.  Existing governed work has phase precedence: while a
-    # card is in Připraveno/Pracuje se/Čeká na AI/Testování (or another hard
-    # hold), do not spend a planner call on a new Inbox project.  The normal
-    # scheduler below will immediately select the dependency-ready card from
-    # Připraveno, so a ready batch cannot be overtaken by fresh intake.
+    # A card in Připraveno is read back as either NEW (freshly admitted) or
+    # READY (resumed).  Both physical states must gate Inbox planning.  Do
+    # not spend a planner call on a new Inbox project while any governed work
+    # is already queued or active; the scheduler below will select the
+    # dependency-ready card from Připraveno after the intake gate.
     intake_gate_statuses = {
+        ProjectStatus.NEW,
         ProjectStatus.READY,
         ProjectStatus.IN_PROGRESS,
         ProjectStatus.TESTING,

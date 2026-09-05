@@ -405,14 +405,10 @@ def test_run_tick_keeps_new_inbox_task_in_ready_until_next_tick():
     assert {label["name"] for label in ready_cards[0]["labels"]} >= {"P3", "AI Project Manager"}
 
 
-def test_run_tick_ends_before_dispatch_when_inbox_intake_prepares_new_work():
-    # ``intake_gate_statuses`` in load_projects_and_inbox only gates intake
-    # while a card is READY/IN_PROGRESS/TESTING/PAUSED/BLOCKED/ERROR - a
-    # pre-existing NEW project does not gate it, so intake still runs and
-    # admits a fresh Inbox card in the same tick. The freshly prepared
-    # project is already excluded from dispatch, but that alone does not
-    # stop this pre-existing, unrelated NEW project from being picked up by
-    # the very same tick's scheduler/dispatch - the tick must end first.
+def test_run_tick_skips_inbox_intake_when_prepared_new_work_exists():
+    # A pre-existing NEW project is already physically in Připraveno and
+    # must gate Inbox planning just like READY work.  This prevents a
+    # planner/provider call for a fresh Inbox card while queued work exists.
     client = InMemoryTrelloClient()
     _, name_to_id = build_list_maps(client)
     existing = ProjectRecord(
@@ -432,6 +428,7 @@ def test_run_tick_ends_before_dispatch_when_inbox_intake_prepares_new_work():
     registry = ProviderRegistry()
     registry.mark_available("claude")
     calls = []
+    planner_calls = []
 
     def run_fn(project, provider):
         calls.append(project.name)
@@ -443,12 +440,14 @@ def test_run_tick_ends_before_dispatch_when_inbox_intake_prepares_new_work():
         run_fn,
         default_providers=["claude"],
         process_inbox_enabled=True,
+        inbox_planner=lambda *_: planner_calls.append(True),
     )
 
-    assert outcome.ran is False
-    assert calls == []
-    new_cards = client.list_cards(name_to_id["New"])
-    assert len(new_cards) == 2
+    assert outcome.ran is True
+    assert calls == ["Existing widget"]
+    assert planner_calls == []
+    inbox_cards = client.list_cards(name_to_id["Inbox"])
+    assert len(inbox_cards) == 1
 
 
 def test_inbox_reconciliation_archives_complete_source_before_phase_gate():
