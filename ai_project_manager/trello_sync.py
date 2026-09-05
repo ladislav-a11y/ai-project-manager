@@ -823,11 +823,6 @@ def project_from_card(card: dict, list_id_to_name: dict[str, str]) -> ProjectRec
     # restart.  This is deliberately exact: free-form human stop reasons
     # must never be guessed as an audit return.
     extra_data = unknown_fields(data)
-    # Moving a held audit card out of Testování is the explicit workflow
-    # signal that its blocking condition has changed; do not carry the old
-    # anti-loop marker into a later audit cycle.
-    if status != ProjectStatus.TESTING:
-        extra_data.pop("audit_waiting_for_change", None)
     limit_reason = str(data.get("stop_reason") or "").casefold()
     if status == ProjectStatus.IN_PROGRESS and "provider session limit hit" in limit_reason:
         # Older PM runs could persist the provider-limit reason but leave the
@@ -1202,31 +1197,6 @@ def _repair_terminal_audit_rejection(project: ProjectRecord, raw: dict) -> bool:
     return True
 
 
-def _repair_nonterminal_audit_rejection(project: ProjectRecord, raw: dict) -> bool:
-    """Persist an anti-loop hold for an already rejected audit-only card.
-
-    The guard was introduced after some cards had already been left in
-    ``Testování`` by an older PM run.  Their explicit ai-orchestrator
-    rejection is durable evidence, so the first read must migrate that state
-    before the audit selector can spend another provider call.
-    """
-    if project.status != ProjectStatus.TESTING:
-        return False
-    if project.extra_data.get("audit_waiting_for_change") is True:
-        return False
-    sources = [raw.get("stop_reason"), *(raw.get("open_feedback") or [])]
-    combined = "\n".join(str(value) for value in sources if value).casefold()
-    if not any(marker in combined for marker in _AUDIT_REJECTION_MARKERS):
-        return False
-    project.extra_data["audit_waiting_for_change"] = True
-    if not project.next_step:
-        project.next_step = (
-            "Po odstranění podmínky uvedené v auditním feedbacku znovu vyžádat "
-            "nezávislý audit; do té doby se audit neopakuje automaticky."
-        )
-    return True
-
-
 def maintain_board_contract(client) -> list[str]:
     """Idempotently migrate safe cards and enforce workflow/order.
 
@@ -1278,15 +1248,6 @@ def maintain_board_contract(client) -> list[str]:
                         "reopening terminal card with unresolved audit rejection "
                         "card=%s name=%r status=%s",
                         card.get("id"), card.get("name"), project.status.value,
-                    )
-                nonterminal_audit_hold_repaired = _repair_nonterminal_audit_rejection(
-                    project, raw
-                )
-                if nonterminal_audit_hold_repaired:
-                    logger.warning(
-                        "holding rejected audit card until a new condition is available "
-                        "card=%s name=%r",
-                        card.get("id"), card.get("name"),
                     )
                 if _repair_terminal_test_dod_routing(project, raw):
                     dod_routing_repaired = True
@@ -1368,14 +1329,8 @@ def maintain_board_contract(client) -> list[str]:
                 # must not rewrite its Trello description. Only a concrete
                 # lifecycle repair (for example missing completion evidence)
                 # makes a terminal write necessary.
-                needs_write = (
-                    workflow_needs_write
-                    or incomplete_dod_repaired
-                    or dod_routing_repaired
-                    or nonterminal_audit_hold_repaired
-                    or (
-                        project.status != ProjectStatus.DONE and migration_needs_write
-                    )
+                needs_write = workflow_needs_write or incomplete_dod_repaired or dod_routing_repaired or (
+                    project.status != ProjectStatus.DONE and migration_needs_write
                 )
                 if needs_write:
                     sync_project_to_trello(client, project)

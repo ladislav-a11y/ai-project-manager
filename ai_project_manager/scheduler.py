@@ -216,11 +216,6 @@ def is_auditable(project: ProjectRecord) -> bool:
     """
     if project.is_blocked:
         return False
-    # An audit-only rejection remains in Testování as durable workflow
-    # evidence, but it must not be sent to the same auditor again on every
-    # tick.  A human or a later implementation move can clear this marker.
-    if (project.extra_data or {}).get("audit_waiting_for_change") is True:
-        return False
     return project.status == ProjectStatus.TESTING
 
 

@@ -287,17 +287,3 @@ def test_audit_capability_limit_skips_provider_for_same_task_family():
 
     assert decision is not None
     assert decision.provider == "codex"
-
-
-def test_audit_only_rejection_waits_for_change_instead_of_repeating_the_same_audit():
-    project = ProjectRecord(
-        name="Held audit",
-        priority=5,
-        status=ProjectStatus.TESTING,
-        extra_data={"audit_waiting_for_change": True},
-    )
-    registry = make_registry(claude="AVAILABLE", codex="AVAILABLE")
-
-    assert pick_next_audit_project(
-        [project], registry, default_providers=["claude", "codex"]
-    ) is None
