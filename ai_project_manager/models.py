@@ -21,6 +21,30 @@ MIN_PRIORITY = 0
 # without changing the meaning that a higher number wins.
 MAX_PRIORITY = 5.999999
 
+_MISSING = object()
+
+
+def _read_bool(value: Any, *, field: str, default: bool = False) -> bool:
+    """Read a persisted boolean without Python truthiness surprises.
+
+    PM-DATA is external, user-editable JSON.  In particular, ``bool('false')``
+    is True, which could turn a malformed checklist into false completion.
+    Accept the two textual spellings for compatibility with older writers,
+    but reject every other non-boolean value instead of guessing.
+    """
+
+    if value is _MISSING:
+        return default
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        normalized = value.strip().casefold()
+        if normalized == "true":
+            return True
+        if normalized == "false":
+            return False
+    raise ValueError(f"{field} must be a boolean, got {value!r}")
+
 
 class ProjectStatus(str, Enum):
     """Project lifecycle state. Backed 1:1 by the Trello list the card sits in."""
@@ -85,7 +109,11 @@ class DoDItem:
 
     @classmethod
     def from_dict(cls, data: dict) -> "DoDItem":
-        return cls(text=data.get("text", ""), checked=bool(data.get("checked")), phase=data.get("phase", "implementation"))
+        return cls(
+            text=data.get("text", ""),
+            checked=_read_bool(data.get("checked", _MISSING), field="DoD.checked"),
+            phase=data.get("phase", "implementation"),
+        )
 
 
 @dataclass

@@ -110,6 +110,31 @@ def test_dod_item_to_dict_persists_phase_explicitly():
         "phase": "audit",
     }
 
+
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [(True, True), (False, False), ("true", True), (" false ", False)],
+)
+def test_dod_item_from_dict_reads_boolean_without_truthiness_coercion(raw, expected):
+    from ai_project_manager.models import DoDItem
+
+    assert DoDItem.from_dict({"text": "evidence", "checked": raw}).checked is expected
+
+
+@pytest.mark.parametrize("raw", [None, 0, 1, [], {}, "yes", "0"])
+def test_dod_item_from_dict_rejects_unknown_boolean_values(raw):
+    from ai_project_manager.models import DoDItem
+
+    with pytest.raises(ValueError, match="DoD.checked must be a boolean"):
+        DoDItem.from_dict({"text": "evidence", "checked": raw})
+
+
+def test_dod_item_from_dict_keeps_legacy_missing_checked_as_unchecked():
+    from ai_project_manager.models import DoDItem
+
+    assert DoDItem.from_dict({"text": "legacy"}).checked is False
+
+
 def test_from_dict_accepts_string_status():
     project = ProjectRecord.from_dict({"name": "Demo", "status": "blocked", "priority": 1})
     assert project.status == ProjectStatus.BLOCKED
