@@ -103,6 +103,18 @@ _DEFAULT_SPEC_DIR = "specs"
 _RUNTIME_CONTRACT_PATH = Path(__file__).resolve().parents[2] / "AI_PROJECT_RUNTIME.md"
 _DEFAULT_OUTBOX_DIR = "outbox"
 
+
+def _is_explicit_true(value: object) -> bool:
+    """Accept only an explicit persisted true value.
+
+    ai-orchestrator outbox data is an external JSON contract.  Python's
+    truthiness would incorrectly treat the text ``"false"`` as true and
+    could therefore turn an unperformed audit into an accepted verdict.
+    Unknown values fail closed as well.
+    """
+
+    return value is True or (isinstance(value, str) and value.strip().casefold() == "true")
+
 # Project Manager's own provider registry/locking/Trello state always
 # uses its own stable provider name (e.g. "claude") - never anything
 # translated. Only the argv/spec handed to the real ai-orchestrator CLI
@@ -1546,13 +1558,21 @@ def build_audit_run_fn(
         # implementation agent's text or the top-level status alone.
         iterations = payload.get("iterations")
         last_iteration = iterations[-1] if isinstance(iterations, list) and iterations else {}
-        audit_performed = bool(last_iteration.get("audit_performed")) if isinstance(last_iteration, dict) else False
+        audit_performed = (
+            _is_explicit_true(last_iteration.get("audit_performed"))
+            if isinstance(last_iteration, dict)
+            else False
+        )
         rejected_indices = (
             last_iteration.get("audit_rejected_indices")
             if isinstance(last_iteration, dict)
             else None
         )
-        audit_protocol_error = bool(last_iteration.get("audit_protocol_error")) if isinstance(last_iteration, dict) else False
+        audit_protocol_error = (
+            _is_explicit_true(last_iteration.get("audit_protocol_error"))
+            if isinstance(last_iteration, dict)
+            else False
+        )
         evidence = (
             payload.get("last_output")
             or (last_iteration.get("test_output") if isinstance(last_iteration, dict) else None)
