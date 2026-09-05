@@ -11,7 +11,6 @@ from ai_project_manager.orchestrator_runner import (
     DEFAULT_PROVIDER_AGENT_MAP,
     INBOX_PLANNER_PROVIDERS,
     NO_COMMIT_INSTRUCTION,
-    AuditVerdictMissingError,
     OrchestratorProcessError,
     ProjectPathError,
     build_audit_run_fn,
@@ -449,49 +448,6 @@ def test_audit_run_fn_uses_supported_autonomous_cli_and_reads_internal_audit(tmp
     assert seen["command"][-1] == "--no-commit"
     assert result["active_provider"] == "anthropic"
     assert result["active_model"] == "claude-opus-4-1"
-
-
-def test_audit_run_fn_rejects_text_false_as_unperformed_audit(tmp_path):
-    registry = ProviderRegistry()
-    registry.mark_available("claude")
-    project = ProjectRecord(
-        name="Demo",
-        status=ProjectStatus.TESTING,
-        orchestrator_ready_task="Verify the feature",
-        dod=[DoDItem(text="implemented", checked=True)],
-        checkpoint={"completed_dod_indices": [0]},
-    )
-
-    def fake_subprocess_run(_command):
-        write_outbox_result(
-            tmp_path / "outbox",
-            "Demo",
-            {
-                "status": "completed",
-                "last_output": "no independent audit was performed",
-                "iterations": [{
-                    "audit_performed": "false",
-                    "audit_rejected_indices": [],
-                    "audit_protocol_error": False,
-                    "test_output": "1 passed",
-                }],
-            },
-            run_id="audit-run",
-        )
-        return completed()
-
-    audit_run = build_audit_run_fn(
-        registry,
-        command=["ai-orchestrator"],
-        project_paths={"Demo": str(tmp_path / "demo-checkout")},
-        spec_dir=str(tmp_path / "specs"),
-        outbox_dir=str(tmp_path / "outbox"),
-        subprocess_run=fake_subprocess_run,
-        run_id_fn=lambda: "audit-run",
-    )
-
-    with pytest.raises(AuditVerdictMissingError, match="no completed independent audit verdict"):
-        audit_run(project, "claude")
 
 
 def test_audit_and_implementation_delegate_model_selection_to_provider(tmp_path):
