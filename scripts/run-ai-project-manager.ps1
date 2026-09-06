@@ -183,22 +183,23 @@ try {
             'WORKFLOW.md',
             'PROJECT_AUDIT_ROADMAP.md'
         )
-        # AI Orchestrator's current implementation scope is deliberately
-        # explicit: the handoff document in that checkout is pre-existing
-        # untracked context and must never enter this controller commit.
+        # AI Orchestrator remains explicitly scoped, but by durable code/test
+        # roots instead of a stale list of individual files. This admits new
+        # legitimate implementation files while still excluding unrelated
+        # root artifacts such as handoff notes and local secrets.
         'AI Orchestrator' = @(
-            'orchestrator/autonomous.py',
-            'tests/test_autonomous.py',
-            'tests/test_cli.py',
-            'tests/test_failover.py',
-            'tests/test_service.py'
+            'orchestrator/',
+            'tests/',
+            'ARCHITECTURE.md',
+            'PROVIDER_MODEL_ROUTING_RESEARCH.md',
+            'outbox/README.md'
         )
         'ai-orchestrator' = @(
-            'orchestrator/autonomous.py',
-            'tests/test_autonomous.py',
-            'tests/test_cli.py',
-            'tests/test_failover.py',
-            'tests/test_service.py'
+            'orchestrator/',
+            'tests/',
+            'ARCHITECTURE.md',
+            'PROVIDER_MODEL_ROUTING_RESEARCH.md',
+            'outbox/README.md'
         )
     }
     $env:AI_ORCHESTRATOR_FINALIZE_PATHS = $finalizePaths | ConvertTo-Json -Compress

@@ -181,12 +181,80 @@ def test_run_fn_does_not_controller_finalize_fresh_implementation_card(tmp_path)
     assert "--implementation-only" in calls[0]
 
 
-def test_build_finalize_fn_returns_none_without_a_configured_command():
-    """No AI_ORCHESTRATOR_FINALIZE_CMD configured means finalization is
-    simply skipped - daemon.py treats a None finalize_fn as "not wired up"
-    and promotes without it, exactly like before this feature existed."""
-    assert build_finalize_fn(None) is None
-    assert build_finalize_fn([]) is None
+def test_run_fn_blocks_fresh_card_on_preexisting_dirty_checkout_without_provider_call(tmp_path):
+    registry = ProviderRegistry()
+    registry.mark_available("claude")
+
+    def forbidden_subprocess(_command):
+        raise AssertionError("provider must not run over another card's dirty checkout")
+
+    def fake_git(argv):
+        if tuple(argv[-2:]) == ("rev-parse", "HEAD"):
+            return completed("abc123\n")
+        if tuple(argv[-2:]) == ("status", "--porcelain"):
+            return completed(" M preceding-card.py\n")
+        raise AssertionError(argv)
+
+    project = ProjectRecord(
+        name="Demo",
+        orchestrator_ready_task="Implement a fresh independent card",
+        dod=[DoDItem(text="implementation")],
+    )
+    run_fn, _, _ = make_run_fn(
+        tmp_path,
+        registry,
+        subprocess_run=forbidden_subprocess,
+        run_git=fake_git,
+        enforce_clean_preflight=True,
+    )
+
+    result = run_fn(project, "claude")
+
+    assert result["status"] == "in_progress"
+    assert "without provider call" in result["stop_reason"]
+
+
+@pytest.mark.parametrize("command", [None, []])
+def test_build_finalize_fn_without_command_blocks_dirty_checkout(tmp_path, command):
+    """Missing controller wiring must never promote uncommitted agent work."""
+    def fake_git(argv):
+        if tuple(argv[-2:]) == ("rev-parse", "HEAD"):
+            return completed("abc123\n")
+        if tuple(argv[-2:]) == ("status", "--porcelain"):
+            return completed(" M changed.py\n")
+        raise AssertionError(argv)
+
+    finalize_fn = build_finalize_fn(
+        command,
+        project_paths={"Demo": str(tmp_path / "demo-checkout")},
+        run_git=fake_git,
+    )
+
+    result = finalize_fn(ProjectRecord(name="Demo"))
+
+    assert result["status"] == "blocked"
+    assert "not configured" in result["stop_reason"]
+
+
+def test_build_finalize_fn_without_command_allows_clean_checkout(tmp_path):
+    """No finalizer process is needed when the card produced no Git change."""
+    def fake_git(argv):
+        if tuple(argv[-2:]) == ("rev-parse", "HEAD"):
+            return completed("abc123\n")
+        if tuple(argv[-2:]) == ("status", "--porcelain"):
+            return completed("")
+        raise AssertionError(argv)
+
+    finalize_fn = build_finalize_fn(
+        None,
+        project_paths={"Demo": str(tmp_path / "demo-checkout")},
+        run_git=fake_git,
+    )
+
+    assert finalize_fn(ProjectRecord(name="Demo")) == {
+        "status": "done",
+        "already_verified": True,
+    }
 
 
 def test_build_finalize_fn_commits_a_fully_implemented_card(tmp_path):

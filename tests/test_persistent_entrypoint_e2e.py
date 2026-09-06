@@ -65,7 +65,15 @@ _HARNESS_SOURCE = textwrap.dedent(
             "active_provider": provider,
         }}
 
-    exit_code = cli.main(["--once", "--log-level", "INFO"], client=client, run_fn=run_fn)
+    def finalize_fn(project):
+        return {{"status": "done", "already_verified": True}}
+
+    exit_code = cli.main(
+        ["--once", "--log-level", "INFO"],
+        client=client,
+        run_fn=run_fn,
+        finalize_fn=finalize_fn,
+    )
 
     readback = [
         {{"name": p.name, "status": p.status.value, "last_output": p.last_output}}

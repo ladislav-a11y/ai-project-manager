@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import json
 import os
+import subprocess
 import sys
 import tempfile
 from pathlib import Path
@@ -81,6 +82,17 @@ payload = {
 """
 
 
+def _ensure_clean_git_checkout(path: str) -> None:
+    checkout = Path(path)
+    checkout.mkdir(parents=True, exist_ok=True)
+    if (checkout / ".git").is_dir():
+        return
+    subprocess.run(["git", "init", "-q", str(checkout)], check=True)
+    subprocess.run(["git", "-C", str(checkout), "config", "user.email", "verify@example.invalid"], check=True)
+    subprocess.run(["git", "-C", str(checkout), "config", "user.name", "PM verifier"], check=True)
+    subprocess.run(["git", "-C", str(checkout), "commit", "--allow-empty", "-q", "-m", "initial"], check=True)
+
+
 def run_one(
     workdir: Path,
     card_title: str,
@@ -89,9 +101,9 @@ def run_one(
     project_paths: dict = None,
     expected_checkout: str = None,
 ) -> str:
-    Path(station_checkout).mkdir(parents=True, exist_ok=True)
+    _ensure_clean_git_checkout(station_checkout)
     for checkout in (project_paths or {}).values():
-        Path(checkout).mkdir(parents=True, exist_ok=True)
+        _ensure_clean_git_checkout(checkout)
     outbox_dir = workdir / "outbox"
     stub = workdir / "fake_orchestrator.py"
     stub.write_text(STUB_SOURCE, encoding="utf-8")

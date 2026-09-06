@@ -167,6 +167,7 @@ def main(
             finalize_paths=config.orchestrator.finalize_paths,
             allowed_push_remotes=config.orchestrator.allowed_push_remotes,
             use_provider_failover=True,
+            enforce_clean_preflight=True,
         )
 
     if audit_run_fn is None:

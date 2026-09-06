@@ -84,6 +84,16 @@ důkazem. Nezávislý audit tento důkaz spotřebuje a nesmí vyžadovat druhý
 commit; chybějící, zastaralý nebo neshodující se důkaz zůstává fail-closed.
 Čistý checkout bez změn nevyžaduje prázdný commit.
 
+Čerstvá karta se před prvním providerovým voláním nesmí spustit nad dirty
+checkoutem: takový stav znamená neuzavřenou práci předchozí karty a PM jej
+zablokuje ještě před spotřebou AI tokenů. Resumovaná karta s vlastním
+checkpointem smí pokračovat ve svém rozpracovaném diffu. Chybějící
+`AI_ORCHESTRATOR_FINALIZE_CMD` je pro dirty checkout fail-closed; pouze
+skutečně čistý checkout může bez finalizačního subprocessu pokračovat.
+Kurátorovaný scope AI Orchestratoru používá trvalé adresářové hranice
+`orchestrator/` a `tests/` plus jednotlivě povolené projektové dokumenty,
+nikoli křehký seznam právě známých zdrojových souborů.
+
 Implementační agent nikdy sám neuzavírá kartu do `Hotovo`. Neúplné nebo
 neověřené DoD se nesmí označit jako hotové. Karta vrácená z auditu se nesmí
 automaticky znovu vydávat za dokončenou jen proto, že její staré DoD zůstalo

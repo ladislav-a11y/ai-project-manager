@@ -1152,12 +1152,11 @@ def build_finalize_fn(
     independent audit finds an unchanged checkout (see the repeated
     "checkout se nezmenil" rejections this was written to fix).
 
-    Returns ``None`` when no ``command`` (``AI_ORCHESTRATOR_FINALIZE_CMD``)
-    is configured - finalization is then simply skipped, exactly like
-    today, rather than blocking every promotion on an unset config value.
+    A missing ``command`` (``AI_ORCHESTRATOR_FINALIZE_CMD``) is fail-closed
+    for a dirty checkout. A clean checkout may still advance because there
+    is nothing to commit, but real agent changes must never reach Testing
+    without controller-owned commit/push evidence.
     """
-    if not command:
-        return None
     git_cmd = run_git or default_run_command
     if subprocess_run is None:
         subprocess_run = functools.partial(_default_subprocess_run, timeout=timeout_seconds)
@@ -1176,6 +1175,26 @@ def build_finalize_fn(
             # Already committed/pushed for the current HEAD (for example a
             # research-only card with nothing to commit, or a retry after a
             # transient Trello write failure) - nothing to do.
+            return {"status": "done", "already_verified": True}
+        if not command:
+            if not current_head:
+                return {
+                    "status": "blocked",
+                    "stop_reason": "controller finalization cannot verify repository HEAD",
+                }
+            status_ok, status = get_git_status(project_path, run_git=git_cmd)
+            if not status_ok:
+                return {
+                    "status": "blocked",
+                    "stop_reason": f"controller finalization cannot verify git status: {status}",
+                }
+            if status.strip():
+                return {
+                    "status": "blocked",
+                    "stop_reason": (
+                        "controller finalization command is not configured and the checkout is dirty"
+                    ),
+                }
             return {"status": "done", "already_verified": True}
         run_id = run_id_fn()
         goal = (
@@ -1208,6 +1227,7 @@ def build_run_fn(
     finalize_paths: Optional[dict] = None,
     allowed_push_remotes: Optional[dict] = None,
     use_provider_failover: bool = False,
+    enforce_clean_preflight: bool = False,
 ):
     """Build a ``run_fn(project, provider) -> dict`` that dispatches to the
     real ai-orchestrator ``--project``/``--goal``/``--spec``/``--agent``/
@@ -1265,6 +1285,31 @@ def build_run_fn(
 
         run_id = run_id_fn()
         initial_head = get_git_head(project_path, run_git=git_cmd)
+        # A fresh card must never inherit another card's unfinalized diff.
+        # Block before any provider call (zero AI tokens) and let the
+        # controller/operator close the preceding work first. Resumed cards
+        # carry a checkpoint and may legitimately continue their own partial
+        # implementation or retry controller finalization.
+        if enforce_clean_preflight and not project.checkpoint:
+            if not initial_head:
+                return {
+                    "status": "in_progress",
+                    "stop_reason": "pre-dispatch Git HEAD cannot be verified; provider was not called",
+                }
+            status_ok, status = get_git_status(project_path, run_git=git_cmd)
+            if not status_ok:
+                return {
+                    "status": "in_progress",
+                    "stop_reason": f"pre-dispatch git status cannot be verified: {status}",
+                }
+            if status.strip():
+                return {
+                    "status": "in_progress",
+                    "stop_reason": (
+                        "pre-dispatch blocked without provider call: fresh card checkout is dirty; "
+                        "finalize or resolve the preceding card first"
+                    ),
+                }
         existing_finalization = (project.checkpoint or {}).get("finalization")
         finalization_verified = _controller_finalization_is_verified(
             existing_finalization, initial_head

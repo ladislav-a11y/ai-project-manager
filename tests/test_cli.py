@@ -1,5 +1,6 @@
 import json
 import os
+import subprocess
 import sys
 from pathlib import Path
 
@@ -88,6 +89,15 @@ def _set_trello_env(monkeypatch):
     # directories, failing on "cannot verify repository HEAD before
     # execution" instead of the behavior each test actually verifies.
     monkeypatch.delenv("AI_ORCHESTRATOR_FINALIZE_CMD", raising=False)
+
+
+def _init_clean_git_checkout(path: str) -> None:
+    checkout = Path(path)
+    checkout.mkdir()
+    subprocess.run(["git", "init", "-q", str(checkout)], check=True)
+    subprocess.run(["git", "-C", str(checkout), "config", "user.email", "tests@example.invalid"], check=True)
+    subprocess.run(["git", "-C", str(checkout), "config", "user.name", "PM tests"], check=True)
+    subprocess.run(["git", "-C", str(checkout), "commit", "--allow-empty", "-q", "-m", "initial"], check=True)
 
 
 def test_main_once_runs_a_full_tick_through_the_real_entrypoint_wiring(monkeypatch):
@@ -293,7 +303,7 @@ def test_main_once_resolves_project_path_via_real_wiring_without_exact_title_ove
     )
 
     station_checkout = str(tmp_path / "station-agent-checkout")
-    Path(station_checkout).mkdir()
+    _init_clean_git_checkout(station_checkout)
     monkeypatch.setenv(
         "AI_PM_PROJECT_PATHS",
         json.dumps({"Station Agent": station_checkout}),
@@ -375,7 +385,7 @@ def test_main_once_resolves_project_path_via_stable_label_identity_without_title
     )
 
     checkout = str(tmp_path / expected_checkout_name)
-    Path(checkout).mkdir()
+    _init_clean_git_checkout(checkout)
     # Keyed by each project's stable label identity only - deliberately
     # never containing this card's exact current title - mirroring the
     # real scripts/run-ai-project-manager.ps1 production config.
@@ -451,7 +461,7 @@ def test_main_once_migrates_and_resolves_real_production_card_without_exact_titl
     )
 
     checkout = str(tmp_path / "ai-project-manager-checkout")
-    Path(checkout).mkdir()
+    _init_clean_git_checkout(checkout)
     # Keyed only by the 3 stable project identities - deliberately no key
     # matching this card's exact current title anywhere.
     monkeypatch.setenv(
@@ -533,7 +543,7 @@ def test_main_once_migrates_real_production_card_via_title_keyed_config_matching
     )
 
     checkout = str(tmp_path / "ai-project-manager-checkout")
-    Path(checkout).mkdir()
+    _init_clean_git_checkout(checkout)
     monkeypatch.setenv(
         "AI_PM_PROJECT_PATHS",
         json.dumps(
