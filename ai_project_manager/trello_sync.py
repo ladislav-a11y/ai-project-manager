@@ -25,6 +25,7 @@ import logging
 import math
 import re
 from datetime import datetime, timezone
+from copy import deepcopy
 from typing import Optional
 
 from .models import DoDItem, GitHubRef, GoogleDriveRef, ProjectRecord, ProjectStatus
@@ -534,7 +535,38 @@ def _bound_contract_history(data: dict) -> dict:
     the newest actionable feedback, but never let diagnostic history make the
     lifecycle update itself fail at the Trello API boundary.
     """
-    bounded = dict(data)
+    bounded = deepcopy(data)
+
+    # Slack already owns the full human-readable message. Keeping another
+    # copy of every message inside PM-DATA made a single audit consume almost
+    # the entire Trello description limit. Persist only a compact delivery
+    # receipt and the structured provider/model evidence used to render it.
+    def compact_selection(selection) -> dict:
+        compacted = dict(selection) if isinstance(selection, dict) else {}
+        notifications = compacted.pop("slack_notifications", None)
+        compacted.pop("provider_statuses", None)
+        if isinstance(notifications, list):
+            receipts = []
+            for item in notifications[-2:]:
+                if not isinstance(item, dict):
+                    continue
+                receipts.append({
+                    key: item[key]
+                    for key in ("delivered", "kind", "format", "sent_at")
+                    if key in item
+                })
+            if receipts:
+                compacted["slack_notification_receipts"] = receipts
+        return compacted
+
+    selection = bounded.get("provider_selection")
+    if isinstance(selection, dict):
+        bounded["provider_selection"] = compact_selection(selection)
+    history = bounded.get("provider_selection_history")
+    if isinstance(history, list):
+        bounded["provider_selection_history"] = [
+            compact_selection(item) for item in history[-2:] if isinstance(item, dict)
+        ]
     feedback = bounded.get("open_feedback")
     if isinstance(feedback, list):
         entries = [str(item) for item in feedback if item]

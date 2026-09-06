@@ -65,6 +65,39 @@ def test_contract_history_truncation_always_makes_progress(monkeypatch):
     assert bounded["open_feedback"][0].startswith("[zkráceno]")
 
 
+def test_card_update_keeps_compact_slack_receipt_not_full_message_copy():
+    client = InMemoryTrelloClient(("Připraveno", "Pracuje se", "Testování", "Hotovo"))
+    card = client.create_card("list-3", "P5 — live evidence", labels=["P5", "APM"])
+    project = project_from_card(card, {"list-3": "Testování"})
+    project.dod = [DoDItem(text="implementation", checked=True)]
+    project.extra_data["provider_selection_history"] = [{
+        "stage": "implementation",
+        "selected_provider": "codex",
+        "actual_provider": "codex",
+        "slack_notifications": [{
+            "message": "full Slack payload " + "x" * 8000,
+            "delivered": True,
+            "kind": "pre_audit_live_evidence",
+            "format": "requested-vs-actual-v1",
+            "sent_at": "2026-09-06T10:00:00+00:00",
+        }],
+        "provider_statuses": {"codex": {"error": "e" * 4000}},
+    }]
+    updates = card_updates_from_project(project, {"Testování": "list-3"})
+    data = _parse_data_block(updates["desc"])
+    history = data["provider_selection_history"][0]
+
+    assert "full Slack payload" not in updates["desc"]
+    assert "slack_notifications" not in history
+    assert history["slack_notification_receipts"] == [{
+        "delivered": True,
+        "kind": "pre_audit_live_evidence",
+        "format": "requested-vs-actual-v1",
+        "sent_at": "2026-09-06T10:00:00+00:00",
+    }]
+    assert "provider_statuses" not in history
+
+
 def test_card_identity_ignores_rich_text_url_whitespace():
     client = InMemoryTrelloClient(("Připraveno", "Pracuje se", "Testování", "Hotovo"))
     card = client.create_card("list-2", "P5 — URL", labels=["P5", "APM"])

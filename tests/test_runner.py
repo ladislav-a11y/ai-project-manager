@@ -1,5 +1,6 @@
 from datetime import timedelta
 
+from ai_project_manager import runner as runner_module
 from ai_project_manager import slack_notify
 from ai_project_manager.guard import OrchestratorGuard
 from ai_project_manager.lock import ProjectLockManager
@@ -992,6 +993,59 @@ def test_audit_readback_preserves_live_provider_model_and_slack_receipt():
     assert evidence["active_model"] == "gpt-5.6-luna"
     assert evidence["active_provider"] == "codex"
     assert evidence["run_id"] == "implementation-live-run"
+
+
+def test_audit_emits_requested_vs_actual_live_evidence_before_provider_call(monkeypatch):
+    project = ProjectRecord(
+        name="P5.30 — provider reporting",
+        priority=5.3,
+        status=ProjectStatus.TESTING,
+        main_task="Report requested and actual provider selection",
+        dod=[DoDItem(text="implementation", checked=True)],
+        extra_data={
+            "provider_selection_history": [{
+                "stage": "implementation",
+                "selected_provider": "antigravity",
+                "selected_model": "gemini-requested",
+                "requested_reason": "economical tier",
+                "actual_provider": "codex",
+                "actual_model": "gpt-actual",
+                "actual_reason": "failover receipt",
+                "route_detail": "provider path: antigravity -> codex | failover: ano",
+            }],
+        },
+    )
+    client = make_client_with_project(project)
+    registry = ProviderRegistry()
+    registry.mark_available("codex")
+    messages = []
+    monkeypatch.setattr(runner_module, "notify", lambda message: messages.append(message) or True)
+    seen = {}
+
+    def audit_run(audit_project, _provider):
+        seen["readback"] = audit_project.extra_data["live_trello_readback"]
+        return {
+            "verdict": "rejected",
+            "reason": "intentional test verdict",
+            "evidence": "pre-audit evidence inspected",
+            "reject_target": "testing",
+        }
+
+    outcome = run_once_audit(
+        client,
+        [project],
+        registry,
+        audit_run,
+        default_providers=["codex"],
+    )
+
+    assert outcome.ran is True
+    assert "požadováno: provider=antigravity, model=gemini-requested" in messages[0]
+    assert "skutečně použito (receipt): provider=codex, model=gpt-actual" in messages[0]
+    history = seen["readback"]["contract_metadata"]["provider_selection_history"]
+    receipts = history[-1]["slack_notification_receipts"]
+    assert receipts[-1]["kind"] == "pre_audit_live_evidence"
+    assert receipts[-1]["delivered"] is True
 
 
 def test_audit_readback_preserves_inbox_split_priority_identity_dependency_and_workflow_state():

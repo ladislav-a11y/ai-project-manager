@@ -707,8 +707,14 @@ def run_once(
                     + usage_suffix(result)
                 )
             deliveries = []
-            for message in status_messages:
-                deliveries.append({"message": message, "delivered": notify(message)})
+            for index, message in enumerate(status_messages):
+                deliveries.append({
+                    "kind": "implementation_status",
+                    "format": "requested-vs-actual-v1",
+                    "sent_at": datetime.now(timezone.utc).isoformat(),
+                    "delivered": notify(message),
+                    "sequence": index,
+                })
             project.extra_data["provider_selection"]["slack_notifications"] = deliveries
             sync_project_to_trello(client, project)
             logger.info("synced project=%r state to trello (card=%s)", project.name, project.trello_card_id)
@@ -842,14 +848,37 @@ def run_once_audit(
                     )
                 if not finalize_result.get("already_verified"):
                     project.checkpoint = finalize_result.get("checkpoint", project.checkpoint)
-            notify(status_message(
+            project.provider = provider
+            _remember_provider_selection(project)
+            history = project.extra_data.get("provider_selection_history")
+            implementation_selection = (
+                history[-1]
+                if isinstance(history, list) and history and isinstance(history[-1], dict)
+                else None
+            )
+            audit_start_detail = None
+            if implementation_selection:
+                audit_start_detail = (
+                    "živý post-finalizační důkaz | "
+                    + provider_selection_comparison(implementation_selection)
+                )
+                implementation_route = implementation_selection.get("route_detail")
+                if implementation_route:
+                    audit_start_detail += " | " + str(implementation_route)
+            audit_start_delivered = notify(status_message(
                 "PM zahajuje audit",
                 project=project.name,
                 provider=provider_detail,
                 provider_reason=provider_reason,
+                detail=audit_start_detail,
             ))
-            project.provider = provider
-            _remember_provider_selection(project)
+            if implementation_selection is not None:
+                implementation_selection["slack_notifications"] = [{
+                    "kind": "pre_audit_live_evidence",
+                    "format": "requested-vs-actual-v1",
+                    "sent_at": datetime.now(timezone.utc).isoformat(),
+                    "delivered": audit_start_delivered,
+                }]
             project.extra_data["provider_selection"] = {
                 "provider": provider,
                 # ``model`` is receipt-owned; ``selected_model`` is only the
