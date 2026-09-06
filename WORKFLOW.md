@@ -63,14 +63,14 @@ nezměněný checkout). Popisná auditní evidence o už existujícím
 HEAD/status/diff/remote sama o sobě nikdy nevyvolá druhý, samostatný
 finalizační požadavek. Standardně pro dirty checkout finalizace před
 `Testování` zahrnuje: test, rozsah commitu, čistý pracovní strom a
-záloha/ověřený remote HEAD. Rozsah commitovaných cest
-se odvozuje ze skutečného `git status` daného projektu, pokud pro něj není
-nakonfigurován explicitní kurátorovaný seznam (`AI_ORCHESTRATOR_FINALIZE_PATHS`)
-- takový seznam zůstává jen přísnější volitelnou výjimkou pro projekt, který
-smí měnit vlastní řídicí kód (např. AI Project Manager při self-update); pro
-běžný cílový projekt (např. Station Agent) žádný ruční seznam nevyžaduje.
-V obou případech se nikdy nepoužije globální `git add -A` - cesty se vždy
-stagují jednotlivě a explicitně vyjmenované. Push na vzdálený remote naopak
+záloha/ověřený remote HEAD. Rozsah commitovaných cest se pro každý projekt
+včetně self-update odvozuje ze skutečného `git status`. Je to bezpečné pouze
+ve spojení s povinnou kontrolou čistého checkoutu před prvním providerovým
+voláním: finalizer tak přebírá jen změny vzniklé v právě zpracovávané kartě.
+Produkční wrapper proto nesmí udržovat ruční seznam názvů souborů; nový
+legitimní soubor nesmí kartu uvěznit jen proto, že jeho název předem
+neexistoval. Nikdy se nepoužije globální `git add -A` - zjištěné dirty cesty
+se stagují jednotlivě a explicitně. Push na vzdálený remote naopak
 zůstává vždy vázaný na explicitní `AI_ORCHESTRATOR_ALLOWED_PUSH_REMOTES`
 záznam pro daný projekt - bez něj finalizace zůstane commitnutá jen lokálně,
 `pushed=true` se nesplní a karta se vrátí do `Pracuje se` s konkrétním
@@ -90,9 +90,8 @@ zablokuje ještě před spotřebou AI tokenů. Resumovaná karta s vlastním
 checkpointem smí pokračovat ve svém rozpracovaném diffu. Chybějící
 `AI_ORCHESTRATOR_FINALIZE_CMD` je pro dirty checkout fail-closed; pouze
 skutečně čistý checkout může bez finalizačního subprocessu pokračovat.
-Kurátorovaný scope AI Orchestratoru používá trvalé adresářové hranice
-`orchestrator/` a `tests/` plus jednotlivě povolené projektové dokumenty,
-nikoli křehký seznam právě známých zdrojových souborů.
+Stejný dynamický finalizační kontrakt platí pro všechny registrované projekty;
+AI Project Manager ani AI Orchestrator při self-update nemají názvové výjimky.
 
 Implementační agent nikdy sám neuzavírá kartu do `Hotovo`. Neúplné nebo
 neověřené DoD se nesmí označit jako hotové. Karta vrácená z auditu se nesmí

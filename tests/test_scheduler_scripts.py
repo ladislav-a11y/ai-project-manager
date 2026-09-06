@@ -286,6 +286,17 @@ def test_runner_poll_interval_is_explicit_and_validated() -> None:
     assert "$env:AI_PM_POLL_INTERVAL_SECONDS = [string]$PollIntervalSeconds" in source
 
 
+def test_runner_uses_dynamic_finalize_scope_for_every_project() -> None:
+    """A clean pre-dispatch checkout makes per-file self-update lists both
+    redundant and harmful: a legitimate new file would strand the card."""
+    source = (SCRIPTS / "run-ai-project-manager.ps1").read_text(encoding="utf-8")
+
+    assert "$env:AI_ORCHESTRATOR_FINALIZE_PATHS = '{}'" in source
+    assert "$finalizePaths" not in source
+    assert "ai_project_manager/runner.py" not in source
+    assert "PROVIDER_MODEL_ROUTING_RESEARCH.md" not in source
+
+
 def test_runner_loads_production_slack_opt_in_with_protected_webhook() -> None:
     """A fresh production shell gets both halves of Slack configuration
     from the runner; developers invoking Python directly get neither opt-in."""

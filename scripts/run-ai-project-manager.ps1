@@ -152,57 +152,14 @@ try {
         'AI Orchestrator' = 'https://github.com/ladislav-a11y/ai-orchestrator.git'
         'ai-orchestrator' = 'https://github.com/ladislav-a11y/ai-orchestrator.git'
     } | ConvertTo-Json -Compress)
-    $finalizePaths = [ordered]@{
-        'AI Project Manager' = @(
-            'ai_project_manager/cli.py',
-            'ai_project_manager/config.py',
-            'ai_project_manager/daemon.py',
-            'ai_project_manager/dod_validator.py',
-            'ai_project_manager/inbox.py',
-            'ai_project_manager/inbox_preparation.py',
-            'ai_project_manager/orchestrator_runner.py',
-            'ai_project_manager/providers.py',
-            'ai_project_manager/runner.py',
-            'ai_project_manager/scheduler.py',
-            'ai_project_manager/task_classification.py',
-            'ai_project_manager/trello_sync.py',
-            'scripts/run-ai-project-manager.ps1',
-            'scripts/verify_once_resolves_project_path.py',
-            'tests/test_cli.py',
-            'tests/test_config.py',
-            'tests/test_daemon.py',
-            'tests/test_dod_validator.py',
-            'tests/test_handoff_e2e.py',
-            'tests/test_inbox.py',
-            'tests/test_orchestrator_runner.py',
-            'tests/test_recovery_e2e.py',
-            'tests/test_runner.py',
-            'tests/test_scheduler.py',
-            'tests/test_task_classification.py',
-            'tests/test_trello_sync.py',
-            'WORKFLOW.md',
-            'PROJECT_AUDIT_ROADMAP.md'
-        )
-        # AI Orchestrator remains explicitly scoped, but by durable code/test
-        # roots instead of a stale list of individual files. This admits new
-        # legitimate implementation files while still excluding unrelated
-        # root artifacts such as handoff notes and local secrets.
-        'AI Orchestrator' = @(
-            'orchestrator/',
-            'tests/',
-            'ARCHITECTURE.md',
-            'PROVIDER_MODEL_ROUTING_RESEARCH.md',
-            'outbox/README.md'
-        )
-        'ai-orchestrator' = @(
-            'orchestrator/',
-            'tests/',
-            'ARCHITECTURE.md',
-            'PROVIDER_MODEL_ROUTING_RESEARCH.md',
-            'outbox/README.md'
-        )
-    }
-    $env:AI_ORCHESTRATOR_FINALIZE_PATHS = $finalizePaths | ConvertTo-Json -Compress
+    # Every fresh production dispatch is fail-closed unless its registered
+    # checkout is clean. The resulting dirty paths therefore belong to that
+    # card and the controller finalizer can derive its exact path list from
+    # git status. Do not reintroduce per-project filename allowlists: they make
+    # legitimate new files impossible to finalize and strand self-update cards.
+    # Repository identity, tests, diff checks, the explicit push remote
+    # allowlist and the clean post-commit gate remain mandatory.
+    $env:AI_ORCHESTRATOR_FINALIZE_PATHS = '{}'
     $env:AI_ORCHESTRATOR_SPEC_DIR = Join-Path $projectRoot 'runtime\specs'
     $env:AI_ORCHESTRATOR_OUTBOX_DIR = Join-Path $OrchestratorRoot 'outbox'
     # Preserve an explicitly supplied state path so a guarded diagnostic tick
