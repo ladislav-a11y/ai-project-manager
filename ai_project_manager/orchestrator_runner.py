@@ -464,7 +464,11 @@ def build_inbox_planner_fn(
                     indivisible=indivisible,
                 )
                 reason = contract_violation or "AI Inbox planner vrátil neplatný task plán"
-                provider_registry.mark_error(provider, reason, timedelta(minutes=30))
+                # A syntactically successful provider response with a task plan
+                # that fails PM's Inbox contract is a per-response planning
+                # failure, not evidence that the provider itself is unavailable.
+                # Preserve the diagnostic while keeping the provider callable.
+                provider_registry.get_status(provider).last_error = reason
                 continue
             actual_model = envelope.get("model")
             if not isinstance(actual_model, str) or not actual_model.strip():

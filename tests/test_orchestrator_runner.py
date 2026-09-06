@@ -2025,6 +2025,62 @@ def test_inbox_planner_requires_an_explainable_priority_reason():
     assert planner({"id": "source", "name": "Nápad", "desc": "Úkol"}, []) is None
 
 
+def test_inbox_planner_invalid_task_plan_fails_over_without_marking_provider_error():
+    registry = ProviderRegistry()
+    registry.mark_available("groq")
+    registry.mark_available("antigravity")
+    calls = []
+
+    def fake_subprocess(command, **kwargs):
+        agent = command[command.index("--agent") + 1]
+        calls.append(agent)
+        if agent == "groq":
+            return completed(json.dumps({
+                "success": True,
+                "provider": "groq",
+                "model": "openai/gpt-oss-120b",
+                "output": json.dumps({
+                    "tasks": [{
+                        "scope": "feature",
+                        "task": "Vytvořit funkci.",
+                        "next_step": "Navrhnout rozhraní.",
+                        "priority": 5.1,
+                        "depends_on": [],
+                    }],
+                }),
+            }))
+        return completed(json.dumps({
+            "success": True,
+            "provider": "antigravity",
+            "model": "Gemini test model",
+            "output": json.dumps({
+                "tasks": [{
+                    "scope": "feature",
+                    "task": "Vytvořit funkci.",
+                    "next_step": "Navrhnout rozhraní.",
+                    "priority": 5.1,
+                    "priority_reason": "potvrzená oprava",
+                    "depends_on": [],
+                }],
+            }),
+        }))
+
+    planner = build_inbox_planner_fn(
+        registry,
+        ["python", "orchestrator.py", "autonomous", "--no-commit"],
+        subprocess_run=fake_subprocess,
+    )
+
+    result = planner({"id": "source", "name": "Nápad", "desc": "Úkol"}, [])
+
+    assert result is not None
+    assert result["provider"] == "antigravity"
+    assert calls == ["groq", "antigravity"]
+    assert registry.get_status("groq").state == ProviderState.AVAILABLE
+    assert registry.is_available("groq") is True
+    assert registry.get_status("groq").last_error == "AI Inbox planner vrátil neplatný task plán"
+
+
 def test_run_fn_keeps_pm_side_provider_name_for_registry_while_mapping_agent_for_cli(tmp_path):
     """The provider-registry name run_fn is called with (and everything
     it drives - locking, retry_after) stays "claude"; only the CLI/spec
