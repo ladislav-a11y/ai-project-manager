@@ -549,6 +549,31 @@ mimo rozsah:
   změny) a nepotvrzená katalogová hodnota by nebyl skutečný hint (viz
   `tests/test_runner.py::test_run_once_does_not_report_unconfirmed_configured_model`).
 
+**Druhý dodatek (Inbox požadavek „AI Project Manager — klasifikace typu a
+složitosti a rozhodovací politika pro provider a model", 2026-09-06):**
+uchování důvodu rozhodnutí a jeho propojení s vráceným provider receipt,
+aby šlo odlišit požadovanou volbu od skutečně použité:
+- `TaskClassification.as_dict()` (nová metoda) serializuje rozhodnutí
+  (`task_type`, `complexity`, `model_tier`, `forbidden_providers`) do
+  slovníku vhodného k trvalému uložení.
+- `runner.run_once`/`run_once_audit` teď při dispatchi (před voláním
+  `run_fn`/`audit_run_fn`) ukládají tento snapshot jako
+  `project.extra_data["provider_selection"]["classification"]` — do
+  stejného slovníku, do kterého se po návratu běhu zapisují receiptová
+  pole (`actual_provider`, `actual_model`, `route_detail`,
+  `provider_sequence`, `run_id`, ...). `classification` se po zápisu už
+  nepřepisuje, takže zůstává čitelný jako **požadovaná** politika vedle
+  polí, která popisují, co orchestrátor **skutečně** použil.
+  Nerozšiřuje ani neobchází povolené poskytovatele — `allowed_providers`
+  (a pro audit navíc `is_capability_limited`, viz 8.2) zůstávají jediným
+  mechanismem, který volbu providera/modelu omezuje na ověřené schopnosti
+  orchestrátoru; toto pole je čistě diagnostický záznam rozhodnutí, ne
+  nová dispatch cesta.
+- Testy: `tests/test_task_classification.py::test_as_dict_*` a
+  `tests/test_runner.py::test_run_once_records_requested_classification_*`
+  ověřují jak tvar snapshotu, tak že přežije bez přepsání do doby, kdy se
+  vedle něj objeví receiptová pole.
+
 ---
 
 ## 8. Mapování: rozhodování PM/PO o provideru a modelu LLM podle typu úkolu (oprava PM [Inbox 6a96e12f])

@@ -508,6 +508,7 @@ def run_once(
     project = decision.project
     provider = decision.provider
     selected_model = None
+    classification = classify_task(TASK_IMPLEMENTATION, infer_complexity(project))
     provider_detail = f"{provider} | model: {_display_model(provider, selected_model)}"
     provider_reason = _provider_selection_reason(
         project, provider, providers_for_project, default_providers, provider_registry, TASK_IMPLEMENTATION
@@ -530,6 +531,7 @@ def run_once(
                 "model": selected_model,
                 "stage": "implementation",
                 "source": "AI_PM_PROVIDER_MODELS" if selected_model else "provider_default",
+                "classification": classification.as_dict(),
             }
             # The Trello board must show the real flow while the provider is
             # working, not leave an active card looking idle in Připraveno.
@@ -742,6 +744,7 @@ def run_once_audit(
     project = decision.project
     provider = decision.provider
     selected_model = None
+    classification = classify_task(TASK_AUDIT, infer_complexity(project))
     provider_detail = f"{provider} | model: {_display_model(provider, selected_model)}"
     provider_reason = _provider_selection_reason(
         project, provider, providers_for_project, default_providers, provider_registry, TASK_AUDIT
@@ -821,6 +824,7 @@ def run_once_audit(
                 "model": selected_model,
                 "stage": "audit",
                 "source": "AI_PM_PROVIDER_MODELS" if selected_model else "provider_default",
+                "classification": classification.as_dict(),
             }
             sync_project_to_trello(client, project)
             logger.info(

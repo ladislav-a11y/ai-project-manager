@@ -141,3 +141,21 @@ def test_infer_complexity_ignores_audit_phase_items():
         ],
     )
     assert infer_complexity(project) == COMPLEXITY_LOW
+
+
+def test_as_dict_serializes_the_requested_decision():
+    result = classify_task(TASK_IMPLEMENTATION, COMPLEXITY_MEDIUM)
+    assert result.as_dict() == {
+        "task_type": TASK_IMPLEMENTATION,
+        "complexity": COMPLEXITY_MEDIUM,
+        "model_tier": MODEL_TIER_BALANCED,
+        "forbidden_providers": [],
+    }
+
+
+def test_as_dict_reports_inbox_planning_forbidden_providers_sorted():
+    result = classify_task(TASK_INBOX_PLANNING, COMPLEXITY_LOW)
+    snapshot = result.as_dict()
+    assert snapshot["forbidden_providers"] == sorted(snapshot["forbidden_providers"])
+    assert "hermes" in snapshot["forbidden_providers"]
+    assert "gemini" in snapshot["forbidden_providers"]

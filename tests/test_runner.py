@@ -574,6 +574,45 @@ def test_run_once_slack_explains_actual_model_after_provider_failover(monkeypatc
     assert "provider codex byl použit po failoveru z antigravity" in calls[1]
     assert "model gpt-5.6-luna je pro implementaci skutečně použitý model providera" in calls[1]
     assert project.extra_data["provider_selection"]["provider_reason"] in calls[1]
+    # The requested policy decision (recorded before dispatch) must survive
+    # unchanged next to the receipt fields written after the run returns, so
+    # the requested antigravity/economical choice stays distinguishable from
+    # the codex/gpt-5.6-luna receipt above.
+    classification = project.extra_data["provider_selection"]["classification"]
+    assert classification == {
+        "task_type": "implementation",
+        "complexity": "low",
+        "model_tier": "economical",
+        "forbidden_providers": [],
+    }
+    assert project.extra_data["provider_selection"]["selected_provider"] == "antigravity"
+    assert project.extra_data["provider_selection"]["actual_provider"] == "codex"
+
+
+def test_run_once_records_requested_classification_before_dispatch():
+    project = ProjectRecord(name="Demo", priority=3, status=ProjectStatus.READY)
+    client = make_client_with_project(project)
+    registry = ProviderRegistry()
+    registry.mark_available("claude")
+
+    captured = {}
+
+    def run_fn(_project, _provider):
+        # The classification snapshot must already be present at dispatch
+        # time, before the run's receipt fields (actual_provider/model)
+        # exist at all.
+        captured["classification"] = dict(_project.extra_data["provider_selection"]["classification"])
+        return {"status": "done"}
+
+    outcome = run_once(client, [project], registry, run_fn, default_providers=["claude"])
+
+    assert outcome.ran is True
+    assert captured["classification"] == {
+        "task_type": "implementation",
+        "complexity": "low",
+        "model_tier": "economical",
+        "forbidden_providers": [],
+    }
 
 
 def test_run_once_does_not_report_unconfirmed_configured_model():
@@ -656,6 +695,47 @@ def test_run_once_audit_leaves_model_selection_to_provider():
     assert outcome.ran is True
     assert project.extra_data["provider_selection"]["model"] is None
     assert "provider si model pro audit vybere podle typu úkolu" in project.extra_data["provider_selection"]["provider_reason"]
+
+
+def test_run_once_audit_records_requested_classification_next_to_receipt():
+    """Audit always targets the quality tier regardless of complexity - the
+    stored classification snapshot (requested) must reflect that, sitting
+    alongside the actual_provider/actual_model receipt fields written once
+    the verdict comes back."""
+    project = ProjectRecord(
+        name="Demo",
+        priority=3,
+        status=ProjectStatus.TESTING,
+        main_task="Implement and verify the feature",
+        dod=[DoDItem(text="implementation", checked=True)],
+    )
+    client = make_client_with_project(project)
+    registry = ProviderRegistry()
+    registry.mark_available("claude")
+
+    outcome = run_once_audit(
+        client,
+        [project],
+        registry,
+        lambda _project, _provider: {
+            "verdict": "accepted",
+            "evidence": "ai-orchestrator verified the implementation",
+            "active_provider": "claude",
+            "active_model": "claude-opus-4-1",
+        },
+        default_providers=["claude"],
+    )
+
+    assert outcome.ran is True
+    selection = project.extra_data["provider_selection"]
+    assert selection["classification"] == {
+        "task_type": "audit",
+        "complexity": "low",
+        "model_tier": "quality",
+        "forbidden_providers": [],
+    }
+    assert selection["actual_provider"] == "claude"
+    assert selection["actual_model"] == "claude-opus-4-1"
 
 
 def test_implementation_receipt_preserves_catalog_for_following_audit_dispatch():

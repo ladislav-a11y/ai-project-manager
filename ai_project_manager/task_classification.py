@@ -24,6 +24,15 @@ The Inbox-planning forbidden-provider set is imported from ``inbox.py``
 (``INBOX_PLANNING_FORBIDDEN_PROVIDERS``) rather than re-declared, so this
 stays a single additional read-only view instead of a third independent
 copy of that policy.
+
+``TaskClassification.as_dict()`` is persisted verbatim as
+``provider_selection.classification`` at dispatch time, in the same
+``run_once``/``run_once_audit`` write that later adds the receipt fields
+(``actual_provider``, ``actual_model``, ``route_detail``, ...) once the
+run returns. Keeping both in one place makes the *requested* policy
+decision (task type, complexity, target model tier, forbidden providers)
+distinguishable from what ai-orchestrator actually used - see
+PROJECT_AUDIT_ROADMAP.md 8.7's second addendum.
 """
 
 from __future__ import annotations
@@ -73,6 +82,24 @@ class TaskClassification:
             for candidate in base_order
             if str(candidate).strip().casefold() not in self.forbidden_providers
         )
+
+    def as_dict(self) -> dict:
+        """Serializable snapshot of the *requested* routing decision.
+
+        Persisted verbatim under ``provider_selection.classification`` at
+        dispatch time (see ``runner.run_once``/``run_once_audit``), before
+        the run happens, and never overwritten afterwards. The receipt
+        fields written once the run returns (``actual_provider``,
+        ``actual_model``, ``route_detail``, ...) sit next to this snapshot
+        in the same dict, so it is possible to tell the policy's requested
+        choice apart from what ai-orchestrator actually used.
+        """
+        return {
+            "task_type": self.task_type,
+            "complexity": self.complexity,
+            "model_tier": self.model_tier,
+            "forbidden_providers": sorted(self.forbidden_providers),
+        }
 
 
 # task_type -> complexity -> model quality tier.
