@@ -114,7 +114,7 @@ try {
     # stable; ``claude`` maps to claude-code. Gemini was retired from PM
     # after its successful audit migration. Keep the provider list explicit;
     # retired providers must not be registered or selected.
-    $env:AI_PM_PROVIDERS = 'antigravity,claude,codex'
+    $env:AI_PM_PROVIDERS = 'groq,antigravity,claude,codex'
     if ($ProviderOverride.Trim()) {
         if ($ProviderOverride.Trim().ToLowerInvariant() -eq 'gemini') {
             throw "Gemini je z PM vy$([char]0x0159)azen; pou$([char]0x017E)ijte jin$([char]0x00E9)ho providera."

@@ -101,6 +101,7 @@ def test_picks_highest_priority_unblocked_project():
 def test_auto_alias_selects_first_available_real_provider():
     registry = make_registry(
         auto="AVAILABLE",
+        groq="AVAILABLE",
         antigravity="LIMITED",
         claude="AVAILABLE",
         codex="AVAILABLE",
@@ -110,7 +111,7 @@ def test_auto_alias_selects_first_available_real_provider():
     decision = pick_next_project([project], registry, default_providers=["auto"])
 
     assert decision is not None
-    assert decision.provider == "claude"
+    assert decision.provider == "groq"
 
 
 def test_continues_in_progress_before_higher_priority_ready_card():

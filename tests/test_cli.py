@@ -135,7 +135,7 @@ def test_main_auto_provider_alias_selects_first_supported_provider(monkeypatch):
         return {"status": "in_progress"}
 
     assert main(["--once"], client=client, run_fn=fake_run_fn) == 0
-    assert calls == [("Demo", "antigravity")]
+    assert calls == [("Demo", "groq")]
 
 
 def test_main_maintain_only_migrates_and_notifies_without_ever_dispatching(monkeypatch):

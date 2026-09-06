@@ -112,7 +112,7 @@ DEFAULT_PROVIDER_AGENT_MAP = {"claude": "claude-code"}
 
 # PM retired Gemini after its account/project restriction was confirmed. This
 # is passed only to AO failover invocations from PM.
-PM_FAILOVER_PROVIDER_ORDER = ("antigravity", "claude-code", "codex")
+PM_FAILOVER_PROVIDER_ORDER = ("groq", "antigravity", "claude-code", "codex")
 
 
 def _pm_provider_name(
@@ -315,7 +315,7 @@ def _planner_tasks(payload: dict, *, indivisible: bool) -> Optional[list[Prepare
     return result
 
 
-INBOX_PLANNER_PROVIDERS = ("antigravity", "claude", "codex")
+INBOX_PLANNER_PROVIDERS = ("groq", "antigravity", "claude", "codex")
 
 
 def _inbox_model_hint(provider: str, provider_registry: ProviderRegistry) -> str:

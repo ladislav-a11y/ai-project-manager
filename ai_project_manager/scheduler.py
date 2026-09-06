@@ -50,7 +50,7 @@ WAITING_WORKFLOW_STATUSES = {
 # Keep the order aligned with the PM-owned failover policy.  Both the canonical
 # PM Claude name and AO's legacy name are accepted because persisted provider
 # state can contain either spelling.
-AUTO_PROVIDER_ORDER = ("antigravity", "claude", "claude-code", "codex")
+AUTO_PROVIDER_ORDER = ("groq", "antigravity", "claude", "claude-code", "codex")
 
 
 def expand_provider_aliases(

@@ -270,7 +270,7 @@ instrukcí.
 
 Inbox planning/intake je samostatná AI fáze před worker dispatch. Produkční PM
 musí lidský vstup nejprve předat prvnímu dostupnému provideru z pořadí
-`antigravity → claude → codex` (viz `INBOX_PLANNER_PROVIDERS`) a pravidlo je
+`groq → antigravity → claude → codex` (viz `INBOX_PLANNER_PROVIDERS`) a pravidlo je
 vynucené i samostatným read-only `plan-inbox` handoffem přes ai-orchestrator.
 AI planner musí vrátit validní atomické úkoly s různými prioritami, jinak
 zdroj zůstane v Inboxu fail-closed. PM uloží skutečný intake provider a model

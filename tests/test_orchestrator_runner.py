@@ -37,7 +37,7 @@ def ProjectRecord(*args, **kwargs):
 
 
 def test_inbox_planner_provider_allowlist_never_contains_hermes():
-    assert INBOX_PLANNER_PROVIDERS == ("antigravity", "claude", "codex")
+    assert INBOX_PLANNER_PROVIDERS == ("groq", "antigravity", "claude", "codex")
     assert "hermes" not in INBOX_PLANNER_PROVIDERS
 
 
@@ -869,7 +869,7 @@ def test_run_fn_invokes_real_cli_with_project_goal_spec_and_agent(tmp_path):
 def test_production_run_fn_dispatches_auto_for_same_tick_provider_failover(tmp_path):
     seen = {}
     registry = ProviderRegistry()
-    for name in ("antigravity", "claude", "codex"):
+    for name in ("groq", "antigravity", "claude", "codex"):
         registry.mark_available(name)
 
     def fake_subprocess_run(command):
@@ -893,7 +893,7 @@ def test_production_run_fn_dispatches_auto_for_same_tick_provider_failover(tmp_p
     run_fn(project, "antigravity")
 
     assert seen["command"][seen["command"].index("--agent") + 1] == "auto"
-    assert seen["command"][seen["command"].index("--provider-order") + 1] == "antigravity,claude-code,codex"
+    assert seen["command"][seen["command"].index("--provider-order") + 1] == "antigravity,groq,claude-code,codex"
     assert "gemini" not in seen["command"][seen["command"].index("--provider-order") + 1]
     assert "--model" not in seen["command"]
 
@@ -901,11 +901,12 @@ def test_production_run_fn_dispatches_auto_for_same_tick_provider_failover(tmp_p
 def test_auto_provider_alias_resolves_to_real_available_failover_order(tmp_path):
     registry = ProviderRegistry()
     registry.mark_available("auto")
+    registry.mark_available("groq")
     registry.mark_limited("antigravity", timedelta(hours=1))
     registry.mark_available("claude")
     registry.mark_available("codex")
 
-    assert _tick_provider_order("auto", registry) == ["claude-code", "codex"]
+    assert _tick_provider_order("auto", registry) == ["groq", "claude-code", "codex"]
 
     seen = {}
 
@@ -932,7 +933,7 @@ def test_auto_provider_alias_resolves_to_real_available_failover_order(tmp_path)
 
     assert seen["command"][seen["command"].index("--agent") + 1] == "auto"
     assert seen["command"][seen["command"].index("--provider-order") + 1] == (
-        "claude-code,codex"
+        "groq,claude-code,codex"
     )
 
 
@@ -973,6 +974,7 @@ def test_production_failover_suppresses_pm_selected_model(tmp_path):
 
 def test_production_failover_excludes_limited_providers_from_next_workflow_step(tmp_path):
     registry = ProviderRegistry()
+    registry.mark_available("groq")
     registry.mark_available("antigravity")
     registry.mark_limited("claude", timedelta(minutes=30))
     registry.mark_available("codex")
@@ -1000,13 +1002,13 @@ def test_production_failover_excludes_limited_providers_from_next_workflow_step(
     run_fn(project, "antigravity")
 
     order = seen["command"][seen["command"].index("--provider-order") + 1]
-    assert order == "antigravity,codex"
+    assert order == "antigravity,groq,codex"
     assert "claude-code" not in order
 
 
 def test_production_waiting_receipt_gates_all_limited_providers_and_preserves_retry_at(tmp_path):
     registry = ProviderRegistry()
-    for name in ("antigravity", "claude", "codex"):
+    for name in ("groq", "antigravity", "claude", "codex"):
         registry.mark_available(name)
 
     def fake_subprocess_run(command):
@@ -1019,6 +1021,12 @@ def test_production_waiting_receipt_gates_all_limited_providers_and_preserves_re
                 "retry_after_seconds": 30,
                 "active_provider": "codex",
                 "provider_statuses": {
+                    "groq": {
+                        "state": "LIMITED",
+                        "retry_after_seconds": 60,
+                        "retry_at": "2026-09-02T11:01:00+00:00",
+                        "reason": "rate limit",
+                    },
                     "antigravity": {
                         "state": "LIMITED",
                         "retry_after_seconds": 120,
@@ -1055,10 +1063,11 @@ def test_production_waiting_receipt_gates_all_limited_providers_and_preserves_re
     result = run_fn(project, "antigravity")
 
     assert result["status"] == "paused"
+    assert registry.get_status("groq").retry_after.isoformat() == "2026-09-02T11:01:00+00:00"
     assert registry.get_status("antigravity").retry_after.isoformat() == "2026-09-02T11:02:00+00:00"
     assert registry.get_status("claude").retry_after.isoformat() == "2026-09-02T11:15:00+00:00"
     assert registry.get_status("codex").retry_after.isoformat() == "2026-09-02T11:00:30+00:00"
-    assert all(not registry.is_available(name) for name in ("antigravity", "claude", "codex"))
+    assert all(not registry.is_available(name) for name in ("groq", "antigravity", "claude", "codex"))
 
 
 def test_run_fn_preserves_model_identity_from_orchestrator_receipt(tmp_path):
@@ -1840,15 +1849,16 @@ def test_map_provider_to_agent_translates_claude_to_claude_code():
 
 
 def test_map_provider_to_agent_passes_through_unknown_providers():
+    assert map_provider_to_agent("groq") == "groq"
     assert map_provider_to_agent("gpt") == "gpt"
     assert map_provider_to_agent("gemini") == "gemini"
 
 
 def test_inbox_planner_excludes_retired_provider_names_and_returns_validated_ai_tasks():
     registry = ProviderRegistry()
-    for name in ("hermes", "gemini", "antigravity", "codex"):
+    for name in ("hermes", "gemini", "groq", "antigravity", "codex"):
         registry.mark_available(name)
-    registry.configure_models("antigravity", ["Gemini 3.7 Flash (High)"])
+    registry.configure_models("groq", ["openai/gpt-oss-120b"])
     calls = []
     selections = []
 
@@ -1858,8 +1868,8 @@ def test_inbox_planner_excludes_retired_provider_names_and_returns_validated_ai_
             json.dumps(
                 {
                     "success": True,
-                    "provider": "antigravity",
-                    "model": "Gemini 3.7 Flash (High)",
+                    "provider": "groq",
+                    "model": "openai/gpt-oss-120b",
                     "output": json.dumps(
                         {
                             "tasks": [
@@ -1885,15 +1895,15 @@ def test_inbox_planner_excludes_retired_provider_names_and_returns_validated_ai_
     )
     result = planner({"id": "source", "name": "Regrese", "desc": "Opravit regresi"}, [])
 
-    assert result["provider"] == "antigravity"
-    assert result["model"] == "Gemini 3.7 Flash (High)"
+    assert result["provider"] == "groq"
+    assert result["model"] == "openai/gpt-oss-120b"
     assert "první dostupný provider" in result["provider_reason"]
     assert "skutečně použitý model" in result["model_reason"]
-    assert selections[0]["provider"] == "antigravity"
+    assert selections[0]["provider"] == "groq"
     assert "podle typu a náročnosti" in selections[0]["model"]
     assert selections[0]["task_type"] == "inbox_planning"
     assert result["tasks"][0].priority == 4.01
-    assert calls[0][0] == ["python", "orchestrator.py", "plan-inbox", "--agent", "antigravity"]
+    assert calls[0][0] == ["python", "orchestrator.py", "plan-inbox", "--agent", "groq"]
     assert "gemini" not in calls[0][0]
     assert "hermes" not in calls[0][0]
 
