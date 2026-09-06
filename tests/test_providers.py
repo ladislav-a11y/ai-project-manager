@@ -82,6 +82,7 @@ def test_supported_providers_use_generic_model_selection_policy():
     assert supports_model_selection("antigravity") is True
     assert supports_model_selection("claude") is True
     assert supports_model_selection("codex") is True
+    assert supports_model_selection("unknown-provider") is False
 
 
 def test_mark_limited_sets_state_and_retry_after(clock):

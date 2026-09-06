@@ -511,15 +511,15 @@ def test_audit_run_fn_uses_supported_autonomous_cli_and_reads_internal_audit(tmp
 
     assert result["verdict"] == "accepted"
     assert "--mode" not in seen["command"]
-    assert "--model" not in seen["command"]
+    assert seen["command"][seen["command"].index("--model") + 1] == "claude-opus-4-1"
     assert seen["command"][seen["command"].index("--max-iterations") + 1] == "1"
     assert seen["command"][-1] == "--no-commit"
     assert result["active_provider"] == "anthropic"
     assert result["active_model"] == "claude-opus-4-1"
 
 
-def test_audit_and_implementation_delegate_model_selection_to_provider(tmp_path):
-    """PM passes task type/context, never a stale provider model override."""
+def test_audit_and_implementation_request_models_by_task_classification(tmp_path):
+    """A verified catalog produces distinct concrete requests by task type."""
     registry = ProviderRegistry()
     registry.mark_available("claude")
     registry.configure_models("claude", ["claude-sonnet-4", "claude-opus-4-1"])
@@ -542,7 +542,7 @@ def test_audit_and_implementation_delegate_model_selection_to_provider(tmp_path)
 
     run_fn, _, _ = make_run_fn(tmp_path, registry, subprocess_run=fake_impl_subprocess_run)
     run_fn(implementation_project, "claude")
-    assert "--model" not in implementation_seen["command"]
+    assert implementation_seen["command"][implementation_seen["command"].index("--model") + 1] == "claude-sonnet-4"
 
     audit_project = ProjectRecord(
         name="Demo",
@@ -575,7 +575,7 @@ def test_audit_and_implementation_delegate_model_selection_to_provider(tmp_path)
         run_id_fn=lambda: "audit-run",
     )(audit_project, "claude")
 
-    assert "--model" not in audit_seen["command"]
+    assert audit_seen["command"][audit_seen["command"].index("--model") + 1] == "claude-opus-4-1"
 
 
 def test_production_audit_starts_with_pm_selected_provider_and_skips_capability_limited_provider(tmp_path):
@@ -912,7 +912,7 @@ def test_run_fn_invokes_real_cli_with_project_goal_spec_and_agent(tmp_path):
     # provider "claude" is Project Manager's own name; the ai-orchestrator
     # CLI expects its agent identifier, "claude-code" (item 5).
     assert command[command.index("--agent") + 1] == "claude-code"
-    assert "--model" not in command
+    assert command[command.index("--model") + 1] == "claude-opus-4-1"
     assert command[command.index("--run-id") + 1] == "fixed-run-id"
 
     spec_path = command[command.index("--spec") + 1]
@@ -939,6 +939,7 @@ def test_production_run_fn_dispatches_auto_for_same_tick_provider_failover(tmp_p
     registry = ProviderRegistry()
     for name in ("antigravity", "claude", "codex"):
         registry.mark_available(name)
+    registry.configure_models("antigravity", ["fast-model", "quality-model"])
 
     def fake_subprocess_run(command):
         seen["command"] = command
@@ -964,6 +965,7 @@ def test_production_run_fn_dispatches_auto_for_same_tick_provider_failover(tmp_p
     assert seen["command"][seen["command"].index("--provider-order") + 1] == "antigravity,claude-code,codex"
     assert "gemini" not in seen["command"][seen["command"].index("--provider-order") + 1]
     assert "--model" not in seen["command"]
+    assert run_fn.select_model(project, "antigravity") is None
 
 
 def test_auto_provider_alias_resolves_to_real_available_failover_order(tmp_path):
@@ -2012,10 +2014,14 @@ def test_inbox_planner_excludes_retired_provider_names_and_returns_validated_ai_
     assert "první dostupný provider" in result["provider_reason"]
     assert "skutečně použitý model" in result["model_reason"]
     assert selections[0]["provider"] == "antigravity"
-    assert "podle typu a náročnosti" in selections[0]["model"]
+    assert selections[0]["selected_model"] == "Gemini 3.7 Flash (High)"
+    assert selections[0]["model"] is None
     assert selections[0]["task_type"] == "inbox_planning"
     assert result["tasks"][0].priority == 4.01
-    assert calls[0][0] == ["python", "orchestrator.py", "plan-inbox", "--agent", "antigravity"]
+    assert calls[0][0] == [
+        "python", "orchestrator.py", "plan-inbox", "--agent", "antigravity",
+        "--model", "Gemini 3.7 Flash (High)",
+    ]
     assert "gemini" not in calls[0][0]
     assert "hermes" not in calls[0][0]
     planner_request = json.loads(calls[0][1]["input"])

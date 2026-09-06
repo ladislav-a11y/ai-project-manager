@@ -16,9 +16,10 @@ only Inbox planning's existing Hermes/Gemini exclusion is expressed through
 it. A provider allowlist here never widens what a task type may already use
 elsewhere (e.g. it does not override the separate, capability-limit filter
 audit dispatch applies per project/scope - see PROJECT_AUDIT_ROADMAP.md
-8.2). PM still never forwards ``--model`` to ai-orchestrator (8.6): the
-model tier is diagnostic/reporting only, exactly like the pre-existing
-``model_for_task``/``_inbox_model_hint`` behavior.
+8.2). For an explicit provider with a verified configured catalog, PM resolves
+the tier to a concrete model and forwards it through ai-orchestrator's
+supported ``--model`` interface. Auto/failover and missing catalogs retain the
+provider default without inventing a model.
 
 The Inbox-planning forbidden-provider set is imported from ``inbox.py``
 (``INBOX_PLANNING_FORBIDDEN_PROVIDERS``) rather than re-declared, so this

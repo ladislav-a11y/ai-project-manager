@@ -248,10 +248,11 @@ Testy jsou plně lokální; produkční Trello ani orchestrátor nevolají.
 
 # Provider model selection
 
-PM selects the provider and task family, but never forces a concrete LLM model.
-The provider receives the task prompt and chooses its model according to that
-task type. `AI_PM_PROVIDER_MODELS` is retained only as a diagnostic/backwards-
-compatibility catalog; PM does not translate its entries into `--model`.
+PM selects the provider and task family. For an explicit agent with a verified
+`AI_PM_PROVIDER_MODELS` catalog, it requests the catalog entry matching the
+task's classified quality tier through `--model`. Auto/failover dispatch cannot
+carry one model for several providers, and an absent or empty catalog is not
+evidence of a supported model; those cases safely use the provider default.
 After the run, PM records the actual `active_model`/`model`/`usage.total.model`
 returned by ai-orchestrator, or explicitly records that the provider default
 was not reported. It never guesses a model from the provider name.

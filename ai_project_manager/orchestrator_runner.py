@@ -80,6 +80,7 @@ from .orchestrator_handoff import (
 )
 from .providers import (
     ProviderRegistry,
+    supports_model_selection,
     TASK_AUDIT,
     TASK_IMPLEMENTATION,
     TASK_INBOX_PLANNING,
@@ -357,14 +358,12 @@ INBOX_PLANNER_PROVIDERS = ("antigravity", "claude-code", "codex")
 def _inbox_model_hint(provider: str, provider_registry: ProviderRegistry) -> str:
     """Describe the model before a provider-owned Inbox planning call.
 
-    PM intentionally does not pass ``--model``.  A catalog entry is useful
-    as an operator hint, but it is not evidence that the provider will use
-    that model, so the pre-call message must remain explicit about that
-    distinction.
+    A verified catalog entry is an explicit request for providers whose
+    adapter supports it. Otherwise the provider default remains authoritative.
     """
     configured = provider_registry.model_for_task(provider, TASK_INBOX_PLANNING)
     if configured:
-        return f"provider default (návrh katalogu: {configured}; provider rozhodne podle typu a náročnosti)"
+        return f"požadovaný model {configured}"
     return "provider default (provider rozhodne podle typu a náročnosti Inbox plánování)"
 
 
@@ -389,10 +388,7 @@ def _inbox_selection_reason(
             limited.append(f"{candidate}={status.state} do {deadline}")
     if limited:
         provider_reason += "; přeskočeno kvůli limitu/chybě: " + ", ".join(limited)
-    model_reason = (
-        f"{_inbox_model_hint(provider, provider_registry)}; PM nepředává --model; "
-        "skutečný model se zapíše až z provider receipt"
-    )
+    model_reason = f"{_inbox_model_hint(provider, provider_registry)}; skutečný model se zapíše až z provider receipt"
     return provider_reason, model_reason
 
 
@@ -457,6 +453,13 @@ def build_inbox_planner_fn(
                 continue
             agent = map_provider_to_agent(provider)
             full_command = planner_command + ["--agent", agent]
+            selected_model = (
+                provider_registry.model_for_task(provider, TASK_INBOX_PLANNING)
+                if supports_model_selection(provider)
+                else None
+            )
+            if selected_model:
+                full_command += ["--model", selected_model]
             provider_reason, model_reason = _inbox_selection_reason(
                 provider,
                 provider_registry,
@@ -466,7 +469,10 @@ def build_inbox_planner_fn(
                 "source_card_id": request["card"]["id"],
                 "source_card_name": request["card"]["name"],
                 "provider": provider,
-                "model": _inbox_model_hint(provider, provider_registry),
+                # Preserve the same request/receipt distinction used by
+                # implementation and audit dispatch.
+                "model": None,
+                "selected_model": selected_model,
                 "provider_reason": provider_reason,
                 "model_reason": model_reason,
                 "task_type": TASK_INBOX_PLANNING,
@@ -1263,10 +1269,10 @@ def build_run_fn(
         # Tests and explicit callers retain the old single-agent behavior
         # unless they opt in.
         agent_name = "auto" if use_provider_failover else map_provider_to_agent(provider, provider_agent_map)
-        # The PM selects a provider, not a model. Each provider owns its
-        # model policy and may choose an appropriate model from the task
-        # prompt. Never pass a stale PM-side --model override.
+        classification = classify_task(TASK_IMPLEMENTATION, infer_complexity(project))
         selected_model = None
+        if not use_provider_failover and supports_model_selection(provider):
+            selected_model = provider_registry.model_for_tier(provider, classification.model_tier)
         task = build_orchestrator_task(project, definition_of_done=definition_of_done, provider=agent_name)
 
         try:
@@ -1343,6 +1349,8 @@ def build_run_fn(
             "--spec", str(spec_path),
             "--agent", agent_name,
         ]
+        if selected_model:
+            full_command += ["--model", selected_model]
         if use_provider_failover:
             full_command += [
                 "--provider-order",
@@ -1487,6 +1495,14 @@ def build_run_fn(
                 )
         return result
 
+    run_fn.select_model = lambda project, provider: (
+        provider_registry.model_for_tier(
+            provider,
+            classify_task(TASK_IMPLEMENTATION, infer_complexity(project)).model_tier,
+        )
+        if not use_provider_failover and supports_model_selection(provider)
+        else None
+    )
     return run_fn
 
 
@@ -1560,9 +1576,10 @@ def build_audit_run_fn(
 
     def audit_run_fn(project: ProjectRecord, provider: str) -> dict:
         agent_name = "auto" if use_provider_failover else map_provider_to_agent(provider, provider_agent_map)
-        # Model selection belongs to the selected provider. The PM passes the
-        # audit task prompt and never forces a provider-specific model.
+        classification = classify_task(TASK_AUDIT, infer_complexity(project))
         selected_model = None
+        if not use_provider_failover and supports_model_selection(provider):
+            selected_model = provider_registry.model_for_tier(provider, classification.model_tier)
         task = build_audit_task(project, provider=agent_name)
 
         try:
@@ -1594,6 +1611,8 @@ def build_audit_run_fn(
             "--spec", str(spec_path),
             "--agent", agent_name,
         ]
+        if selected_model:
+            full_command += ["--model", selected_model]
         if use_provider_failover:
             full_command += [
                 "--provider-order",
@@ -1830,4 +1849,12 @@ def build_audit_run_fn(
                 result[key] = payload[key]
         return result
 
+    audit_run_fn.select_model = lambda project, provider: (
+        provider_registry.model_for_tier(
+            provider,
+            classify_task(TASK_AUDIT, infer_complexity(project)).model_tier,
+        )
+        if not use_provider_failover and supports_model_selection(provider)
+        else None
+    )
     return audit_run_fn

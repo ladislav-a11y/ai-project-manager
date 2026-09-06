@@ -499,7 +499,7 @@ def test_run_once_notifies_slack_start_and_done_when_explicitly_enabled(monkeypa
     assert len(calls) == 2
     assert "PM zahajuje práci" in calls[0] and "Demo" in calls[0]
     assert "proč: provider je první dostupný" in calls[0]
-    assert "provider si model pro implementaci vybere podle typu úkolu" in calls[0]
+    assert "PM požaduje model claude-opus-4-1 pro implementaci" in calls[0]
     assert "Průběžný stav: PM ukončil tick" in calls[1] and "audit" in calls[1].lower()
     assert "total=n/a" in calls[1]
 
@@ -615,12 +615,12 @@ def test_run_once_records_requested_classification_before_dispatch():
     }
 
 
-def test_run_once_does_not_report_unconfirmed_configured_model():
+def test_run_once_records_requested_model_but_preserves_missing_receipt_as_unknown():
     project = ProjectRecord(name="Demo", priority=3, status=ProjectStatus.READY)
     client = make_client_with_project(project)
     registry = ProviderRegistry()
     registry.mark_available("antigravity")
-    registry.configure_models("antigravity", ["must-not-be-forwarded"])
+    registry.configure_models("antigravity", ["requested-model"])
 
     outcome = run_once(
         client,
@@ -631,8 +631,10 @@ def test_run_once_does_not_report_unconfirmed_configured_model():
     )
 
     assert outcome.ran is True
-    assert project.extra_data["provider_selection"]["model"] is None
-    assert "must-not-be-forwarded" not in project.extra_data["provider_selection"]["provider_reason"]
+    selection = project.extra_data["provider_selection"]
+    assert selection["selected_model"] == "requested-model"
+    assert selection["actual_model"] is None
+    assert selection["model"] is None
 
 
 def test_run_once_audit_is_the_only_path_to_hotovo():
@@ -667,8 +669,7 @@ def test_run_once_audit_is_the_only_path_to_hotovo():
     assert reloaded.returned_from_testing is False
 
 
-def test_run_once_audit_leaves_model_selection_to_provider():
-    """A configured catalog is diagnostic only; the provider selects per task."""
+def test_run_once_audit_requests_quality_model_from_verified_catalog():
     project = ProjectRecord(
         name="Demo",
         priority=3,
@@ -693,8 +694,9 @@ def test_run_once_audit_leaves_model_selection_to_provider():
     )
 
     assert outcome.ran is True
-    assert project.extra_data["provider_selection"]["model"] is None
-    assert "provider si model pro audit vybere podle typu úkolu" in project.extra_data["provider_selection"]["provider_reason"]
+    selection = project.extra_data["provider_selection"]
+    assert selection["selected_model"] == "claude-opus-4-1"
+    assert selection["actual_model"] is None
 
 
 def test_run_once_audit_records_requested_classification_next_to_receipt():

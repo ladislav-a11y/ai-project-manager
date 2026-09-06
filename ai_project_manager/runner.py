@@ -30,7 +30,7 @@ from .orchestrator_handoff import (
     implementation_dod,
     materialize_project_dod,
 )
-from .providers import ProviderRegistry, TASK_AUDIT, TASK_IMPLEMENTATION
+from .providers import ProviderRegistry, TASK_AUDIT, TASK_IMPLEMENTATION, supports_model_selection
 from .scheduler import (
     audit_capability_key,
     expand_provider_aliases,
@@ -146,10 +146,9 @@ def _model_selection_reason(
     if complexity is not None:
         model_tier = classify_task(task_type, complexity).model_tier
         tier_detail = f"; cílová úroveň {model_tier} pro náročnost {complexity}"
-    return (
-        f"provider si model pro {task_label} vybere podle typu úkolu; "
-        f"PM nepředává --model{tier_detail}"
-    )
+    if model:
+        return f"PM požaduje model {model} pro {task_label}{tier_detail}"
+    return f"provider použije podporované výchozí chování pro {task_label}{tier_detail}"
 
 
 def _provider_selection_reason(
@@ -159,6 +158,7 @@ def _provider_selection_reason(
     default_providers: Optional[list],
     provider_registry: ProviderRegistry,
     task_type: str,
+    selected_model: Optional[str] = None,
 ) -> str:
     ordered = (providers_for_project or {}).get(
         project.name,
@@ -166,8 +166,10 @@ def _provider_selection_reason(
     )
     resolved_order = expand_provider_aliases(list(ordered), provider_registry)
     provider_reason = f"provider je první dostupný v pořadí {', '.join(resolved_order or ordered)}"
+    selection = (project.extra_data or {}).get("provider_selection") or {}
     model_reason = _model_selection_reason(
-        provider, None, provider_registry, task_type, complexity=infer_complexity(project)
+        provider, selected_model or selection.get("selected_model") or selection.get("model"),
+        provider_registry, task_type, complexity=infer_complexity(project)
     )
     return f"{provider_reason}; {model_reason}"
 
@@ -507,11 +509,19 @@ def run_once(
 
     project = decision.project
     provider = decision.provider
-    selected_model = None
     classification = classify_task(TASK_IMPLEMENTATION, infer_complexity(project))
+    selector = getattr(run_fn, "select_model", None)
+    selected_model = (
+        selector(project, provider) if callable(selector)
+        else (
+            provider_registry.model_for_tier(provider, classification.model_tier)
+            if supports_model_selection(provider) else None
+        )
+    )
     provider_detail = f"{provider} | model: {_display_model(provider, selected_model)}"
     provider_reason = _provider_selection_reason(
-        project, provider, providers_for_project, default_providers, provider_registry, TASK_IMPLEMENTATION
+        project, provider, providers_for_project, default_providers, provider_registry,
+        TASK_IMPLEMENTATION, selected_model
     )
     logger.info("selected project=%r provider=%s", project.name, provider)
 
@@ -528,7 +538,11 @@ def run_once(
             project.provider = provider
             project.extra_data["provider_selection"] = {
                 "provider": provider,
-                "model": selected_model,
+                # ``model`` is receipt-owned. Keep the requested value
+                # separately so an unconfirmed request is never presented as
+                # the model the provider actually used.
+                "model": None,
+                "selected_model": selected_model,
                 "stage": "implementation",
                 "source": "AI_PM_PROVIDER_MODELS" if selected_model else "provider_default",
                 "classification": classification.as_dict(),
@@ -743,11 +757,19 @@ def run_once_audit(
 
     project = decision.project
     provider = decision.provider
-    selected_model = None
     classification = classify_task(TASK_AUDIT, infer_complexity(project))
+    selector = getattr(audit_run_fn, "select_model", None)
+    selected_model = (
+        selector(project, provider) if callable(selector)
+        else (
+            provider_registry.model_for_tier(provider, classification.model_tier)
+            if supports_model_selection(provider) else None
+        )
+    )
     provider_detail = f"{provider} | model: {_display_model(provider, selected_model)}"
     provider_reason = _provider_selection_reason(
-        project, provider, providers_for_project, default_providers, provider_registry, TASK_AUDIT
+        project, provider, providers_for_project, default_providers, provider_registry,
+        TASK_AUDIT, selected_model
     )
     logger.info("selected project=%r provider=%s for audit", project.name, provider)
 
@@ -821,7 +843,10 @@ def run_once_audit(
             _remember_provider_selection(project)
             project.extra_data["provider_selection"] = {
                 "provider": provider,
-                "model": selected_model,
+                # ``model`` is receipt-owned; ``selected_model`` is only the
+                # concrete request sent to ai-orchestrator.
+                "model": None,
+                "selected_model": selected_model,
                 "stage": "audit",
                 "source": "AI_PM_PROVIDER_MODELS" if selected_model else "provider_default",
                 "classification": classification.as_dict(),

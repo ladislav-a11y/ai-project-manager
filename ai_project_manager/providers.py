@@ -50,13 +50,15 @@ class ProviderState:
 
 
 def supports_model_selection(name: str) -> bool:
-    """Whether ``name`` may use the PM model catalog for diagnostics.
+    """Whether ai-orchestrator accepts an explicit model for ``name``.
 
-    Production dispatch never forwards a PM-selected ``--model`` to a
-    provider. All supported PM providers use the generic provider-owned model
-    policy, so this compatibility helper is true for every provider name.
+    Keep this closed: a configured catalog is not evidence that an arbitrary
+    provider supports ``--model``.  These names map to ai-orchestrator agents
+    whose adapters explicitly implement the requested-model contract.
     """
-    return True
+    return str(name).strip().casefold() in {
+        "antigravity", "claude", "claude-code", "codex", "gemini",
+    }
 
 
 # The three distinct kinds of task the PM ever dispatches a provider for
@@ -126,10 +128,10 @@ class ProviderRegistry:
         return self._statuses[name]
 
     def configure_models(self, name: str, models: list[str]) -> ProviderStatus:
-        """Record an ordered diagnostic/backwards-compatible model catalog.
+        """Record an ordered, explicitly configured model catalog.
 
-        Empty and duplicate values are discarded. The catalog is not used to
-        construct production argv; the provider owns model selection.
+        Empty and duplicate values are discarded. Dispatch may use this
+        catalog only for providers whose adapter supports explicit selection.
         """
         status = self.register(name)
         self._configured_model_catalogs.add(name)
@@ -153,10 +155,7 @@ class ProviderRegistry:
         return status.selected_model if status is not None else None
 
     def model_for_task(self, name: str, task_type: str) -> Optional[str]:
-        """Return the legacy catalog suggestion for diagnostics only.
-
-        Production dispatch does not call this helper; it is retained for
-        diagnostics and compatibility with persisted model catalogs.
+        """Resolve a task family to an entry in the configured catalog.
 
         A provider with zero or one configured models behaves exactly like
         ``selected_model`` for every task type - this only differentiates
