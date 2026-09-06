@@ -209,7 +209,11 @@ Před každým použitím providera PM oznámí jeho výběr, důvod, typ úkolu
 plán; po dokončení uloží skutečný model potvrzený providerem. Intake navíc
 zapisuje do `PM-DATA` `intake_provider_reason`, `intake_model_reason` a
 `intake_selection_reason`, aby byl výběr dohledatelný na každém podúkolu i ve
-Slacku. Pokud je provider omezený, Slack i stavová zpráva uvádí absolutní
+Slacku. Dokud karta ještě nebyla vydána k implementaci/auditu, stejný Inbox
+intake receipt (provider, model, důvod) je vidět i přímo na kartě v sekci
+„## Provider a model (Inbox intake)" nad `PM-DATA`; jakmile karta dostane
+skutečného pracovního providera, tuto sekci nahradí „## Provider a model" se
+skutečně použitým providerem/modelem dispatch fáze. Pokud je provider omezený, Slack i stavová zpráva uvádí absolutní
 `retry_at` a odpočet `retry za`; PM jej do té doby znovu nevolá.
 Globální stav `LIMITED` nebo `ERROR` s `retry_after` je závazný pro všechny
 workflow fáze: PM takového providera nepředá ani do dalšího AO failover řetězce

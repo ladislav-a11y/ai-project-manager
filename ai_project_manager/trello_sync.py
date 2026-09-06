@@ -714,26 +714,51 @@ def _provider_selection_visible_notes(project: ProjectRecord) -> str:
     PM-DATA, so a human scanning the board sees the same truthful routing
     decision Slack already reports (see slack_notify.provider_route_detail)
     without needing to open the hidden JSON block.
+
+    A card that has not yet been dispatched for implementation/audit has no
+    ``provider_selection`` - only its Inbox-planning receipt
+    (``inbox_preparation.intake_*``, see daemon.py's Inbox intake Slack
+    event). Fall back to that receipt so the same provider/model/reason
+    triple is visible on the card, not only in Slack, without ever
+    inventing a value neither receipt actually recorded.
     """
     selection = (project.extra_data or {}).get("provider_selection")
-    if not isinstance(selection, dict):
-        return ""
-    actual_provider = selection.get("actual_provider") or selection.get("provider")
-    if not actual_provider:
-        return ""
-    model = selection.get("actual_model") or selection.get("model")
-    lines = [
-        "## Provider a model",
-        f"Provider: {actual_provider}",
-        f"Model: {model or 'provider default (nezjištěn)'}",
-    ]
-    reason = selection.get("provider_reason")
-    if reason:
-        lines.append(f"Důvod: {reason}")
-    route_detail = selection.get("route_detail")
-    if route_detail:
-        lines.append(str(route_detail))
-    return "\n".join(lines)
+    if isinstance(selection, dict):
+        actual_provider = selection.get("actual_provider") or selection.get("provider")
+        if actual_provider:
+            model = selection.get("actual_model") or selection.get("model")
+            lines = [
+                "## Provider a model",
+                f"Provider: {actual_provider}",
+                f"Model: {model or 'provider default (nezjištěn)'}",
+            ]
+            reason = selection.get("provider_reason")
+            if reason:
+                lines.append(f"Důvod: {reason}")
+            route_detail = selection.get("route_detail")
+            if route_detail:
+                lines.append(str(route_detail))
+            return "\n".join(lines)
+
+    preparation = (project.extra_data or {}).get("inbox_preparation")
+    if isinstance(preparation, dict):
+        intake_provider = preparation.get("intake_provider")
+        if isinstance(intake_provider, str) and intake_provider.strip():
+            model = preparation.get("intake_model")
+            lines = [
+                "## Provider a model (Inbox intake)",
+                f"Provider: {intake_provider}",
+                f"Model: {model or 'provider receipt nevrátil model'}",
+            ]
+            reason = preparation.get("intake_provider_reason")
+            if reason:
+                lines.append(f"Důvod: {reason}")
+            model_reason = preparation.get("intake_model_reason")
+            if model_reason:
+                lines.append(f"Model - důvod: {model_reason}")
+            return "\n".join(lines)
+
+    return ""
 
 
 def project_from_card(card: dict, list_id_to_name: dict[str, str]) -> ProjectRecord:

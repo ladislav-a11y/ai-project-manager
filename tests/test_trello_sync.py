@@ -1369,6 +1369,96 @@ def test_provider_selection_visible_notes_absent_without_selection():
     assert "## Provider a model" not in visible
 
 
+def test_provider_selection_visible_notes_fall_back_to_inbox_intake_receipt():
+    """DoD: before a card is ever dispatched for implementation/audit, the
+    board must still show the real Inbox-planning provider/model/reason
+    (see daemon.py's Inbox intake Slack event using the same
+    ``inbox_preparation.intake_*`` fields), not only the hidden PM-DATA
+    block."""
+    client = InMemoryTrelloClient()
+    project = ProjectRecord(
+        name="Demo",
+        status=ProjectStatus.READY,
+        extra_data={
+            "inbox_preparation": {
+                "source_card_id": "abc123",
+                "intake_provider": "antigravity",
+                "intake_model": "gemini-2.5-pro",
+                "intake_provider_reason": (
+                    "antigravity je první dostupný provider z povoleného pořadí "
+                    "antigravity, claude-code, codex; vyřazení provideři jsou fail-closed"
+                ),
+                "intake_model_reason": (
+                    "model gemini-2.5-pro je skutečně použitý model providera "
+                    "potvrzený ai-orchestrátorem pro Inbox plánování"
+                ),
+            }
+        },
+    )
+
+    created = sync_project_to_trello(client, project)
+    visible = created["desc"].split("<!-- PM-DATA", 1)[0]
+
+    assert "## Provider a model (Inbox intake)" in visible
+    assert "Provider: antigravity" in visible
+    assert "Model: gemini-2.5-pro" in visible
+    assert "první dostupný provider z povoleného pořadí" in visible
+    assert "skutečně použitý model providera" in visible
+
+
+def test_provider_selection_visible_notes_intake_fallback_never_fabricates_model():
+    """A confirmed provider without a confirmed model must render the same
+    honest fallback text Slack already uses, never an invented model name."""
+    client = InMemoryTrelloClient()
+    project = ProjectRecord(
+        name="Demo",
+        status=ProjectStatus.READY,
+        extra_data={
+            "inbox_preparation": {
+                "source_card_id": "abc123",
+                "intake_provider": "codex",
+                "intake_model": None,
+                "intake_provider_reason": "codex je první dostupný provider",
+            }
+        },
+    )
+
+    created = sync_project_to_trello(client, project)
+    visible = created["desc"].split("<!-- PM-DATA", 1)[0]
+
+    assert "Provider: codex" in visible
+    assert "Model: provider receipt nevrátil model" in visible
+
+
+def test_provider_selection_visible_notes_prefers_dispatch_over_intake_receipt():
+    """Once a card has actually been dispatched, the real work provider must
+    win over the earlier Inbox-planning receipt instead of showing both."""
+    client = InMemoryTrelloClient()
+    project = ProjectRecord(
+        name="Demo",
+        status=ProjectStatus.IN_PROGRESS,
+        extra_data={
+            "inbox_preparation": {
+                "source_card_id": "abc123",
+                "intake_provider": "antigravity",
+                "intake_model": "gemini-2.5-pro",
+            },
+            "provider_selection": {
+                "provider": "codex",
+                "actual_provider": "codex",
+                "actual_model": "gpt-5-codex",
+            },
+        },
+    )
+
+    created = sync_project_to_trello(client, project)
+    visible = created["desc"].split("<!-- PM-DATA", 1)[0]
+
+    assert "## Provider a model\n" in visible
+    assert "Provider: codex" in visible
+    assert "## Provider a model (Inbox intake)" not in visible
+
+
 def test_free_text_notes_preserved_alongside_structured_block():
     client = InMemoryTrelloClient()
     project = ProjectRecord(name="Demo", priority=0, status=ProjectStatus.NEW, main_task="task")
