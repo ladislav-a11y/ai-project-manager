@@ -112,6 +112,26 @@ def test_provider_route_detail_shows_model_for_each_provider():
     assert "model path: antigravity=gemini-2.5-pro -> claude-code=claude-opus-4-1" in rendered
 
 
+def test_provider_selection_comparison_keeps_request_distinct_from_receipt():
+    rendered = slack_notify.provider_selection_comparison({
+        "selected_provider": "antigravity",
+        "selected_model": "gemini-requested",
+        "requested_reason": "první dostupný provider pro economical tier",
+        "actual_provider": "codex",
+        "actual_model": "gpt-actual",
+        "actual_reason": "codex byl použit po failoveru",
+    })
+    assert "požadováno: provider=antigravity, model=gemini-requested" in rendered
+    assert "skutečně použito (receipt): provider=codex, model=gpt-actual" in rendered
+    assert "fallback=antigravity -> codex" in rendered
+
+
+def test_provider_selection_comparison_does_not_invent_missing_values():
+    rendered = slack_notify.provider_selection_comparison({})
+    assert "provider=bez explicitní volby, model=bez explicitní volby" in rendered
+    assert "provider=receipt neuvedl, model=receipt neuvedl" in rendered
+
+
 def test_webhook_url_alone_does_not_enable_real_notifications(monkeypatch, caplog):
     secret_webhook = "https://hooks.slack.invalid/secret"
     caplog.set_level("INFO")

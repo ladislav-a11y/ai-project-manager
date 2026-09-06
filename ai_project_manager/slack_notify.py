@@ -231,6 +231,38 @@ def result_model(result: dict | None, fallback: str | None = None) -> str | None
     return model.strip() if isinstance(model, str) and model.strip() else fallback
 
 
+def provider_selection_comparison(selection: dict | None) -> str:
+    """Render the PM request separately from the authoritative AO receipt."""
+    if not isinstance(selection, dict):
+        selection = {}
+
+    def clean(value) -> str | None:
+        return value.strip() if isinstance(value, str) and value.strip() else None
+
+    requested_provider = clean(selection.get("selected_provider"))
+    requested_model = clean(selection.get("selected_model"))
+    requested_reason = clean(selection.get("requested_reason"))
+    actual_provider = clean(selection.get("actual_provider"))
+    actual_model = clean(selection.get("actual_model"))
+    actual_reason = clean(selection.get("actual_reason")) or clean(selection.get("provider_reason"))
+
+    requested = (
+        f"požadováno: provider={requested_provider or 'bez explicitní volby'}, "
+        f"model={requested_model or 'bez explicitní volby'}"
+    )
+    if requested_reason:
+        requested += f", důvod={requested_reason}"
+    actual = (
+        f"skutečně použito (receipt): provider={actual_provider or 'receipt neuvedl'}, "
+        f"model={actual_model or 'receipt neuvedl'}"
+    )
+    if actual_reason:
+        actual += f", důvod={actual_reason}"
+    if requested_provider and actual_provider and requested_provider != actual_provider:
+        actual += f", fallback={requested_provider} -> {actual_provider}"
+    return f"{requested} | {actual}"
+
+
 def notify(message: str) -> bool:
     """
     Send notification when Slack is explicitly enabled and configured.

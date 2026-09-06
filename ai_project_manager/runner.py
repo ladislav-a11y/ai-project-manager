@@ -42,6 +42,7 @@ from .trello_sync import project_from_card, sync_project_to_trello
 from .slack_notify import (
     notify,
     provider_blocked_message,
+    provider_selection_comparison,
     result_model,
     provider_route_detail,
     status_message,
@@ -187,13 +188,17 @@ def _actual_provider_selection_reason(
 ) -> str:
     """Explain the provider and model that the orchestrator actually used."""
     if actual_provider == selected_provider:
-        return _provider_selection_reason(
-            project,
+        model_reason = _model_selection_reason(
             actual_provider,
-            providers_for_project,
-            default_providers,
+            actual_model,
             provider_registry,
             task_type,
+            complexity=infer_complexity(project),
+            confirmed=bool(confirmed_model),
+        )
+        return (
+            f"receipt ai-orchestrátoru potvrdil požadovaný provider {actual_provider}; "
+            f"{model_reason}"
         )
 
     provider_reason = (
@@ -543,6 +548,8 @@ def run_once(
                 # the model the provider actually used.
                 "model": None,
                 "selected_model": selected_model,
+                "selected_provider": provider,
+                "requested_reason": provider_reason,
                 "stage": "implementation",
                 "source": "AI_PM_PROVIDER_MODELS" if selected_model else "provider_default",
                 "classification": classification.as_dict(),
@@ -640,8 +647,10 @@ def run_once(
                 timezone.utc
             ).isoformat()
             project.extra_data["provider_selection"]["provider_reason"] = actual_provider_reason
+            project.extra_data["provider_selection"]["actual_reason"] = actual_provider_reason
             route_detail = provider_route_detail(result, selected_provider=provider)
             project.extra_data["provider_selection"]["route_detail"] = route_detail
+            comparison_detail = provider_selection_comparison(project.extra_data["provider_selection"])
             project.extra_data["provider_selection"]["live_evidence"] = {
                 "source": "ai-orchestrator outbox",
                 "active_provider": actual_provider,
@@ -659,7 +668,7 @@ def run_once(
                         provider_reason=actual_provider_reason,
                         detail=(
                             "výsledek zapsán do Trella | "
-                            + route_detail
+                            + comparison_detail + " | " + route_detail
                         ),
                     )
                     + usage_suffix(result)
@@ -678,7 +687,7 @@ def run_once(
                         provider_reason=actual_provider_reason,
                         detail=(
                             f"další pokus: {project.retry_after} | "
-                            + route_detail
+                            + comparison_detail + " | " + route_detail
                         ),
                     ) + usage_suffix(result),
                 ])
@@ -692,7 +701,7 @@ def run_once(
                         provider_reason=actual_provider_reason,
                         detail=(
                             f"další krok: {next_step} | "
-                            f"{route_detail}"
+                            f"{comparison_detail} | {route_detail}"
                         ),
                     )
                     + usage_suffix(result)
@@ -847,6 +856,8 @@ def run_once_audit(
                 # concrete request sent to ai-orchestrator.
                 "model": None,
                 "selected_model": selected_model,
+                "selected_provider": provider,
+                "requested_reason": provider_reason,
                 "stage": "audit",
                 "source": "AI_PM_PROVIDER_MODELS" if selected_model else "provider_default",
                 "classification": classification.as_dict(),
@@ -977,8 +988,10 @@ def run_once_audit(
             project.extra_data["provider_selection"]["actual_provider"] = actual_provider
             project.extra_data["provider_selection"]["actual_model"] = actual_model
             project.extra_data["provider_selection"]["provider_reason"] = actual_provider_reason
+            project.extra_data["provider_selection"]["actual_reason"] = actual_provider_reason
             route_detail = provider_route_detail(result, selected_provider=provider)
             project.extra_data["provider_selection"]["route_detail"] = route_detail
+            comparison_detail = provider_selection_comparison(project.extra_data["provider_selection"])
             if isinstance(result.get("provider_statuses"), dict):
                 project.extra_data["provider_selection"]["provider_statuses"] = result["provider_statuses"]
             sync_project_to_trello(client, project)
@@ -995,7 +1008,7 @@ def run_once_audit(
                         provider_reason=actual_provider_reason,
                         detail=(
                             "přesunuto do Hotovo | "
-                            + route_detail
+                            + comparison_detail + " | " + route_detail
                         ),
                     )
                     + usage_suffix(result)
@@ -1013,7 +1026,7 @@ def run_once_audit(
                     provider_reason=actual_provider_reason,
                     detail=(
                         f"další pokus: {project.retry_after} | "
-                        + route_detail
+                        + comparison_detail + " | " + route_detail
                     ),
                 ) + usage_suffix(result))
             else:
@@ -1026,7 +1039,7 @@ def run_once_audit(
                         detail=(
                             f"vráceno do {project.status.value} | "
                             f"důvod: {project.stop_reason} | "
-                            f"{route_detail}"
+                            f"{comparison_detail} | {route_detail}"
                         ),
                     )
                     + usage_suffix(result)

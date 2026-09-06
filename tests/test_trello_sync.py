@@ -1350,8 +1350,9 @@ def test_provider_selection_visible_notes_show_real_provider_model_and_failover(
     created = sync_project_to_trello(client, project)
     visible = created["desc"].split("<!-- PM-DATA", 1)[0]
 
-    assert "Provider: codex" in visible
-    assert "Model: gpt-5-codex" in visible
+    assert "požadováno: provider=claude-code, model=bez explicitní volby" in visible
+    assert "skutečně použito (receipt): provider=codex, model=gpt-5-codex" in visible
+    assert "fallback=claude-code -> codex" in visible
     assert "po failoveru z claude-code" in visible
     assert "provider path: claude-code -> codex" in visible
     assert "failover: ano" in visible
@@ -1455,7 +1456,7 @@ def test_provider_selection_visible_notes_prefers_dispatch_over_intake_receipt()
     visible = created["desc"].split("<!-- PM-DATA", 1)[0]
 
     assert "## Provider a model\n" in visible
-    assert "Provider: codex" in visible
+    assert "skutečně použito (receipt): provider=codex, model=gpt-5-codex" in visible
     assert "## Provider a model (Inbox intake)" not in visible
 
 

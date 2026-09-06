@@ -28,6 +28,7 @@ from datetime import datetime, timezone
 from typing import Optional
 
 from .models import DoDItem, GitHubRef, GoogleDriveRef, ProjectRecord, ProjectStatus
+from .slack_notify import provider_selection_comparison
 from .inbox_preparation import derive_priority, is_repair_request
 from .trello_client import MAX_TRELLO_DESC_CHARS
 from .card_contract import (
@@ -724,17 +725,13 @@ def _provider_selection_visible_notes(project: ProjectRecord) -> str:
     """
     selection = (project.extra_data or {}).get("provider_selection")
     if isinstance(selection, dict):
-        actual_provider = selection.get("actual_provider") or selection.get("provider")
-        if actual_provider:
-            model = selection.get("actual_model") or selection.get("model")
+        actual_provider = selection.get("actual_provider")
+        requested_provider = selection.get("selected_provider")
+        if actual_provider or requested_provider:
             lines = [
                 "## Provider a model",
-                f"Provider: {actual_provider}",
-                f"Model: {model or 'provider default (nezjištěn)'}",
+                provider_selection_comparison(selection),
             ]
-            reason = selection.get("provider_reason")
-            if reason:
-                lines.append(f"Důvod: {reason}")
             route_detail = selection.get("route_detail")
             if route_detail:
                 lines.append(str(route_detail))

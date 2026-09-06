@@ -571,6 +571,9 @@ def test_run_once_slack_explains_actual_model_after_provider_failover(monkeypatc
     assert outcome.ran is True
     assert len(calls) == 2
     assert "codex | model: gpt-5.6-luna" in calls[1]
+    assert "požadováno: provider=antigravity" in calls[1]
+    assert "skutečně použito (receipt): provider=codex, model=gpt-5.6-luna" in calls[1]
+    assert "fallback=antigravity -> codex" in calls[1]
     assert "provider codex byl použit po failoveru z antigravity" in calls[1]
     assert "model gpt-5.6-luna je pro implementaci skutečně použitý model providera" in calls[1]
     assert project.extra_data["provider_selection"]["provider_reason"] in calls[1]
