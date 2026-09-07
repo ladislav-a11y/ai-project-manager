@@ -435,7 +435,13 @@ def _apply_central_provider_statuses(
             )
         elif state == "AVAILABLE":
             provider_registry.mark_available(pm_name)
-        elif state in {"UNAVAILABLE", "ERROR", "PROTOCOL_ERROR", "BUDGET_EXCEEDED"}:
+        elif state in {
+            "UNAVAILABLE",
+            "ERROR",
+            "PROTOCOL_ERROR",
+            "BUDGET_EXCEEDED",
+            "TOKEN_BUDGET_EXCEEDED",
+        }:
             provider_registry.mark_error(
                 pm_name,
                 reason,

@@ -593,11 +593,12 @@ def run_once(
             # letting an unfixable block requeue forever, once per tick.
             if not project.is_blocked:
                 project.recovery_attempts = 0
-            logger.info(
-                "run result project=%r provider=%s status=%s stop_reason=%s retry_after=%s",
-                project.name, provider, project.status.value, project.stop_reason, project.retry_after,
-            )
             actual_provider = result.get("active_provider") or provider
+            logger.info(
+                "run result project=%r provider=%s selected_provider=%s status=%s stop_reason=%s retry_after=%s",
+                project.name, actual_provider, provider, project.status.value,
+                project.stop_reason, project.retry_after,
+            )
             confirmed_model = result_model(result)
             if confirmed_model and not provider_registry.get_status(actual_provider).models:
                 # Learn the model actually used from ai-orchestrator's receipt;
