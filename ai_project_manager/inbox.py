@@ -24,6 +24,7 @@ from .inbox_preparation import (
     inbox_source_text,
     is_explicit_indivisible_inbox_source,
     prepare_inbox_card,
+    prepared_task_handoff_text,
     prioritize_inbox_cards,
     visible_inbox_description,
     task_execution_order,
@@ -701,10 +702,9 @@ def process_inbox(
                     task.priority = prepared_task.priority
                     task.main_task = prepared_task.task
                     task.next_step = prepared_task.next_step
-                    task.orchestrator_ready_task = (
-                        f"Implementovat tento samostatný rozsah v projektu "
-                        f"{task.project_key or prepared_task.title}: {prepared_task.task} "
-                        "Zachovat chování mimo tento rozsah."
+                    task.orchestrator_ready_task = prepared_task_handoff_text(
+                        prepared_task,
+                        task.project_key or prepared_task.title,
                     )
                     task.dod = list(build_dod((prepared_task,)))
                     metadata = task.extra_data.setdefault("inbox_preparation", {})
@@ -738,10 +738,9 @@ def process_inbox(
                     status=ProjectStatus.NEW,
                     main_task=prepared_task.task,
                     next_step=prepared_task.next_step,
-                    orchestrator_ready_task=(
-                        f"Implementovat tento samostatný rozsah v projektu "
-                        f"{prepared_task.project_key or prepared_task.title}: {prepared_task.task} "
-                        "Zachovat chování mimo tento rozsah."
+                    orchestrator_ready_task=prepared_task_handoff_text(
+                        prepared_task,
+                        prepared_task.project_key or prepared_task.title,
                     ),
                     dod=list(build_dod((prepared_task,))),
                     # Each subtask is routed by its own resolved identity

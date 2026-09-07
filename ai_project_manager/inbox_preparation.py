@@ -36,6 +36,20 @@ INBOX_AUDIT_VERDICT_TEXT = (
     "Nezávislý audit ai-orchestrator vydá accepted / rejected verdikt s konkrétním "
     "odůvodněním."
 )
+INBOX_READ_ONLY_AUDIT_EVIDENCE_TEXT = (
+    "Nezávislý audit ai-orchestratoru ověří výsledek read-only verifikačního "
+    "podúkolu proti skutečnému stavu bez změny souborů; nový commit není pro "
+    "tento auditní bod vyžadován."
+)
+
+_READ_ONLY_VERIFICATION_MARKERS = (
+    "do not modify any files",
+    "must not modify files",
+    "no files may be modified",
+    "nesmí měnit soubory",
+    "neměnit soubory",
+    "bez změny souborů",
+)
 
 # Explicit Czech inflection variants for stable production project names.
 # This is intentionally a small allowlist, not fuzzy matching.
@@ -140,6 +154,40 @@ class PreparedTask:
     # decisions; they must not be silently discarded at the AO -> PM boundary.
     work_type: Optional[str] = None
     split_reason: Optional[str] = None
+
+
+def is_read_only_verification(
+    work_type: Optional[str], *texts: Optional[str]
+) -> bool:
+    """Identify an explicitly read-only Inbox research task.
+
+    ``research`` alone is not enough: research may still produce a real
+    artifact. The task must also explicitly forbid file changes, which makes
+    it safe to route through the independent audit path instead of an
+    implementation-agent dispatch.
+    """
+    if str(work_type or "").strip().casefold() != "research":
+        return False
+    combined = " ".join(str(text) for text in texts if text).casefold()
+    return any(marker in combined for marker in _READ_ONLY_VERIFICATION_MARKERS)
+
+
+def is_read_only_verification_task(task: PreparedTask) -> bool:
+    return is_read_only_verification(
+        task.work_type,
+        task.task,
+        task.next_step,
+        task.split_reason,
+    )
+
+
+def prepared_task_handoff_text(task: PreparedTask, project_label: str) -> str:
+    """Render a handoff without turning read-only verification into work."""
+    action = "Ověřit" if is_read_only_verification_task(task) else "Implementovat"
+    return (
+        f"{action} tento samostatný rozsah v projektu {project_label}: "
+        f"{task.task} Zachovat chování mimo tento rozsah."
+    )
 
 
 @dataclass(frozen=True)
@@ -631,6 +679,11 @@ def build_dod(tasks: tuple[PreparedTask, ...]) -> tuple[DoDItem, ...]:
     the actual change: static checks, tests and live verification are tools,
     not universal mandatory gates.
     """
+    if tasks and all(is_read_only_verification_task(task) for task in tasks):
+        return (
+            DoDItem(text=INBOX_READ_ONLY_AUDIT_EVIDENCE_TEXT, phase="audit"),
+            DoDItem(text=INBOX_AUDIT_VERDICT_TEXT, phase="audit"),
+        )
     scopes = ", ".join(task.scope for task in tasks)
     return (
         DoDItem(

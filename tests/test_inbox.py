@@ -18,6 +18,7 @@ from ai_project_manager.inbox_preparation import (
     enforce_indivisible_inbox_source_contract,
     is_explicit_indivisible_inbox_source,
     prepare_inbox_card,
+    prepared_task_handoff_text,
     prioritize_inbox_cards,
     task_execution_order,
 )
@@ -331,6 +332,81 @@ def test_documentation_task_gets_relevance_based_audit_not_mandatory_test_and_li
         for text in audit_items
     )
     assert dod_contract_issues(prepared.dod) == []
+
+
+def test_read_only_research_task_gets_audit_only_dod_and_verification_handoff():
+    task = PreparedTask(
+        title="README verification",
+        task=(
+            "Check that the paragraph appears exactly once in README.md; "
+            "do not modify any files."
+        ),
+        next_step="Only verify the existing README.",
+        scope="README verification",
+        priority=2,
+        priority_reason="ověření",
+        project_key="AI Project Manager",
+        work_type="research",
+        split_reason=(
+            "Verification is a separate atomic task that must not modify files."
+        ),
+    )
+
+    prepared = prepare_inbox_card(
+        {
+            "id": "read-only-source",
+            "name": "README verification",
+            "desc": "Verify the existing README without changes.",
+            "labels": [{"name": "AI Project Manager"}],
+        },
+        project_paths={"AI Project Manager": "D:/pm"},
+        planned_tasks=(task,),
+    )
+
+    assert not any(item.phase == "implementation" for item in prepared.dod)
+    assert all(item.phase == "audit" for item in prepared.dod)
+    assert "read-only" in prepared.dod[0].text
+    assert prepared_task_handoff_text(task, "AI Project Manager").startswith("Ověřit")
+    assert dod_contract_issues(prepared.dod) == []
+
+
+def test_process_inbox_materializes_read_only_research_as_audit_only_child():
+    client = InMemoryTrelloClient()
+    _, name_to_id = build_list_maps(client)
+    source = client.create_card(
+        name_to_id["Inbox"],
+        "Verify README update",
+        desc="Verify the existing README without changes.",
+        labels=["AI Project Manager"],
+    )
+    task = PreparedTask(
+        title="README verification",
+        task="Check README.md exactly once; do not modify any files.",
+        next_step="Only verify the existing README.",
+        scope="README verification",
+        project_key="AI Project Manager",
+        work_type="research",
+        split_reason="A separate verification task that must not modify files.",
+    )
+
+    def planner(card, projects):
+        return {"provider": "groq", "model": "test", "tasks": (task,)}
+
+    changed = process_inbox(
+        client,
+        [],
+        persist_project=lambda project: sync_project_to_trello(client, project),
+        project_paths={"AI Project Manager": "D:/pm"},
+        planner=planner,
+    )
+
+    assert len(changed) == 1
+    project = changed[0]
+    assert project.trello_card_id != source["id"]
+    assert project.status == ProjectStatus.NEW
+    assert project.orchestrator_ready_task.startswith("Ověřit")
+    assert all(item.phase == "audit" for item in project.dod)
+    assert client.get_card(project.trello_card_id)["list_id"] == name_to_id["New"]
 
 
 def test_subtask_routes_to_its_own_project_identity_instead_of_source():

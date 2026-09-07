@@ -742,6 +742,70 @@ def test_maintenance_migrates_current_inbox_test_live_audit_and_releases_obsolet
     ]
 
 
+def test_maintenance_routes_read_only_research_child_to_testing_without_implementation_dod():
+    client = InMemoryTrelloClient()
+    in_progress = client.get_list_id_by_name("In Progress")
+    old_dod = [
+        {
+            "checked": False,
+            "phase": "implementation",
+            "text": "Implementovat připravené části Inbox požadavku: Verify README update.",
+        },
+        {
+            "checked": False,
+            "phase": "audit",
+            "text": trello_sync.INBOX_AUDIT_EVIDENCE_TEXT,
+        },
+        {
+            "checked": False,
+            "phase": "audit",
+            "text": trello_sync.INBOX_AUDIT_VERDICT_TEXT,
+        },
+    ]
+    data = {
+        "schema_version": CURRENT_SCHEMA_VERSION,
+        "checkpoint": {"completed_dod_indices": [], "run_id": "old"},
+        "dod": old_dod,
+        "open_feedback": ["historical audit rejection must not route current work"],
+        "governance": GOVERNANCE_POLICY,
+        "dod_routing_policy": trello_sync.DOD_ROUTING_POLICY,
+        "lifecycle_status": "in_progress",
+        "main_task": (
+            "Check that the paragraph appears exactly once in README.md and "
+            "that git --no-pager diff --check reports no errors; do not modify any files."
+        ),
+        "next_step": "Implementovat připravené části Inbox požadavku: Verify README update.",
+        "orchestrator_ready_task": "Implementovat tento samostatný rozsah v projektu AI Project Manager.",
+        "inbox_preparation": {
+            "source_card_id": "source",
+            "subtask_index": 1,
+            "subtask_count": 2,
+            "scope": "Verify README update",
+            "work_type": "research",
+            "split_reason": (
+                "Verification is a separate atomic task that must not modify files."
+            ),
+            "dod": [dict(item) for item in old_dod],
+        },
+    }
+    card = client.create_card(
+        in_progress,
+        "P2 — AI Project Manager — Verify README update",
+        desc=f"<!-- PM-DATA\n{json.dumps(data, ensure_ascii=False)}\n-->",
+        labels=["P2", "AI Project Manager"],
+    )
+
+    assert maintain_board_contract(client) == []
+
+    repaired = client.get_card(card["id"])
+    raw = _parse_data_block(repaired["desc"])
+    assert repaired["list_id"] == client.get_list_id_by_name("Testing")
+    assert raw["lifecycle_status"] == "testing"
+    assert [item["phase"] for item in raw["dod"]] == ["audit", "audit"]
+    assert raw["checkpoint"]["completed_dod_indices"] == []
+    assert raw["orchestrator_ready_task"].startswith("Ověřit tento read-only")
+
+
 def test_maintenance_routes_completed_implementation_with_pending_audit_to_testing():
     client = InMemoryTrelloClient()
     project = ProjectRecord(

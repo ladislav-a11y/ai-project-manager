@@ -31,7 +31,9 @@ from .models import DoDItem, GitHubRef, GoogleDriveRef, ProjectRecord, ProjectSt
 from .inbox_preparation import (
     INBOX_AUDIT_EVIDENCE_TEXT,
     INBOX_AUDIT_VERDICT_TEXT,
+    INBOX_READ_ONLY_AUDIT_EVIDENCE_TEXT,
     derive_priority,
+    is_read_only_verification,
     is_repair_request,
 )
 from .trello_client import MAX_TRELLO_DESC_CHARS
@@ -263,6 +265,9 @@ _LEGACY_INBOX_WORKER_SUFFIX = (
     " Zachovat chování mimo tento rozsah; dokončení doložit testem a relevantním live důkazem."
 )
 _CONTRACT_MIGRATION_MARKER = "_pm_contract_migration_required"
+_GENERATED_INBOX_IMPLEMENTATION_PREFIX = (
+    "implementovat připravené části inbox požadavku:"
+)
 
 
 def priority_from_labels(labels: list[dict]) -> float:
@@ -614,6 +619,90 @@ def _migrate_legacy_prepared_card(data: dict, card: dict, priority: int) -> bool
     return changed
 
 
+def _migrate_read_only_verification_card(
+    data: dict,
+    status: ProjectStatus,
+    dod: list[DoDItem],
+) -> tuple[ProjectStatus, bool]:
+    """Route an explicitly read-only Inbox research child to Testování.
+
+    The planner already records ``work_type=research`` and the source task's
+    no-file-change constraint. Older PM versions nevertheless wrapped that
+    child in the generic implementation DoD, which made the scheduler spend
+    an implementation-provider call on a task that cannot change anything.
+    Only that known PM-generated shape is rewritten; an unexpected custom DoD
+    remains untouched and is rejected below before it can be dispatched.
+    """
+    if status not in {
+        ProjectStatus.NEW,
+        ProjectStatus.READY,
+        ProjectStatus.IN_PROGRESS,
+        ProjectStatus.TESTING,
+    }:
+        return status, False
+    preparation = data.get("inbox_preparation")
+    if not isinstance(preparation, dict):
+        return status, False
+    if not is_read_only_verification(
+        preparation.get("work_type"),
+        data.get("main_task"),
+        data.get("next_step"),
+        preparation.get("split_reason"),
+    ):
+        return status, False
+
+    implementation_items = [item for item in dod if item.phase == "implementation"]
+    if implementation_items:
+        if len(implementation_items) != 1:
+            return status, False
+        if not implementation_items[0].text.strip().casefold().startswith(
+            _GENERATED_INBOX_IMPLEMENTATION_PREFIX
+        ):
+            return status, False
+        migrated_dod = [
+            DoDItem(text=INBOX_READ_ONLY_AUDIT_EVIDENCE_TEXT, phase="audit"),
+            DoDItem(text=INBOX_AUDIT_VERDICT_TEXT, phase="audit"),
+        ]
+        dod[:] = migrated_dod
+        data["dod"] = [item.to_dict() for item in migrated_dod]
+        preparation["dod"] = [item.to_dict() for item in migrated_dod]
+        checkpoint = dict(data.get("checkpoint") or {})
+        checkpoint["completed_dod_indices"] = []
+        checkpoint.pop("run_id", None)
+        data["checkpoint"] = checkpoint
+        task_text = str(data.get("main_task") or "").strip()
+        scope = str(preparation.get("scope") or "read-only ověření").strip()
+        data["orchestrator_ready_task"] = (
+            f"Ověřit tento read-only rozsah ({scope}): {task_text} "
+            "Zachovat chování mimo tento rozsah."
+        )
+        changed = True
+    else:
+        changed = False
+
+    if status != ProjectStatus.TESTING:
+        status = ProjectStatus.TESTING
+        data["lifecycle_status"] = ProjectStatus.TESTING.value
+        data["stop_reason"] = (
+            "read-only verification připravena; awaiting ai-orchestrator audit"
+        )
+        data["next_step"] = (
+            "Provést nezávislý audit read-only verifikačního podúkolu."
+        )
+        changed = True
+    elif changed:
+        data["stop_reason"] = (
+            "read-only verification připravena; awaiting ai-orchestrator audit"
+        )
+        data["next_step"] = (
+            "Provést nezávislý audit read-only verifikačního podúkolu."
+        )
+
+    if changed:
+        data[_CONTRACT_MIGRATION_MARKER] = True
+    return status, changed
+
+
 def _validate_card_identity(data: dict, card: dict) -> None:
     """Refuse to process a contract bound to a different Trello card."""
     identity = data.get("card_identity")
@@ -911,6 +1000,30 @@ def project_from_card(card: dict, list_id_to_name: dict[str, str]) -> ProjectRec
     # is parsed fresh from its visible checklist and structured fields.
     stored_dod = _merge_dod_items(data.get("dod"))
     dod = stored_dod if stored_dod is not None else _build_dod(notes, data)
+
+    read_only_verification = is_read_only_verification(
+        (data.get("inbox_preparation") or {}).get("work_type")
+        if isinstance(data.get("inbox_preparation"), dict)
+        else None,
+        data.get("main_task"),
+        data.get("next_step"),
+        (data.get("inbox_preparation") or {}).get("split_reason")
+        if isinstance(data.get("inbox_preparation"), dict)
+        else None,
+    )
+    status, _read_only_verification_repaired = _migrate_read_only_verification_card(
+        data,
+        status,
+        dod,
+    )
+    if (
+        read_only_verification
+        and status != ProjectStatus.DONE
+        and any(item.phase == "implementation" for item in dod)
+    ):
+        raise CardContractError(
+            "read-only verification card still carries implementation DoD"
+        )
 
     # DoD routing is part of the Trello contract, not an agent preference.
     # The physical workflow location is authoritative, so reject a card
