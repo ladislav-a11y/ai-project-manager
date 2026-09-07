@@ -1349,12 +1349,19 @@ def _repair_nonterminal_audit_rejection(project: ProjectRecord) -> bool:
     """
     if project.status != ProjectStatus.TESTING:
         return False
+    # A hold is valid only while the current lifecycle reason still proves
+    # that an audit was rejected.  Clear an older persisted hold when the
+    # current reason has already been cleared; historical ``open_feedback``
+    # remains evidence, but must not keep the card out of the audit queue.
+    current_stop_reason = str(project.stop_reason or "").strip().casefold()
     if project.extra_data.get("audit_waiting_for_change") is True:
+        if not current_stop_reason:
+            project.extra_data.pop("audit_waiting_for_change", None)
+            return True
         return False
     # ``stop_reason`` is the current lifecycle marker written by the audit
     # path. ``open_feedback`` is an append-only historical archive and must
     # never recreate a hold after the current reason has been cleared.
-    current_stop_reason = str(project.stop_reason or "").strip().casefold()
     if not any(marker in current_stop_reason for marker in _AUDIT_REJECTION_MARKERS):
         return False
     project.extra_data["audit_waiting_for_change"] = True
