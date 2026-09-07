@@ -21,6 +21,7 @@ from ai_project_manager.inbox_preparation import (
     prepared_task_handoff_text,
     prioritize_inbox_cards,
     task_execution_order,
+    visible_inbox_description,
 )
 from ai_project_manager.card_contract import dod_contract_issues
 from ai_project_manager.models import ProjectRecord, ProjectStatus
@@ -34,6 +35,15 @@ def test_inbox_planner_never_selects_retired_or_reserved_providers():
         "claude",
         "codex",
     )
+
+
+def test_visible_inbox_description_fails_closed_on_unterminated_pm_data():
+    card = {
+        "name": "Human request",
+        "desc": "Keep this text.\n<!-- PM-DATA\n{\"old\": \"history\"}",
+    }
+
+    assert visible_inbox_description(card) == "Keep this text."
 
 
 def test_batch_prioritization_puts_pm_repairs_before_new_features():

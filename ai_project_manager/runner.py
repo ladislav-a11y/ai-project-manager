@@ -237,34 +237,58 @@ def _capture_live_trello_readback(client, project: ProjectRecord) -> dict:
         # rather than merely repeating what the agent asserted before sync.
         live_project = project_from_card(card, id_to_name)
 
-        contract_keys = (
-            "schema_version",
-            "card_identity",
-            "source_card_id",
-            "source_card_url",
-            "source_content_sha256",
-            "source_priority",
-            "task_priority",
-            "scope",
-            "inbox_receipts",
-            "processed_inbox_card_ids",
-            # Carries the Inbox split's priority, identity (source card id/
-            # url/content hash, subtask index), dependency
-            # (depends_on_subtask_indices) and workflow-state (execution_order,
-            # project_path) metadata, so the pre-audit evidence can prove that
-            # migration/readback never dropped or reordered it.
-            "inbox_preparation",
-            "dod_routing_policy",
-            "governance",
-            "provider_selection",
-            "provider_selection_history",
-            "provider_statuses",
+        preparation = live_project.extra_data.get("inbox_preparation")
+        if isinstance(preparation, dict):
+            preparation = {
+                key: preparation[key]
+                for key in (
+                    "source_card_id",
+                    "source_card_url",
+                    "content_sha256",
+                    "subtask_index",
+                    "subtask_count",
+                    "scope",
+                    "depends_on_subtask_indices",
+                    "execution_order",
+                )
+                if key in preparation
+            }
+        def compact_selection(value):
+            if not isinstance(value, dict):
+                return None
+            return {
+                key: value[key]
+                for key in (
+                    "selected_provider",
+                    "selected_model",
+                    "provider",
+                    "model",
+                    "actual_provider",
+                    "actual_model",
+                    "provider_sequence",
+                    "run_id",
+                    "stage",
+                    "source",
+                )
+                if key in value
+            }
+
+        selection = compact_selection(live_project.extra_data.get("provider_selection"))
+        implementation_selection = compact_selection(
+            live_project.extra_data.get("implementation_provider_selection")
         )
-        contract_metadata = {
-            key: live_project.extra_data[key]
-            for key in contract_keys
-            if key in live_project.extra_data
-        }
+        # The current card identity/state is already represented by the
+        # top-level readback fields below.  Only source binding and the
+        # current provider receipt belong in the compact contract projection;
+        # governance prose, provider history and status diagnostics are
+        # durable PM state, not audit instructions.
+        contract_metadata = {}
+        if preparation:
+            contract_metadata["inbox_preparation"] = preparation
+        if selection:
+            contract_metadata["provider_selection"] = selection
+        if implementation_selection:
+            contract_metadata["implementation_provider_selection"] = implementation_selection
         readback = {
             "status": "ok",
             "captured_at": captured_at,
@@ -308,27 +332,33 @@ def _capture_live_trello_readback(client, project: ProjectRecord) -> dict:
 
 
 def _remember_provider_selection(project: ProjectRecord) -> None:
-    """Keep bounded, secret-free implementation handoff receipts for audit.
+    """Keep one bounded, secret-free implementation receipt for audit.
 
     The audit phase temporarily selects its own provider and must not erase
     the implementation provider/model evidence that the preceding PM run
-    produced. Receipts contain only routing metadata and are persisted in
-    Trello's PM-DATA block; prompts, credentials, and raw provider output are
-    never copied.
+    produced. The receipt contains only current routing metadata and is
+    persisted in Trello's PM-DATA block; prompts, credentials, history and raw
+    provider output are never copied.
     """
     selection = project.extra_data.get("provider_selection")
     if not isinstance(selection, dict) or selection.get("stage") == "audit":
         return
-    history = project.extra_data.get("provider_selection_history")
-    if not isinstance(history, list):
-        history = []
-    run_id = selection.get("run_id")
-    if run_id and any(
-        isinstance(item, dict) and item.get("run_id") == run_id for item in history
-    ):
-        return
-    history.append(dict(selection))
-    project.extra_data["provider_selection_history"] = history[-8:]
+    project.extra_data["implementation_provider_selection"] = {
+        key: selection[key]
+        for key in (
+            "selected_provider",
+            "selected_model",
+            "provider",
+            "model",
+            "actual_provider",
+            "actual_model",
+            "provider_sequence",
+            "run_id",
+            "stage",
+            "source",
+        )
+        if key in selection
+    }
 
 
 @dataclass

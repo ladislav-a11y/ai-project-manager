@@ -23,7 +23,11 @@ from .models import DoDItem
 _WORD_RE = re.compile(r"[a-zA-Z0-9áčďéěíňóřšťúůýž]+", re.IGNORECASE)
 _EXPLICIT_PRIORITY_RE = re.compile(r"^P([0-5](?:\.\d+)?)$", re.IGNORECASE)
 _SENTENCE_RE = re.compile(r"(?<=[.!?])\s+|\"(?=[A-ZÁČĎÉĚÍŇÓŘŠŤÚŮÝŽ])")
-_PM_DATA_BLOCK_RE = re.compile(r"<!--\s*PM-DATA.*?-->", re.DOTALL)
+# PM-DATA is machine-owned and must never cross the Inbox planner boundary.
+# The end marker is optional on purpose: a partially written/legacy block must
+# fail closed by removing everything from its opening marker onward instead of
+# leaking arbitrary contract/history text into the next provider request.
+_PM_DATA_BLOCK_RE = re.compile(r"<!--\s*PM-DATA.*?(?:-->|\Z)", re.DOTALL)
 
 INBOX_AUDIT_EVIDENCE_TEXT = (
     "Nezávislý audit ai-orchestratoru ověří splnění implementačního DoD pomocí "

@@ -1,4 +1,5 @@
 from copy import deepcopy
+import json
 
 import pytest
 
@@ -79,6 +80,75 @@ def test_current_schema_is_validated_without_a_version_rewrite():
     }
 
     assert migrate_and_validate(current)["schema_version"] == CURRENT_SCHEMA_VERSION
+
+
+def test_compact_routing_policy_keeps_invariants_without_repeated_prose():
+    rendered = json.dumps(DOD_ROUTING_POLICY, ensure_ascii=False, separators=(",", ":"))
+
+    assert CURRENT_SCHEMA_VERSION == 3
+    assert len(rendered) < 1400
+    assert DOD_ROUTING_POLICY["implementation_owner"] == "agent"
+    assert DOD_ROUTING_POLICY["audit_owner"] == "ai-orchestrator"
+    assert "no new commit" in DOD_ROUTING_POLICY["audit_evidence_rule"]
+    assert "P5" in DOD_ROUTING_POLICY["repair_priority_rule"]
+
+
+def test_schema_v2_migrates_verbose_routing_policy_to_compact_policy():
+    raw = {
+        "schema_version": 2,
+        "checkpoint": {},
+        "dod": [],
+        "open_feedback": [],
+        "lifecycle_status": None,
+        "governance": GOVERNANCE_POLICY,
+        "dod_routing_policy": {
+            "implementation_owner": "agent",
+            "audit_owner": "ai-orchestrator",
+            "audit_execution": "ai-orchestrator-only; agents and PM cannot issue the verdict",
+            "audit_marker_required": "accepted / rejected or independent audit",
+            "audit_evidence_rule": (
+                "verification of existing Git/test state is phase audit, uses explicit validation wording, "
+                "and does not require a new commit"
+            ),
+            "test_execution_rule": (
+                "test execution and test-suite results are ai-orchestrator-owned audit evidence; "
+                "agents are never asked to run test commands"
+            ),
+            "commit_rule": (
+                "agents never commit; only an explicit pending controller-finalization item may invoke "
+                "the controller finalizer"
+            ),
+            "ready_gate": "controller-only verification must not be implementation DoD",
+            "ready_requirements": [
+                "concrete goal and DoD prepared before queue admission",
+                "every DoD item has phase implementation or audit",
+                "audit items name the independent/controller audit marker",
+                "existing-state Git/test verification is phase audit and explicitly no-commit",
+                "controller-only verification is never implementation work",
+            ],
+            "dispatch_requirements": [
+                "at least one implementation DoD item remains for Pracuje se",
+                "audit-only work is routed to Testování",
+                "actionable audit rejection is persisted as feedback, materialized as one implementation rework item, and consumed by the next tick",
+                "an explicitly non-rework audit gate may remain in Testování",
+            ],
+            "inbox_dependency_rule": (
+                "AI Inbox subtasks declare zero-based depends_on indices; cycles and missing "
+                "dependencies fail closed, and priority orders only dependency-ready siblings"
+            ),
+            "repair_priority_rule": (
+                "corrective work, confirmed bugs, regressions, and rework are always P5; "
+                "an explicit lower source label cannot demote them at Inbox intake; "
+                "after a card enters Připraveno its assigned priority is immutable and "
+                "must never be recomputed from status, provider, phase, or card text"
+            ),
+        },
+    }
+
+    migrated = migrate_and_validate(raw)
+
+    assert migrated["schema_version"] == CURRENT_SCHEMA_VERSION
+    assert migrated["dod_routing_policy"] == DOD_ROUTING_POLICY
 
 
 @pytest.mark.parametrize(

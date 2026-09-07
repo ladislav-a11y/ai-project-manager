@@ -1144,6 +1144,18 @@ def card_updates_from_project(project: ProjectRecord, list_name_to_id: dict[str,
     # intentionally transient: persisting it would duplicate board metadata
     # inside PM-DATA and can push an already large contract over Trello's limit.
     data.pop("live_trello_readback", None)
+    # Provider history and rendered Slack messages are operational telemetry,
+    # not current card state.  Keep the current provider selection and the
+    # required top-level provider_statuses receipt, but never copy old history
+    # or notification payloads into every future Trello description.
+    data.pop("provider_selection_history", None)
+    selection = data.get("provider_selection")
+    if isinstance(selection, dict):
+        selection = dict(selection)
+        selection.pop("provider_statuses", None)
+        selection.pop("slack_notifications", None)
+        selection.pop("live_evidence", None)
+        data["provider_selection"] = selection
     data.update({
         "schema_version": CURRENT_SCHEMA_VERSION,
         "governance": GOVERNANCE_POLICY,

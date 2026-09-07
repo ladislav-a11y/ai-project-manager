@@ -68,7 +68,9 @@ from .models import ProjectRecord
 from .inbox_preparation import (
     PreparedTask,
     enforce_indivisible_inbox_source_contract,
+    inbox_source_text,
     is_explicit_indivisible_inbox_source,
+    normalize_inbox_text,
     task_execution_order,
 )
 from .orchestrator_handoff import (
@@ -391,18 +393,24 @@ def build_inbox_planner_fn(
 
     def plan(card: dict, projects: list[ProjectRecord]) -> Optional[dict]:
         indivisible = is_explicit_indivisible_inbox_source(card)
+        source_text = normalize_inbox_text(inbox_source_text(card))
         request = {
             "card": {
                 "id": str(card.get("id") or ""),
                 "name": str(card.get("name") or ""),
-                "description": str(card.get("desc") or ""),
+                # Inbox is an immutable human input.  Strip the embedded
+                # PM-DATA before the planner boundary so durable routing
+                # history can never become fresh task instructions.
+                "description": source_text,
                 "labels": [
                     str(label.get("name") if isinstance(label, dict) else label)
                     for label in (card.get("labels") or [])
                 ],
             },
             "existing_projects": [
-                {"name": project.name, "project_key": project.project_key, "main_task": project.main_task}
+                # Identity is enough for planning ownership.  Full prior
+                # project tasks are durable workflow history, not Inbox input.
+                {"name": project.name, "project_key": project.project_key}
                 for project in projects
                 if project.status.value != "done"
             ],

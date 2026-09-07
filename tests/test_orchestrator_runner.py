@@ -1914,6 +1914,70 @@ def test_inbox_planner_excludes_retired_provider_names_and_returns_validated_ai_
     assert "hermes" not in calls[0][0]
 
 
+def test_inbox_planner_sends_only_human_source_text_and_project_identities():
+    registry = ProviderRegistry()
+    registry.mark_available("claude")
+    captured = {}
+
+    def fake_subprocess(command, **kwargs):
+        captured["payload"] = json.loads(kwargs["input"])
+        return completed(
+            json.dumps(
+                {
+                    "success": True,
+                    "model": "claude-haiku",
+                    "output": json.dumps(
+                        {
+                            "tasks": [
+                                {
+                                    "scope": "feature",
+                                    "task": "Implement the human request.",
+                                    "next_step": "Inspect the target.",
+                                    "priority": 2,
+                                    "priority_reason": "výchozí priorita",
+                                }
+                            ]
+                        }
+                    ),
+                }
+            )
+        )
+
+    planner = build_inbox_planner_fn(
+        registry,
+        ["python", "orchestrator.py", "autonomous", "--no-commit"],
+        subprocess_run=fake_subprocess,
+    )
+    source = {
+        "id": "source",
+        "name": "Human request",
+        "desc": (
+            "Keep this request.\n\n"
+            "<!-- PM-DATA\n"
+            '{"last_output":"stale provider history", "provider_statuses": '
+            + '"' + "x" * 2000 + '"}'
+            + "\n-->"
+        ),
+        "labels": [{"name": "AI Project Manager"}, {"name": "P2"}],
+    }
+    projects = [
+        ProjectRecord(
+            name="AI Project Manager",
+            project_key="AI Project Manager",
+            main_task="old task history that must not enter Inbox planning",
+        )
+    ]
+
+    assert planner(source, projects) is not None
+
+    payload = captured["payload"]
+    assert payload["card"]["description"] == "Keep this request."
+    assert "stale provider history" not in json.dumps(payload)
+    assert payload["existing_projects"] == [
+        {"name": "AI Project Manager", "project_key": "AI Project Manager"}
+    ]
+
+
 def _two_task_subprocess(command, **kwargs):
     return completed(
         json.dumps(

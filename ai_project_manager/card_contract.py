@@ -6,16 +6,15 @@ from copy import deepcopy
 import re
 
 
-# Version 1 is the contract that is currently present on the live board.  The
-# priority/dependency immutability rules are a contract change, not merely an
-# implementation detail, so new writes must be explicitly stamped as v2.
-CURRENT_SCHEMA_VERSION = 2
+# Version 3 keeps the routing invariants while removing duplicated prose from
+# every Trello PM-DATA block. Older cards migrate through adjacent versions.
+CURRENT_SCHEMA_VERSION = 3
 GOVERNANCE_POLICY = {
     "source_of_truth": "trello",
     "control_hierarchy": ["ai-project-manager", "ai-orchestrator", "agents"],
     "audit_authority": "ai-orchestrator",
 }
-DOD_ROUTING_POLICY = {
+_VERBOSE_DOD_ROUTING_POLICY = {
     "implementation_owner": "agent",
     "audit_owner": "ai-orchestrator",
     "audit_execution": "ai-orchestrator-only; agents and PM cannot issue the verdict",
@@ -57,6 +56,30 @@ DOD_ROUTING_POLICY = {
         "must never be recomputed from status, provider, phase, or card text"
     ),
 }
+DOD_ROUTING_POLICY = {
+    "implementation_owner": "agent",
+    "audit_owner": "ai-orchestrator",
+    "audit_execution": "orchestrator-only; agents/PM cannot issue verdict",
+    "audit_marker_required": "accepted/rejected or independent audit",
+    "audit_evidence_rule": "existing Git/test state is audit evidence; no new commit required",
+    "test_execution_rule": "orchestrator owns test execution/results; agents never run tests",
+    "commit_rule": "agents never commit; controller finalizer only",
+    "ready_gate": "no controller-only verification in implementation DoD",
+    "ready_requirements": [
+        "goal and DoD prepared before queue admission",
+        "every DoD item has implementation or audit phase",
+        "audit items identify the controller audit marker",
+        "existing-state checks explicitly require no new commit",
+    ],
+    "dispatch_requirements": [
+        "Pracuje se requires implementation DoD",
+        "audit-only work routes to Testování",
+        "audit rejection becomes feedback plus implementation rework on next tick",
+        "non-rework audit gate may remain in Testování",
+    ],
+    "inbox_dependency_rule": "zero-based depends_on; cycles/missing fail closed; priority orders ready siblings",
+    "repair_priority_rule": "confirmed corrections/regressions/rework=P5; priority immutable after intake",
+}
 # The first version of the routing contract was already written to live cards.
 # It is a known migration source, not an invalid user-authored contract.
 _LEGACY_DOD_ROUTING_POLICY_V1 = {
@@ -75,11 +98,11 @@ _LEGACY_DOD_ROUTING_POLICY_V1 = {
         "audit-only work is routed to Testování",
     ],
 }
-_LEGACY_DOD_ROUTING_POLICY_V2 = deepcopy(DOD_ROUTING_POLICY)
+_LEGACY_DOD_ROUTING_POLICY_V2 = deepcopy(_VERBOSE_DOD_ROUTING_POLICY)
 _LEGACY_DOD_ROUTING_POLICY_V2.pop("audit_execution")
-_LEGACY_DOD_ROUTING_POLICY_V3 = deepcopy(DOD_ROUTING_POLICY)
+_LEGACY_DOD_ROUTING_POLICY_V3 = deepcopy(_VERBOSE_DOD_ROUTING_POLICY)
 _LEGACY_DOD_ROUTING_POLICY_V3.pop("test_execution_rule")
-_LEGACY_DOD_ROUTING_POLICY_V4 = deepcopy(DOD_ROUTING_POLICY)
+_LEGACY_DOD_ROUTING_POLICY_V4 = deepcopy(_VERBOSE_DOD_ROUTING_POLICY)
 _LEGACY_DOD_ROUTING_POLICY_V4["dispatch_requirements"] = [
     "at least one implementation DoD item remains for Pracuje se",
     "audit-only work is routed to Testování",
@@ -91,7 +114,7 @@ _LEGACY_DOD_ROUTING_POLICY_V4["dispatch_requirements"] = [
 # Hotovo card cannot make the whole board unsafe on every tick.
 _LEGACY_DOD_ROUTING_POLICY_V5 = deepcopy(_LEGACY_DOD_ROUTING_POLICY_V4)
 _LEGACY_DOD_ROUTING_POLICY_V5.pop("test_execution_rule")
-_LEGACY_DOD_ROUTING_POLICY_V6 = deepcopy(DOD_ROUTING_POLICY)
+_LEGACY_DOD_ROUTING_POLICY_V6 = deepcopy(_VERBOSE_DOD_ROUTING_POLICY)
 _LEGACY_DOD_ROUTING_POLICY_V6.pop("inbox_dependency_rule")
 # Some live cards contain the previous three-item dispatch policy together
 # with test_execution_rule, but were written before dependency metadata was
@@ -106,13 +129,13 @@ _LEGACY_DOD_ROUTING_POLICY_V8 = deepcopy(_LEGACY_DOD_ROUTING_POLICY_V5)
 _LEGACY_DOD_ROUTING_POLICY_V8.pop("inbox_dependency_rule")
 # Cards written after dependency support but before the mandatory repair
 # priority rule are safe to migrate; other policy mismatches remain fail-closed.
-_LEGACY_DOD_ROUTING_POLICY_V9 = deepcopy(DOD_ROUTING_POLICY)
+_LEGACY_DOD_ROUTING_POLICY_V9 = deepcopy(_VERBOSE_DOD_ROUTING_POLICY)
 _LEGACY_DOD_ROUTING_POLICY_V9.pop("repair_priority_rule")
 # Production cards also exist in intermediate shapes that already contain
 # the test-evidence rule but predate both the Inbox dependency and repair
 # priority rules. Keep these exact values migratable instead of rejecting
 # historical cards forever.
-_LEGACY_DOD_ROUTING_POLICY_V10 = deepcopy(DOD_ROUTING_POLICY)
+_LEGACY_DOD_ROUTING_POLICY_V10 = deepcopy(_VERBOSE_DOD_ROUTING_POLICY)
 _LEGACY_DOD_ROUTING_POLICY_V10.pop("inbox_dependency_rule")
 _LEGACY_DOD_ROUTING_POLICY_V10.pop("repair_priority_rule")
 _LEGACY_DOD_ROUTING_POLICY_V11 = deepcopy(_LEGACY_DOD_ROUTING_POLICY_V10)
@@ -127,11 +150,24 @@ _LEGACY_DOD_ROUTING_POLICY_V12.pop("test_execution_rule")
 # complete current dispatch/test policy, but before the intake-only priority
 # immutability sentence was added. This exact historical form is safe to
 # migrate; arbitrary policy changes remain fail-closed.
-_LEGACY_DOD_ROUTING_POLICY_V13 = deepcopy(DOD_ROUTING_POLICY)
+_LEGACY_DOD_ROUTING_POLICY_V13 = deepcopy(_VERBOSE_DOD_ROUTING_POLICY)
 _LEGACY_DOD_ROUTING_POLICY_V13["repair_priority_rule"] = (
     "corrective work, confirmed bugs, regressions, and rework are always P5; "
     "an explicit lower source label cannot demote them"
 )
+_LEGACY_DOD_ROUTING_POLICY_VERBOSE = deepcopy(_VERBOSE_DOD_ROUTING_POLICY)
+# A compact policy shape may have appeared in development fixtures before the
+# schema stamp was advanced. Keep those exact safe variants migratable too.
+_LEGACY_DOD_ROUTING_POLICY_COMPACT_NO_TEST = deepcopy(DOD_ROUTING_POLICY)
+_LEGACY_DOD_ROUTING_POLICY_COMPACT_NO_TEST.pop("test_execution_rule")
+_LEGACY_DOD_ROUTING_POLICY_COMPACT_TERMINAL = deepcopy(
+    _LEGACY_DOD_ROUTING_POLICY_COMPACT_NO_TEST
+)
+_LEGACY_DOD_ROUTING_POLICY_COMPACT_TERMINAL["dispatch_requirements"] = [
+    "at least one implementation DoD item remains for Pracuje se",
+    "audit-only work is routed to Testování",
+    "audit rejection is persisted as feedback and consumed by the next tick",
+]
 
 
 class CardContractError(ValueError):
@@ -175,11 +211,38 @@ def _migrate_schema_1_to_2(data: dict) -> None:
     data["schema_version"] = 2
 
 
+def _migrate_schema_2_to_3(data: dict) -> None:
+    """Replace the verbose routing policy with its compact equivalent."""
+    policy = data.get("dod_routing_policy")
+    known_legacy_policies = (
+        _LEGACY_DOD_ROUTING_POLICY_V1,
+        _LEGACY_DOD_ROUTING_POLICY_V2,
+        _LEGACY_DOD_ROUTING_POLICY_V3,
+        _LEGACY_DOD_ROUTING_POLICY_V4,
+        _LEGACY_DOD_ROUTING_POLICY_V5,
+        _LEGACY_DOD_ROUTING_POLICY_V6,
+        _LEGACY_DOD_ROUTING_POLICY_V7,
+        _LEGACY_DOD_ROUTING_POLICY_V8,
+        _LEGACY_DOD_ROUTING_POLICY_V9,
+        _LEGACY_DOD_ROUTING_POLICY_V10,
+        _LEGACY_DOD_ROUTING_POLICY_V11,
+        _LEGACY_DOD_ROUTING_POLICY_V12,
+        _LEGACY_DOD_ROUTING_POLICY_V13,
+        _LEGACY_DOD_ROUTING_POLICY_VERBOSE,
+        _LEGACY_DOD_ROUTING_POLICY_COMPACT_NO_TEST,
+        _LEGACY_DOD_ROUTING_POLICY_COMPACT_TERMINAL,
+    )
+    if policy is None or policy == DOD_ROUTING_POLICY or policy in known_legacy_policies:
+        data["dod_routing_policy"] = deepcopy(DOD_ROUTING_POLICY)
+    data["schema_version"] = 3
+
+
 # This ordered, adjacent-version table is the sole schema migration authority.
 # Loading, validation, and maintenance repair all pass through it.
 _SCHEMA_MIGRATIONS = {
     0: _migrate_schema_0_to_1,
     1: _migrate_schema_1_to_2,
+    2: _migrate_schema_2_to_3,
 }
 
 

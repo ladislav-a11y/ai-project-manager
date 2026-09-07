@@ -46,6 +46,36 @@ def test_card_update_bounds_untrusted_audit_history_before_trello_write():
     assert priority_from_labels([]) == 0
 
 
+def test_card_update_drops_provider_history_and_rendered_slack_from_contract():
+    project = ProjectRecord(
+        name="P2 — compact contract",
+        priority=2,
+        extra_data={
+            "provider_selection_history": [{"run_id": "old", "slack": "x" * 5000}],
+            "provider_statuses": {"groq": {"state": "LIMITED", "retry_at": "later"}},
+            "provider_selection": {
+                "provider": "codex",
+                "actual_provider": "codex",
+                "actual_model": "gpt-5.6-luna",
+                "provider_statuses": {"groq": {"state": "LIMITED"}},
+                "slack_notifications": [{"message": "x" * 5000}],
+                "live_evidence": {"duplicate": True},
+            },
+        },
+    )
+
+    updates = card_updates_from_project(project, {"Připraveno": "list-1"})
+    data = _parse_data_block(updates["desc"])
+
+    assert "provider_selection_history" not in data
+    assert data["provider_statuses"]["groq"]["state"] == "LIMITED"
+    assert data["provider_selection"] == {
+        "provider": "codex",
+        "actual_provider": "codex",
+        "actual_model": "gpt-5.6-luna",
+    }
+
+
 
 def test_oversized_provider_stop_reason_is_bounded_without_losing_error_signature():
     project = ProjectRecord(

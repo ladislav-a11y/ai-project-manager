@@ -871,10 +871,12 @@ def test_audit_readback_preserves_live_provider_model_and_slack_receipt():
 
     assert outcome.ran is True
     metadata = seen["readback"]["contract_metadata"]
-    evidence = metadata["provider_selection_history"][0]["live_evidence"]
-    assert evidence["active_model"] == "gpt-5.6-luna"
-    assert evidence["active_provider"] == "codex"
-    assert evidence["run_id"] == "implementation-live-run"
+    selection = metadata["implementation_provider_selection"]
+    assert selection["actual_model"] == "gpt-5.6-luna"
+    assert selection["actual_provider"] == "codex"
+    assert selection["run_id"] == "implementation-live-run"
+    assert "provider_selection_history" not in metadata
+    assert "provider_statuses" not in metadata
 
 
 def test_audit_readback_preserves_inbox_split_priority_identity_dependency_and_workflow_state():
@@ -926,7 +928,19 @@ def test_audit_readback_preserves_inbox_split_priority_identity_dependency_and_w
     # The readback is captured fresh from the live Trello card, i.e. after a
     # full sync-to-Trello -> project_from_card round trip and Card Contract
     # migration, not merely echoed from the in-memory ProjectRecord.
-    assert seen["readback"]["contract_metadata"]["inbox_preparation"] == inbox_preparation
+    assert seen["readback"]["contract_metadata"]["inbox_preparation"] == {
+        key: inbox_preparation[key]
+        for key in (
+            "source_card_id",
+            "source_card_url",
+            "content_sha256",
+            "subtask_index",
+            "subtask_count",
+            "scope",
+            "depends_on_subtask_indices",
+            "execution_order",
+        )
+    }
 
 
 def test_capture_live_trello_readback_reflects_persisted_card_not_stale_in_memory_claim():
@@ -976,7 +990,19 @@ def test_capture_live_trello_readback_reflects_persisted_card_not_stale_in_memor
     readback = _capture_live_trello_readback(client, project)
 
     assert readback["status"] == "ok"
-    assert readback["contract_metadata"]["inbox_preparation"] == inbox_preparation
+    assert readback["contract_metadata"]["inbox_preparation"] == {
+        key: inbox_preparation[key]
+        for key in (
+            "source_card_id",
+            "source_card_url",
+            "content_sha256",
+            "subtask_index",
+            "subtask_count",
+            "scope",
+            "depends_on_subtask_indices",
+            "execution_order",
+        )
+    }
     assert readback["priority"] == 2
     assert readback["checkpoint"] == {"step": 3}
 
