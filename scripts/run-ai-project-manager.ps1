@@ -152,30 +152,13 @@ try {
         'AI Orchestrator' = 'https://github.com/ladislav-a11y/ai-orchestrator.git'
         'ai-orchestrator' = 'https://github.com/ladislav-a11y/ai-orchestrator.git'
     } | ConvertTo-Json -Compress)
+    # AI Project Manager intentionally has no static per-file finalize scope.
+    # The controller finalizer derives its scope from the checkout's actual
+    # dirty paths at finalization time, still stages paths explicitly, and
+    # independently rejects transient/cache artifacts. A static filename
+    # allowlist made legitimate atomic work (for example README.md) impossible
+    # to finalize whenever the task touched a file omitted from this launcher.
     $finalizePaths = [ordered]@{
-        'AI Project Manager' = @(
-            'ai_project_manager/cli.py',
-            'ai_project_manager/config.py',
-            'ai_project_manager/daemon.py',
-            'ai_project_manager/dod_validator.py',
-            'ai_project_manager/inbox.py',
-            'ai_project_manager/inbox_preparation.py',
-            'ai_project_manager/orchestrator_runner.py',
-            'ai_project_manager/trello_sync.py',
-            'scripts/run-ai-project-manager.ps1',
-            'scripts/verify_once_resolves_project_path.py',
-            'tests/test_cli.py',
-            'tests/test_config.py',
-            'tests/test_daemon.py',
-            'tests/test_dod_validator.py',
-            'tests/test_handoff_e2e.py',
-            'tests/test_inbox.py',
-            'tests/test_orchestrator_runner.py',
-            'tests/test_recovery_e2e.py',
-            'tests/test_trello_sync.py',
-            'WORKFLOW.md',
-            'PROJECT_AUDIT_ROADMAP.md'
-        )
         # AI Orchestrator's current implementation scope is deliberately
         # explicit: the handoff document in that checkout is pre-existing
         # untracked context and must never enter this controller commit.

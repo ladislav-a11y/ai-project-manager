@@ -67,6 +67,21 @@ def test_runner_delegates_model_selection_to_providers() -> None:
     assert "Model selection belongs to each provider" in source
 
 
+def test_runner_does_not_hardcode_ai_project_manager_finalize_paths() -> None:
+    """AI Project Manager finalization must use the controller's dynamic dirty-path
+    scope. A launcher-level per-file allowlist goes stale whenever a legitimate
+    task edits a new file (regression: README.md on 2026-09-07)."""
+    source = (SCRIPTS / "run-ai-project-manager.ps1").read_text(encoding="utf-8")
+
+    finalize_block = source[
+        source.index("$finalizePaths = [ordered]@{"):
+        source.index("$env:AI_ORCHESTRATOR_FINALIZE_PATHS")
+    ]
+    assert "'AI Project Manager' = @(" not in finalize_block
+    assert "'AI Orchestrator' = @(" in finalize_block
+    assert "'ai-orchestrator' = @(" in finalize_block
+
+
 def test_runner_authorizes_push_remotes_for_ai_project_manager_and_station_agent() -> None:
     source = (SCRIPTS / "run-ai-project-manager.ps1").read_text(encoding="utf-8")
 
