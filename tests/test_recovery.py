@@ -150,6 +150,27 @@ def test_legacy_provider_metadata_diagnostic_is_requeued_for_retry():
     assert project.blocked_by is None
 
 
+
+def test_groq_tool_call_validation_failure_is_requeued_for_retry():
+    """A provider tool-schema mismatch fixed in AO must not require human triage."""
+    project = _blocked(
+        blocked_by=(
+            "Error code: 400 - {'error': {'message': "
+            "\"Tool call validation failed: attempted to call tool 'commentary' "
+            "which was not in request.tools\", 'code': 'tool_use_failed'}}"
+        ),
+        checkpoint={"run_id": "keep-run", "completed_dod_indices": []},
+    )
+
+    outcome = recover_project(project, NOW)
+
+    assert outcome.action == "requeued"
+    assert outcome.cause == BlockCause.PROVIDER_ERROR_RESOLVED
+    assert project.status == ProjectStatus.READY
+    assert project.blocked_by is None
+    assert project.checkpoint == {"run_id": "keep-run", "completed_dod_indices": []}
+
+
 def test_malformed_provider_json_response_is_requeued_for_retry():
     """A schema/protocol response error must not strand the card in human_required."""
     project = _blocked(

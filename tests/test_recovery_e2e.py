@@ -134,6 +134,69 @@ def test_blocked_card_is_reviewed_repaired_requeued_and_work_continues_same_tick
     assert reloaded.last_output == "resumed after recovery"
 
 
+
+def test_tool_call_validation_block_is_recovered_and_dispatched_same_tick(tmp_path):
+    project = ProjectRecord(
+        name="Dashboard",
+        priority=3,
+        status=ProjectStatus.BLOCKED,
+        orchestrator_ready_task="Implement the live status widget",
+        checkpoint={"run_id": "stale-run", "completed_dod_indices": []},
+        blocked_by=(
+            "Error code: 400 - {'error': {'message': "
+            "\"Tool call validation failed: attempted to call tool 'commentary' "
+            "which was not in request.tools\", 'code': 'tool_use_failed'}}"
+        ),
+    )
+    client = InMemoryTrelloClient()
+    created = sync_project_to_trello(client, project)
+    project.trello_card_id = created["id"]
+
+    registry = ProviderRegistry()
+    registry.mark_available("groq")
+
+    outbox_dir = tmp_path / "outbox"
+    subprocess_run, calls = _fake_ai_orchestrator(
+        outbox_dir,
+        responses={
+            "Dashboard": {
+                "checkpoint": {"run_id": "new-run", "completed_dod_indices": [0]},
+                "last_output": "continued after AO tool-schema fix",
+                "next_step": "audit",
+                "status": "in_progress",
+            }
+        },
+    )
+    run_fn = build_run_fn(
+        registry,
+        command=["ai-orchestrator"],
+        project_paths={"Dashboard": _checkout(tmp_path, "dashboard-checkout")},
+        spec_dir=str(tmp_path / "specs"),
+        outbox_dir=str(outbox_dir),
+        subprocess_run=subprocess_run,
+    )
+
+    outcome = run_tick(
+        client,
+        registry,
+        run_fn,
+        default_providers=["groq"],
+        lock_manager=ProjectLockManager(),
+        provider_state_path=str(tmp_path / "provider_state.json"),
+    )
+
+    assert outcome.ran is True
+    assert len(calls) == 1
+    spec = parse_spec_markdown(open(_args_to_dict(calls[0])["spec"], encoding="utf-8").read())
+    assert spec["checkpoint"] == {"run_id": "stale-run", "completed_dod_indices": []}
+
+    id_to_name, _ = build_list_maps(client)
+    reloaded = project_from_card(client.get_card(project.trello_card_id), id_to_name)
+    assert reloaded.blocked_by is None
+    assert reloaded.status == ProjectStatus.IN_PROGRESS
+    assert reloaded.checkpoint == {"run_id": "new-run", "completed_dod_indices": [0]}
+
+
 def test_blocked_card_needing_a_human_is_never_dispatched_to_the_real_orchestrator(tmp_path):
     project = ProjectRecord(
         name="Dashboard",
