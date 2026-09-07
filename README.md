@@ -267,3 +267,5 @@ back to a paid LLM. These rules apply equally to Inbox intake, implementation
 and independent audit.
 
 Example: `{"claude":["claude-opus-4-1","claude-sonnet-4"],"codex":["gpt-5.6"]}`.
+
+Groq free provider is intended primarily for small, atomic tasks.
