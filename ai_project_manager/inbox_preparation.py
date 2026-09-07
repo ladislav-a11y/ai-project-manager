@@ -12,6 +12,7 @@ closed.
 
 from __future__ import annotations
 
+import os
 import re
 from dataclasses import dataclass, replace
 from pathlib import Path
@@ -28,6 +29,10 @@ _SENTENCE_RE = re.compile(r"(?<=[.!?])\s+|\"(?=[A-ZÁČĎÉĚÍŇÓŘŠŤÚŮÝ�
 # fail closed by removing everything from its opening marker onward instead of
 # leaking arbitrary contract/history text into the next provider request.
 _PM_DATA_BLOCK_RE = re.compile(r"<!--\s*PM-DATA.*?(?:-->|\Z)", re.DOTALL)
+_WORKING_DIRECTORY_LINE_RE = re.compile(
+    r"^\s*Pracovní\s+adresář\s*:\s*(?P<path>.*?)\s*$",
+    re.IGNORECASE | re.MULTILINE,
+)
 
 INBOX_AUDIT_EVIDENCE_TEXT = (
     "Nezávislý audit ai-orchestratoru ověří splnění implementačního DoD pomocí "
@@ -474,13 +479,13 @@ def resolve_project_key(
 ) -> tuple[Optional[str], Optional[str]]:
     """Resolve an existing project without guessing across repositories.
 
-    Explicit card mappings and identity labels remain authoritative.  If
-    neither is present, one configured identity in the title is accepted
-    (including the explicit Czech aliases above).  A body-only match is
-    accepted only when exactly one configured project is mentioned.  This
-    makes ``Oprava Station Agenta`` resolve to Station Agent even when the
-    description says that an AI Project Manager error caused it, while
-    multiple or absent matches still fail closed.
+    Explicit card mappings and identity labels remain authoritative.  An
+    optional ``Pracovní adresář:`` declaration is accepted only when its
+    normalized path matches exactly one configured checkout. If neither is
+    present, one configured identity in the title is accepted (including the
+    explicit Czech aliases above). A body-only match is accepted only when
+    exactly one configured project is mentioned. Multiple or absent matches
+    still fail closed.
     """
     card_id = str(card.get("id") or "")
     title = str(card.get("name") or "")
@@ -491,6 +496,23 @@ def resolve_project_key(
         if project_paths is not None and explicit not in project_paths:
             return None, "Explicitní projektová identita není v povolené mapě projektů."
         return explicit, None
+
+    if project_paths is not None:
+        declared_path, path_reason = _declared_working_directory(card)
+        if path_reason:
+            return None, path_reason
+        if declared_path:
+            normalized_declared = _normalized_project_path(declared_path)
+            path_matches = [
+                str(identity).strip()
+                for identity, configured_path in project_paths.items()
+                if _normalized_project_path(str(configured_path)) == normalized_declared
+            ]
+            if len(path_matches) == 1:
+                return path_matches[0], None
+            if len(path_matches) > 1:
+                return None, "Pracovní adresář odpovídá více projektovým identitám."
+            return None, "Pracovní adresář není v povolené mapě projektů."
 
     labels = {
         str(label.get("name") if isinstance(label, dict) else label).strip()
@@ -519,6 +541,55 @@ def resolve_project_key(
             return None, "Popis Inbox karty obsahuje více projektových identit; vyžaduje lidské rozhodnutí."
 
     return None, "Chybí explicitní projektová identita (neprioritní Trello štítek nebo schválená mapa karty)."
+
+
+def _declared_working_directory(card: Mapping) -> tuple[Optional[str], Optional[str]]:
+    """Read the optional exact working-directory declaration from Inbox text."""
+    description = visible_inbox_description(card)
+    matches = list(_WORKING_DIRECTORY_LINE_RE.finditer(description))
+    if len(matches) > 1:
+        return None, "Inbox karta obsahuje více deklarací pracovního adresáře."
+    if not matches:
+        return None, None
+    path = matches[0].group("path").strip()
+    if not path:
+        return None, "Deklarace pracovního adresáře nesmí být prázdná."
+    return path, None
+
+
+def _normalized_project_path(path: str) -> str:
+    """Normalize a path for exact allowlist comparison on the host OS."""
+    value = str(path or "").strip()
+    try:
+        return os.path.normcase(os.path.normpath(str(Path(value).expanduser().resolve())))
+    except (OSError, RuntimeError):
+        return os.path.normcase(os.path.normpath(os.path.abspath(value)))
+
+
+def _project_key_form(value: str) -> str:
+    """Normalize separators for a unique PM/AO identity comparison."""
+    separated = str(value or "").casefold().replace("-", " ").replace("_", " ")
+    return " ".join(_WORD_RE.findall(separated))
+
+
+def _canonical_project_key(
+    value: str,
+    project_paths: Mapping[str, str],
+) -> Optional[str]:
+    """Map an AO identity to one exact PM allowlist key, or fail closed."""
+    candidate = str(value or "").strip()
+    keys = [str(key).strip() for key in project_paths if str(key).strip()]
+    exact = [key for key in keys if key == candidate]
+    if len(exact) == 1:
+        return exact[0]
+    folded = [key for key in keys if key.casefold() == candidate.casefold()]
+    if len(folded) == 1:
+        return folded[0]
+    form = _project_key_form(candidate)
+    if not form:
+        return None
+    normalized = [key for key in keys if _project_key_form(key) == form]
+    return normalized[0] if len(normalized) == 1 else None
 
 
 def _configured_project_matches(text: str, project_paths: Mapping[str, str]) -> list[str]:
@@ -602,9 +673,10 @@ def _task_project_key(
     bounded scope matching and source inheritance behavior.
     """
     if task.project_key:
-        if project_paths is None or task.project_key in project_paths:
+        if project_paths is None:
             return task.project_key
-        return None
+        canonical = _canonical_project_key(task.project_key, project_paths)
+        return canonical or source_key
     if not project_paths:
         return source_key
     matches = _configured_project_matches(f"{task.scope} {task.task}", project_paths)
@@ -718,23 +790,31 @@ def prepare_inbox_card(
     # source itself has no identity but every planned task names an allowlisted
     # project, that is sufficient and must never fall through to generated
     # checkout creation. Conflicts/unknown keys fail closed.
-    planned_project_keys = {
+    raw_planned_project_keys = {
         str(task.project_key).strip()
         for task in (planned_tasks or ())
         if task.project_key and str(task.project_key).strip()
     }
-    if planned_tasks is not None and planned_project_keys:
-        unknown_keys = (
-            sorted(key for key in planned_project_keys if key not in project_paths)
-            if project_paths is not None
-            else []
-        )
+    if project_paths is None:
+        planned_project_keys = set(raw_planned_project_keys)
+        unknown_keys: list[str] = []
+    else:
+        planned_project_keys = set()
+        unknown_keys = []
+        for raw_key in sorted(raw_planned_project_keys):
+            canonical = _canonical_project_key(raw_key, project_paths)
+            if canonical is None:
+                unknown_keys.append(raw_key)
+            else:
+                planned_project_keys.add(canonical)
+    if planned_tasks is not None and (planned_project_keys or unknown_keys):
         if unknown_keys:
-            project_key = None
-            human_reason = (
-                "AI planner vrátil projektovou identitu mimo povolenou mapu projektů: "
-                + ", ".join(unknown_keys)
-            )
+            if not (allow_new_project and not project_key and not planned_project_keys):
+                project_key = None
+                human_reason = (
+                    "AI planner vrátil projektovou identitu mimo povolenou mapu projektů: "
+                    + ", ".join(unknown_keys)
+                )
         elif len(planned_project_keys) == 1:
             planner_key = next(iter(planned_project_keys))
             if project_key and project_key != planner_key:

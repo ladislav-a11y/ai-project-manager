@@ -134,6 +134,13 @@ bez neprioritního štítku PM vytvoří stabilní izolovanou identitu ve tvaru
 konfigurovaným `AI_PM_PROJECTS_ROOT` a připraví kartu stejně jako ostatní
 úkoly. Tím se nový nápad nesmí sloučit s podobným existujícím projektem;
 neznámý nebo konfliktní štítek se naopak nikdy nepřepisuje odhadem.
+Volitelný řádek `Pracovní adresář: <cesta>` v uživatelském popisu je
+autoritativní pouze po přesné shodě s jedním checkoutem v
+`AI_PM_PROJECT_PATHS`; pro nový nápad není povinný a libovolná cesta se nikdy
+nepoužije. Identita planneru se vůči PM allowlistu sjednocuje jen při přesné
+shodě nebo jednoznačném převodu oddělovačů, například `station-agent` na
+`Station Agent`; neznámý či víceznačný výsledek zůstává fail-closed. Nový
+nepřiřazený nápad smí mít v planneru `project_key: null`.
 
 Při rozdělení zdrojové karty na více podúkolů se projektová identita řeší pro
 každý podúkol zvlášť z jeho vlastního rozsahu a textu, nikoli slepým

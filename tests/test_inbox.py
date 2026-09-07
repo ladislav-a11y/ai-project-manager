@@ -22,6 +22,7 @@ from ai_project_manager.inbox_preparation import (
     prepare_inbox_card,
     prepared_task_handoff_text,
     prioritize_inbox_cards,
+    resolve_project_key,
     task_execution_order,
     visible_inbox_description,
 )
@@ -1313,3 +1314,131 @@ def test_planner_project_key_prevents_generated_checkout_for_known_project(tmp_p
     labels = {label["name"] for label in card["labels"]}
     assert "AI Project Manager" in labels
     assert not (tmp_path / "generated-projects").exists()
+
+
+def test_working_directory_declaration_resolves_exact_configured_checkout():
+    card = {
+        "id": "source-path",
+        "name": "Nová funkce",
+        "desc": (
+            "Pracovní adresář: D:\\orchestrator\\station-agent\n"
+            "Doplnit funkce ovládání."
+        ),
+    }
+
+    assert resolve_project_key(
+        card,
+        visible_inbox_description(card),
+        {"Station Agent": r"D:\orchestrator\station-agent"},
+    ) == ("Station Agent", None)
+
+
+def test_working_directory_declaration_fails_closed_outside_allowlist():
+    card = {
+        "id": "source-unknown-path",
+        "name": "Nová funkce",
+        "desc": "Pracovní adresář: D:\\orchestrator\\jiný-projekt",
+    }
+
+    project_key, reason = resolve_project_key(
+        card,
+        visible_inbox_description(card),
+        {"Station Agent": r"D:\orchestrator\station-agent"},
+    )
+
+    assert project_key is None
+    assert reason == "Pracovní adresář není v povolené mapě projektů."
+
+
+def test_planner_slug_is_canonicalized_to_path_bound_project(tmp_path):
+    card = {
+        "id": "source-canonical",
+        "name": "Station agent - doplnění funkcí",
+        "desc": (
+            "Pracovní adresář: D:\\orchestrator\\station-agent\n"
+            "Doplnit funkce ovládání."
+        ),
+    }
+    task = PreparedTask(
+        title="Ovládání",
+        task="Doplnit funkce ovládání.",
+        next_step="Prověřit existující UI.",
+        scope="Station Agent UI",
+        priority=2.1,
+        priority_reason="nová funkce",
+        project_key="station-agent",
+    )
+
+    prepared = prepare_inbox_card(
+        card,
+        project_paths={"Station Agent": r"D:\orchestrator\station-agent"},
+        projects_root=str(tmp_path),
+        allow_new_project=True,
+        planned_tasks=(task,),
+    )
+
+    assert prepared.project_key == "Station Agent"
+    assert prepared.human_required_reason is None
+    assert prepared.generated_project is False
+    assert prepared.tasks[0].project_key == "Station Agent"
+
+
+def test_new_unbound_planner_task_gets_isolated_identity(tmp_path):
+    card = {
+        "id": "source-new",
+        "name": "Nová samostatná myšlenka",
+        "desc": "Vytvořit malý nástroj pro nový nápad.",
+    }
+    task = PreparedTask(
+        title="Nový nástroj",
+        task="Vytvořit malý nástroj.",
+        next_step="Navrhnout první strukturu.",
+        scope="Nový nástroj",
+        priority=2.1,
+        priority_reason="nový nápad",
+        project_key=None,
+    )
+
+    prepared = prepare_inbox_card(
+        card,
+        project_paths={"Station Agent": r"D:\orchestrator\station-agent"},
+        projects_root=str(tmp_path),
+        allow_new_project=True,
+        planned_tasks=(task,),
+    )
+
+    assert prepared.generated_project is True
+    assert prepared.human_required_reason is None
+    assert prepared.project_key.startswith("Nová samostatná myšlenka [Inbox ")
+    assert prepared.project_key.endswith("]")
+    assert prepared.tasks[0].project_key == prepared.project_key
+
+
+def test_new_unbound_planner_unknown_key_is_not_used_as_checkout_identity(tmp_path):
+    card = {
+        "id": "source-new-unknown",
+        "name": "Nová samostatná myšlenka",
+        "desc": "Vytvořit malý nástroj pro nový nápad.",
+    }
+    task = PreparedTask(
+        title="Nový nástroj",
+        task="Vytvořit malý nástroj.",
+        next_step="Navrhnout první strukturu.",
+        scope="Nový nástroj",
+        priority=2.1,
+        priority_reason="nový nápad",
+        project_key="invented-project-slug",
+    )
+
+    prepared = prepare_inbox_card(
+        card,
+        project_paths={"Station Agent": r"D:\orchestrator\station-agent"},
+        projects_root=str(tmp_path),
+        allow_new_project=True,
+        planned_tasks=(task,),
+    )
+
+    assert prepared.generated_project is True
+    assert prepared.human_required_reason is None
+    assert prepared.project_key != "invented-project-slug"
+    assert prepared.tasks[0].project_key == prepared.project_key

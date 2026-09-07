@@ -1895,6 +1895,10 @@ def test_inbox_planner_excludes_retired_provider_names_and_returns_validated_ai_
         registry,
         ["python", "orchestrator.py", "autonomous", "--no-commit"],
         subprocess_run=fake_subprocess,
+        project_paths={
+            "AI Project Manager": "D:/orchestrator/ai-project-manager",
+            "Station Agent": "D:/orchestrator/station-agent",
+        },
         selection_notifier=selections.append,
     )
     result = planner({"id": "source", "name": "Regrese", "desc": "Opravit regresi"}, [])
@@ -1952,6 +1956,10 @@ def test_inbox_planner_sends_only_human_source_text_and_project_identities():
         registry,
         ["python", "orchestrator.py", "autonomous", "--no-commit"],
         subprocess_run=fake_subprocess,
+        project_paths={
+            "AI Project Manager": "D:/orchestrator/ai-project-manager",
+            "Station Agent": "D:/orchestrator/station-agent",
+        },
     )
     source = {
         "id": "source",
@@ -1980,6 +1988,10 @@ def test_inbox_planner_sends_only_human_source_text_and_project_identities():
     assert "stale provider history" not in json.dumps(payload)
     assert payload["existing_projects"] == [
         {"name": "AI Project Manager", "project_key": "AI Project Manager"}
+    ]
+    assert payload["configured_projects"] == [
+        {"project_key": "AI Project Manager"},
+        {"project_key": "Station Agent"},
     ]
 
 

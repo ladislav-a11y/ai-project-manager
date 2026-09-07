@@ -212,6 +212,7 @@ def main(
         command=config.orchestrator.command,
         timeout_seconds=config.orchestrator.inbox_planner_timeout_seconds,
         selection_notifier=notify_inbox_selection,
+        project_paths=config.orchestrator.project_paths,
     )
 
     logger.info(

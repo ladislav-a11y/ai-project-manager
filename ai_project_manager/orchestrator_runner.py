@@ -450,6 +450,7 @@ def build_inbox_planner_fn(
     subprocess_run: Optional[Callable[..., "subprocess.CompletedProcess"]] = None,
     timeout_seconds: float = 180,
     selection_notifier: Optional[Callable[[dict], None]] = None,
+    project_paths: Optional[dict] = None,
 ):
     """Build the AI-only Inbox planner from the active provider allowlist.
 
@@ -485,6 +486,14 @@ def build_inbox_planner_fn(
                 {"name": project.name, "project_key": project.project_key}
                 for project in projects
                 if project.status.value != "done"
+            ],
+            "configured_projects": [
+                # The configured catalog remains authoritative even when a
+                # project has no active workflow card. Paths stay local; only
+                # the stable identities cross the planner boundary.
+                {"project_key": str(project_key).strip()}
+                for project_key in (project_paths or {})
+                if str(project_key).strip()
             ],
         }
         available = tuple(
