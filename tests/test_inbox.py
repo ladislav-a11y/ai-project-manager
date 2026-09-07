@@ -290,8 +290,46 @@ def test_preparation_splits_station_agent_card_and_assigns_each_scope_priority()
     assert len({task.priority for task in prepared.tasks}) > 1
     assert all(item.phase in {"implementation", "audit"} for item in prepared.dod)
     assert sum(item.phase == "implementation" for item in prepared.dod) == 1
-    assert sum(item.phase == "audit" for item in prepared.dod) == 3
+    assert sum(item.phase == "audit" for item in prepared.dod) == 2
     assert any(item.phase == "audit" for item in prepared.dod)
+    assert dod_contract_issues(prepared.dod) == []
+
+
+def test_documentation_task_gets_relevance_based_audit_not_mandatory_test_and_live_gates():
+    prepared = prepare_inbox_card(
+        {
+            "id": "docs-source",
+            "name": "AI Project Manager README documentation",
+            "desc": "Do README přidat jednu přesnou větu.",
+            "labels": [{"name": "AI Project Manager"}],
+        },
+        project_paths={"AI Project Manager": "D:/pm"},
+        planned_tasks=(
+            PreparedTask(
+                title="README documentation",
+                task="Přidat přesnou větu do README.md.",
+                next_step="Upravit pouze README.md.",
+                scope="README documentation",
+                project_key="AI Project Manager",
+            ),
+        ),
+    )
+
+    audit_items = [item.text for item in prepared.dod if item.phase == "audit"]
+    assert len(audit_items) == 2
+    evidence_item, verdict_item = audit_items
+    assert "relevantních pro povahu změny" in evidence_item
+    assert "podle potřeby" in evidence_item
+    assert "nerelevantní typ důkazu není povinný" in evidence_item
+    assert "accepted / rejected" in verdict_item
+    assert not any(
+        text.startswith("Nezávislý audit ai-orchestratoru provede cílené regresní testy")
+        for text in audit_items
+    )
+    assert not any(
+        text.startswith("Nezávislý audit ai-orchestratoru ověří relevantní chování v živém prostředí")
+        for text in audit_items
+    )
     assert dod_contract_issues(prepared.dod) == []
 
 

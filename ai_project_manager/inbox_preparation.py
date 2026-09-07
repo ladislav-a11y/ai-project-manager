@@ -25,6 +25,18 @@ _EXPLICIT_PRIORITY_RE = re.compile(r"^P([0-5](?:\.\d+)?)$", re.IGNORECASE)
 _SENTENCE_RE = re.compile(r"(?<=[.!?])\s+|\"(?=[A-ZÁČĎÉĚÍŇÓŘŠŤÚŮÝŽ])")
 _PM_DATA_BLOCK_RE = re.compile(r"<!--\s*PM-DATA.*?-->", re.DOTALL)
 
+INBOX_AUDIT_EVIDENCE_TEXT = (
+    "Nezávislý audit ai-orchestratoru ověří splnění implementačního DoD pomocí "
+    "konkrétních důkazů relevantních pro povahu změny, zkontroluje skutečný stav "
+    "checkoutu a podle potřeby použije statické kontroly, testy nebo live ověření; "
+    "nerelevantní typ důkazu není povinný a nový commit není pro tento auditní bod "
+    "vyžadován."
+)
+INBOX_AUDIT_VERDICT_TEXT = (
+    "Nezávislý audit ai-orchestrator vydá accepted / rejected verdikt s konkrétním "
+    "odůvodněním."
+)
+
 # Explicit Czech inflection variants for stable production project names.
 # This is intentionally a small allowlist, not fuzzy matching.
 _PROJECT_IDENTITY_ALIASES = {
@@ -612,16 +624,21 @@ def split_tasks(source_name: str, text: str, project_key: Optional[str]) -> tupl
 
 
 def build_dod(tasks: tuple[PreparedTask, ...]) -> tuple[DoDItem, ...]:
-    """Create a complete, phase-labelled DoD suitable for Ready admission."""
+    """Create a complete, phase-labelled DoD suitable for Ready admission.
+
+    The planner defines what must be implemented, not which proof technique an
+    independent auditor must use.  The auditor chooses evidence appropriate to
+    the actual change: static checks, tests and live verification are tools,
+    not universal mandatory gates.
+    """
     scopes = ", ".join(task.scope for task in tasks)
     return (
-        DoDItem(text=f"Implementovat připravené části Inbox požadavku: {scopes}.", phase="implementation"),
-        DoDItem(text="Nezávislý audit ai-orchestratoru provede cílené regresní testy a uvede konkrétní výsledek; nový commit není pro tento auditní bod vyžadován.", phase="audit"),
-        # Live/test verification is controller-owned evidence.  Keeping it
-        # out of the implementation phase prevents a worker from receiving a
-        # task it is not allowed to complete.
-        DoDItem(text="Nezávislý audit ai-orchestratoru ověří relevantní chování v živém prostředí a zapíše konkrétní důkaz; nový commit není pro tento auditní bod vyžadován.", phase="audit"),
-        DoDItem(text="Nezávislý audit ai-orchestrator vydá accepted / rejected verdikt.", phase="audit"),
+        DoDItem(
+            text=f"Implementovat připravené části Inbox požadavku: {scopes}.",
+            phase="implementation",
+        ),
+        DoDItem(text=INBOX_AUDIT_EVIDENCE_TEXT, phase="audit"),
+        DoDItem(text=INBOX_AUDIT_VERDICT_TEXT, phase="audit"),
     )
 
 

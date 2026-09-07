@@ -28,7 +28,12 @@ from datetime import datetime, timezone
 from typing import Optional
 
 from .models import DoDItem, GitHubRef, GoogleDriveRef, ProjectRecord, ProjectStatus
-from .inbox_preparation import derive_priority, is_repair_request
+from .inbox_preparation import (
+    INBOX_AUDIT_EVIDENCE_TEXT,
+    INBOX_AUDIT_VERDICT_TEXT,
+    derive_priority,
+    is_repair_request,
+)
 from .trello_client import MAX_TRELLO_DESC_CHARS
 from .card_contract import (
     CURRENT_SCHEMA_VERSION,
@@ -251,6 +256,9 @@ _CURRENT_INBOX_LIVE_TEXT = (
     "Nezávislý audit ai-orchestratoru ověří relevantní chování v živém prostředí "
     "a zapíše konkrétní důkaz; nový commit není pro tento auditní bod vyžadován."
 )
+_LEGACY_INBOX_VERDICT_TEXT = (
+    "Nezávislý audit ai-orchestrator vydá accepted / rejected verdikt."
+)
 _LEGACY_INBOX_WORKER_SUFFIX = (
     " Zachovat chování mimo tento rozsah; dokončení doložit testem a relevantním live důkazem."
 )
@@ -423,38 +431,151 @@ def _parse_contract_data(desc: str) -> dict:
     return migrate_and_validate(_raw_contract_data(desc))
 
 
-def _migrate_legacy_prepared_card(data: dict, card: dict, priority: int) -> bool:
-    """Upgrade known PM-generated Inbox metadata before routing validation.
+def _migrate_known_inbox_audit_items(
+    container: list,
+    *,
+    completed_indices: Optional[set[int]] = None,
+) -> tuple[bool, list[int]]:
+    """Migrate only the exact PM-generated test+live audit pair.
 
-    A previous PM version emitted an audit-phase sentence that was
-    controller-owned in meaning but lacked the explicit independent-audit
-    marker required by the current Card Contract. Existing cards are repaired
-    in memory first and persisted through the normal PM sync path.
+    The old planner imposed regression tests and live execution on every task.
+    Replace that known pair with one relevance-based independent-audit item.
+    User-authored wording is never inferred or rewritten.  When checkpoint
+    indices are supplied, fold them into the old checked state before changing
+    list positions, then return indices matching the migrated checked state.
     """
-    changed = False
-    for container in (
-        data.get("dod"),
-        (data.get("inbox_preparation") or {}).get("dod"),
-    ):
-        if not isinstance(container, list):
+    test_texts = {_LEGACY_INBOX_AUDIT_TEXT, _CURRENT_INBOX_AUDIT_TEXT}
+    live_texts = {_LEGACY_INBOX_LIVE_TEXT, _CURRENT_INBOX_LIVE_TEXT}
+    test_indices = [
+        index for index, item in enumerate(container)
+        if isinstance(item, dict) and item.get("text") in test_texts
+    ]
+    live_indices = [
+        index for index, item in enumerate(container)
+        if isinstance(item, dict) and item.get("text") in live_texts
+    ]
+    if len(test_indices) != 1 or len(live_indices) != 1:
+        return False, sorted(completed_indices or ())
+
+    completed = set(completed_indices or ())
+    effective_checked = [
+        bool(item.get("checked")) or index in completed
+        if isinstance(item, dict) else index in completed
+        for index, item in enumerate(container)
+    ]
+    first = min(test_indices[0], live_indices[0])
+    second = max(test_indices[0], live_indices[0])
+    merged_checked = effective_checked[test_indices[0]] and effective_checked[live_indices[0]]
+
+    replacement = {
+        "text": INBOX_AUDIT_EVIDENCE_TEXT,
+        "checked": merged_checked,
+        "phase": "audit",
+    }
+    migrated: list = []
+    for index, item in enumerate(container):
+        if index == first:
+            migrated.append(replacement)
+        elif index == second:
             continue
-        for item in container:
-            if not isinstance(item, dict):
-                continue
-            if item.get("text") == _LEGACY_INBOX_AUDIT_TEXT:
-                item["text"] = _CURRENT_INBOX_AUDIT_TEXT
-                item["phase"] = "audit"
+        else:
+            copied = dict(item) if isinstance(item, dict) else item
+            if isinstance(copied, dict) and copied.get("text") == _LEGACY_INBOX_VERDICT_TEXT:
+                copied["text"] = INBOX_AUDIT_VERDICT_TEXT
+                copied["phase"] = "audit"
+            if isinstance(copied, dict):
+                copied["checked"] = effective_checked[index]
+            migrated.append(copied)
+    container[:] = migrated
+    migrated_completed = [
+        index for index, item in enumerate(container)
+        if isinstance(item, dict) and bool(item.get("checked"))
+    ]
+    return True, migrated_completed
+
+
+def _migrate_legacy_prepared_card(data: dict, card: dict, priority: int) -> bool:
+    """Upgrade only known PM-generated Inbox metadata before validation."""
+    changed = False
+    preparation = data.get("inbox_preparation")
+
+    # The relevance-based audit migration is intentionally restricted to
+    # cards carrying PM Inbox preparation metadata.  This proves provenance
+    # and prevents an accidental rewrite of user-authored DoD that merely
+    # resembles an old PM sentence.
+    if isinstance(preparation, dict):
+        checkpoint = data.get("checkpoint")
+        completed = set()
+        if isinstance(checkpoint, dict):
+            completed = {
+                value
+                for value in checkpoint.get("completed_dod_indices", [])
+                if isinstance(value, int) and not isinstance(value, bool)
+            }
+
+        top_level = data.get("dod")
+        top_changed = False
+        if isinstance(top_level, list):
+            top_changed, migrated_completed = _migrate_known_inbox_audit_items(
+                top_level,
+                completed_indices=completed,
+            )
+            if top_changed:
+                if not isinstance(checkpoint, dict):
+                    checkpoint = {}
+                    data["checkpoint"] = checkpoint
+                checkpoint["completed_dod_indices"] = migrated_completed
                 changed = True
-            elif (
-                item.get("text") == _LEGACY_INBOX_LIVE_TEXT
-                and item.get("phase") == "implementation"
-            ):
-                # Old intake made the worker responsible for live evidence.
-                # That is controller-owned audit work and could deadlock a
-                # worker run even when the implementation itself was done.
-                item["text"] = _CURRENT_INBOX_LIVE_TEXT
-                item["phase"] = "audit"
-                changed = True
+
+        prepared_dod = preparation.get("dod")
+        if isinstance(prepared_dod, list):
+            nested_changed, _ = _migrate_known_inbox_audit_items(prepared_dod)
+            changed = changed or nested_changed
+
+        if top_changed:
+            # A rejection of the superseded universal test/live contract must
+            # not keep the migrated card in the anti-loop hold forever.  Clear
+            # it only when the recorded rejected indices were exclusively
+            # audit-phase items in the old PM-generated checklist.
+            stop_reason = str(data.get("stop_reason") or "")
+            match = re.search(
+                r"DoD index(?:es|\(es\))?\s*\[([^\]]*)\]",
+                stop_reason,
+                flags=re.IGNORECASE,
+            )
+            rejected_indices = []
+            if match:
+                rejected_indices = [
+                    int(value.strip())
+                    for value in match.group(1).split(",")
+                    if value.strip().isdigit()
+                ]
+            old_dod = data.get("inbox_preparation", {}).get("dod")
+            # nested DoD has already migrated, so determine safety from the
+            # pre-migration top-level phases via the rejection itself: index 0
+            # is the single implementation item generated by build_dod; every
+            # later item in this exact PM contract is audit-owned.
+            obsolete_audit_only_rejection = (
+                rejected_indices
+                and all(index > 0 for index in rejected_indices)
+                and stop_reason.casefold().startswith("ai-orchestrator audit rejected")
+            )
+            if obsolete_audit_only_rejection:
+                data["stop_reason"] = None
+                feedback = data.get("open_feedback")
+                if isinstance(feedback, list):
+                    data["open_feedback"] = [
+                        item
+                        for item in feedback
+                        if not str(item).casefold().startswith(
+                            "ai-orchestrator audit rejected"
+                        )
+                    ]
+                data.pop("audit_waiting_for_change", None)
+                if "audit neopakuje" in str(data.get("next_step") or "").casefold():
+                    data["next_step"] = (
+                        "Provést nezávislý audit podle aktuálního auditního kontraktu."
+                    )
 
     # Old split cards also embedded the audit/test obligation in the worker
     # handoff. Remove only this exact PM-generated suffix; never rewrite
@@ -464,7 +585,6 @@ def _migrate_legacy_prepared_card(data: dict, card: dict, priority: int) -> bool
         data["orchestrator_ready_task"] = worker_task[: -len(_LEGACY_INBOX_WORKER_SUFFIX)].rstrip()
         changed = True
 
-    preparation = data.get("inbox_preparation")
     if isinstance(preparation, dict):
         # A priority label is authoritative after intake. Keep structured child
         # metadata aligned with it, and refresh its reason only when the same
@@ -1219,7 +1339,7 @@ def _repair_terminal_audit_rejection(project: ProjectRecord, raw: dict) -> bool:
     return True
 
 
-def _repair_nonterminal_audit_rejection(project: ProjectRecord, raw: dict) -> bool:
+def _repair_nonterminal_audit_rejection(project: ProjectRecord) -> bool:
     """Persist an anti-loop hold for an already rejected audit-only card.
 
     The guard was introduced after some cards had already been left in
@@ -1231,7 +1351,11 @@ def _repair_nonterminal_audit_rejection(project: ProjectRecord, raw: dict) -> bo
         return False
     if project.extra_data.get("audit_waiting_for_change") is True:
         return False
-    sources = [raw.get("stop_reason"), *(raw.get("open_feedback") or [])]
+    # Use the already migrated ProjectRecord, not the pre-migration raw
+    # PM-DATA snapshot. A safe contract migration may intentionally retire an
+    # obsolete audit rejection; consulting ``raw`` here would immediately
+    # recreate the anti-loop hold that the migration just removed.
+    sources = [project.stop_reason, *project.open_feedback]
     combined = "\n".join(str(value) for value in sources if value).casefold()
     if not any(marker in combined for marker in _AUDIT_REJECTION_MARKERS):
         return False
@@ -1297,7 +1421,7 @@ def maintain_board_contract(client) -> list[str]:
                         card.get("id"), card.get("name"), project.status.value,
                     )
                 nonterminal_audit_hold_repaired = _repair_nonterminal_audit_rejection(
-                    project, raw
+                    project
                 )
                 if nonterminal_audit_hold_repaired:
                     logger.warning(

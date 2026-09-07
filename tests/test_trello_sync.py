@@ -605,13 +605,89 @@ def test_maintenance_migrates_legacy_inbox_audit_text_and_priority_metadata():
     assert maintain_board_contract(client) == []
 
     raw = _parse_data_block(client.get_card(card["id"])["desc"])
-    assert raw["dod"][1]["text"] == trello_sync._CURRENT_INBOX_LIVE_TEXT
+    assert len(raw["dod"]) == 2
+    assert raw["dod"][1]["text"] == trello_sync.INBOX_AUDIT_EVIDENCE_TEXT
     assert raw["dod"][1]["phase"] == "audit"
-    assert raw["inbox_preparation"]["dod"][1]["text"] == trello_sync._CURRENT_INBOX_LIVE_TEXT
+    assert len(raw["inbox_preparation"]["dod"]) == 2
+    assert raw["inbox_preparation"]["dod"][1]["text"] == trello_sync.INBOX_AUDIT_EVIDENCE_TEXT
     assert raw["inbox_preparation"]["dod"][1]["phase"] == "audit"
-    assert raw["dod"][2]["text"] == trello_sync._CURRENT_INBOX_AUDIT_TEXT
-    assert raw["inbox_preparation"]["dod"][2]["text"] == trello_sync._CURRENT_INBOX_AUDIT_TEXT
     assert raw["inbox_preparation"]["task_priority"] == 3
+
+
+def test_maintenance_migrates_current_inbox_test_live_audit_and_releases_obsolete_hold():
+    client = InMemoryTrelloClient()
+    testing = client.get_list_id_by_name("Testing")
+    old_dod = [
+        {
+            "checked": True,
+            "phase": "implementation",
+            "text": "Implementovat připravené části Inbox požadavku: README.",
+        },
+        {
+            "checked": False,
+            "phase": "audit",
+            "text": trello_sync._CURRENT_INBOX_AUDIT_TEXT,
+        },
+        {
+            "checked": False,
+            "phase": "audit",
+            "text": trello_sync._CURRENT_INBOX_LIVE_TEXT,
+        },
+        {
+            "checked": False,
+            "phase": "audit",
+            "text": trello_sync._LEGACY_INBOX_VERDICT_TEXT,
+        },
+    ]
+    rejection = (
+        "ai-orchestrator audit rejected DoD index(es) [1, 2, 3]: "
+        "no specific regression test evidence available; "
+        "no live execution evidence available"
+    )
+    data = {
+        "schema_version": CURRENT_SCHEMA_VERSION,
+        "checkpoint": {"completed_dod_indices": [0], "run_id": "readme-live"},
+        "dod": old_dod,
+        "open_feedback": [rejection],
+        "governance": GOVERNANCE_POLICY,
+        "dod_routing_policy": trello_sync.DOD_ROUTING_POLICY,
+        "lifecycle_status": "testing",
+        "main_task": "Přidat jednu přesnou větu do README.md.",
+        "next_step": "Po změně se audit neopakuje automaticky.",
+        "stop_reason": rejection,
+        "audit_waiting_for_change": True,
+        "inbox_preparation": {
+            "scope": "README",
+            "task_priority": 1,
+            "priority_reason": "malá dokumentační změna",
+            "dod": [dict(item) for item in old_dod],
+        },
+    }
+    card = client.create_card(
+        testing,
+        "P1 — AI Project Manager — Update README documentation",
+        desc=f"<!-- PM-DATA\n{json.dumps(data, ensure_ascii=False)}\n-->",
+        labels=["P1", "AI Project Manager"],
+    )
+
+    assert maintain_board_contract(client) == []
+
+    raw = _parse_data_block(client.get_card(card["id"])["desc"])
+    assert [item["text"] for item in raw["dod"]] == [
+        "Implementovat připravené části Inbox požadavku: README.",
+        trello_sync.INBOX_AUDIT_EVIDENCE_TEXT,
+        trello_sync.INBOX_AUDIT_VERDICT_TEXT,
+    ]
+    assert raw["checkpoint"]["completed_dod_indices"] == [0]
+    assert raw.get("audit_waiting_for_change") is not True
+    assert raw.get("stop_reason") in (None, "")
+    assert not raw.get("open_feedback")
+    assert "aktuálního auditního kontraktu" in raw["next_step"]
+    assert [item["text"] for item in raw["inbox_preparation"]["dod"]] == [
+        "Implementovat připravené části Inbox požadavku: README.",
+        trello_sync.INBOX_AUDIT_EVIDENCE_TEXT,
+        trello_sync.INBOX_AUDIT_VERDICT_TEXT,
+    ]
 
 
 def test_maintenance_routes_completed_implementation_with_pending_audit_to_testing():
