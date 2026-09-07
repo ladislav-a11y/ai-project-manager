@@ -105,6 +105,7 @@ _HUMAN_REQUIRED_PATTERNS = re.compile(
 _PROVIDER_PROTOCOL_ERROR_PATTERNS = re.compile(
     r"timeout|timed out|connection (?:reset|refused|error)|network error|"
     r"protocol error|tool call validation failed|tool_use_failed|json_validate_failed|"
+    r"rate_limit_exceeded|tokens per minute|"
     r"generated json does not match the expected schema|unexpected eof|"
     r"econnreset|http 5\d\d|server error|"
     r"temporarily unavailable|service unavailable|internal error|"

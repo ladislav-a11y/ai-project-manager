@@ -196,6 +196,31 @@ def test_groq_json_schema_validation_failure_is_requeued_for_retry():
     }
 
 
+
+def test_groq_tpm_rate_limit_is_requeued_for_provider_retry():
+    """A Groq TPM limit is provider-recoverable and must not require human triage."""
+    project = _blocked(
+        blocked_by=(
+            "Error code: 413 - {'error': {'message': "
+            "'Request too large for model `openai/gpt-oss-120b` on tokens per minute "
+            "(TPM): Limit 8000, Requested 9266', 'type': 'tokens', "
+            "'code': 'rate_limit_exceeded'}}"
+        ),
+        checkpoint={"run_id": "keep-tpm-run", "completed_dod_indices": []},
+    )
+
+    outcome = recover_project(project, NOW)
+
+    assert outcome.action == "requeued"
+    assert outcome.cause == BlockCause.PROVIDER_ERROR_RESOLVED
+    assert project.status == ProjectStatus.READY
+    assert project.blocked_by is None
+    assert project.checkpoint == {
+        "run_id": "keep-tpm-run",
+        "completed_dod_indices": [],
+    }
+
+
 def test_malformed_provider_json_response_is_requeued_for_retry():
     """A schema/protocol response error must not strand the card in human_required."""
     project = _blocked(
