@@ -221,6 +221,32 @@ def test_groq_tpm_rate_limit_is_requeued_for_provider_retry():
     }
 
 
+
+def test_groq_output_parse_failure_is_requeued_for_retry():
+    """A Groq tool-turn parse failure is provider-recoverable, not human-required."""
+    project = _blocked(
+        blocked_by=(
+            "Error code: 400 - {'error': {'message': "
+            "\"Parsing failed. The model generated output that could not be parsed. "
+            "Please adjust your prompt.\", 'type': 'invalid_request_error', "
+            "'code': 'output_parse_failed', "
+            "'failed_generation': 'Need to inspect README first.'}}"
+        ),
+        checkpoint={"run_id": "keep-parse-run", "completed_dod_indices": []},
+    )
+
+    outcome = recover_project(project, NOW)
+
+    assert outcome.action == "requeued"
+    assert outcome.cause == BlockCause.PROVIDER_ERROR_RESOLVED
+    assert project.status == ProjectStatus.READY
+    assert project.blocked_by is None
+    assert project.checkpoint == {
+        "run_id": "keep-parse-run",
+        "completed_dod_indices": [],
+    }
+
+
 def test_malformed_provider_json_response_is_requeued_for_retry():
     """A schema/protocol response error must not strand the card in human_required."""
     project = _blocked(
