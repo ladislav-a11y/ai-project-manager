@@ -49,7 +49,9 @@ from __future__ import annotations
 
 import functools
 import json
+import logging
 import math
+import os
 import re
 import subprocess
 import uuid
@@ -86,6 +88,8 @@ from .providers import (
     detect_limit,
 )
 from .scheduler import audit_capability_key
+
+logger = logging.getLogger("ai_project_manager")
 
 # command (argv, already including --project/--goal/--spec/--agent/
 # --model/--run-id when a model is configured) -> a
@@ -233,7 +237,32 @@ def _default_run_id() -> str:
     return uuid.uuid4().hex
 
 
-def _default_subprocess_run(command: list, timeout: Optional[float] = None) -> "subprocess.CompletedProcess":
+def _terminate_process_tree(process: "subprocess.Popen") -> None:
+    """Terminate a timed-out child and any provider descendants it spawned."""
+    if os.name == "nt":
+        try:
+            result = subprocess.run(
+                ["taskkill", "/PID", str(process.pid), "/T", "/F"],
+                capture_output=True,
+                text=True,
+                check=False,
+                timeout=10,
+            )
+            if getattr(result, "returncode", 1) == 0:
+                return
+        except Exception:  # noqa: BLE001 - fall back to the direct child
+            pass
+    try:
+        process.kill()
+    except OSError:
+        pass
+
+
+def _default_subprocess_run(
+    command: list,
+    timeout: Optional[float] = None,
+    **kwargs,
+) -> "subprocess.CompletedProcess":
     return subprocess.run(
         command,
         capture_output=True,
@@ -241,6 +270,52 @@ def _default_subprocess_run(command: list, timeout: Optional[float] = None) -> "
         check=False,
         timeout=timeout,
     )
+
+
+def _bounded_subprocess_run(
+    command: list,
+    timeout: Optional[float] = None,
+    **kwargs,
+) -> "subprocess.CompletedProcess":
+    """Run the Inbox planner without waiting on orphaned provider pipes."""
+    kwargs.setdefault("capture_output", True)
+    kwargs.setdefault("text", True)
+    kwargs.setdefault("check", False)
+    if os.name != "nt":
+        return subprocess.run(command, timeout=timeout, **kwargs)
+
+    check = kwargs.pop("check", False)
+    capture_output = kwargs.pop("capture_output", True)
+    input_data = kwargs.pop("input", None)
+    if capture_output:
+        if "stdout" in kwargs or "stderr" in kwargs:
+            raise ValueError("capture_output cannot be combined with stdout/stderr")
+        kwargs["stdout"] = subprocess.PIPE
+        kwargs["stderr"] = subprocess.PIPE
+    if input_data is not None:
+        if "stdin" in kwargs:
+            raise ValueError("stdin and input arguments may not both be used")
+        kwargs["stdin"] = subprocess.PIPE
+    kwargs.setdefault(
+        "creationflags",
+        getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0),
+    )
+    process = subprocess.Popen(command, **kwargs)
+    try:
+        stdout, stderr = process.communicate(input=input_data, timeout=timeout)
+    except subprocess.TimeoutExpired:
+        _terminate_process_tree(process)
+        stdout, stderr = process.communicate()
+        raise
+    result = subprocess.CompletedProcess(command, process.returncode, stdout, stderr)
+    if check and result.returncode:
+        raise subprocess.CalledProcessError(
+            result.returncode,
+            command,
+            output=stdout,
+            stderr=stderr,
+        )
+    return result
 
 
 def _plan_command(command: list) -> list:
@@ -331,46 +406,41 @@ def _planner_tasks(payload: dict, *, indivisible: bool) -> Optional[list[Prepare
 INBOX_PLANNER_PROVIDERS = ("groq", "antigravity", "claude", "codex")
 
 
-def _inbox_model_hint(provider: str, provider_registry: ProviderRegistry) -> str:
-    """Describe the model before a provider-owned Inbox planning call.
-
-    PM intentionally does not pass ``--model``.  A catalog entry is useful
-    as an operator hint, but it is not evidence that the provider will use
-    that model, so the pre-call message must remain explicit about that
-    distinction.
-    """
-    configured = provider_registry.model_for_task(provider, TASK_INBOX_PLANNING)
-    if configured:
-        return f"provider default (návrh katalogu: {configured}; provider rozhodne podle typu a náročnosti)"
-    return "provider default (provider rozhodne podle typu a náročnosti Inbox plánování)"
-
-
-def _inbox_selection_reason(
-    provider: str,
+def _apply_central_provider_statuses(
     provider_registry: ProviderRegistry,
+    provider_statuses: object,
     *,
-    available: tuple[str, ...],
-) -> tuple[str, str]:
-    """Return explainable provider/model reasons for an Inbox call."""
-    provider_reason = (
-        f"{provider} je první dostupný provider z povoleného pořadí "
-        f"{', '.join(INBOX_PLANNER_PROVIDERS)}; vyřazení provideři jsou fail-closed"
-    )
-    limited = []
-    for candidate in INBOX_PLANNER_PROVIDERS:
-        if candidate == provider or candidate in available:
+    fallback_reason: str,
+    provider_agent_map: Optional[dict] = None,
+) -> None:
+    """Project one AO failover receipt into PM's persistent health cache."""
+    if not isinstance(provider_statuses, dict):
+        return
+    now = datetime.now(timezone.utc)
+    for agent_name, receipt in provider_statuses.items():
+        if not isinstance(agent_name, str) or not isinstance(receipt, dict):
             continue
-        status = provider_registry.get_status(candidate)
-        if status.state in {"LIMITED", "ERROR"}:
-            deadline = status.retry_after.isoformat() if status.retry_after else "n/a"
-            limited.append(f"{candidate}={status.state} do {deadline}")
-    if limited:
-        provider_reason += "; přeskočeno kvůli limitu/chybě: " + ", ".join(limited)
-    model_reason = (
-        f"{_inbox_model_hint(provider, provider_registry)}; PM nepředává --model; "
-        "skutečný model se zapíše až z provider receipt"
-    )
-    return provider_reason, model_reason
+        pm_name = _pm_provider_name(agent_name, provider_registry, provider_agent_map)
+        if pm_name is None:
+            continue
+        state = receipt.get("state")
+        reason = str(receipt.get("reason") or fallback_reason)
+        if state == "LIMITED":
+            provider_registry.mark_limited(
+                pm_name,
+                retry_after=_retry_deadline_from_receipt(
+                    receipt, now=now, fallback=_DEFAULT_LIMIT_BACKOFF
+                ),
+                reason=reason,
+            )
+        elif state == "AVAILABLE":
+            provider_registry.mark_available(pm_name)
+        elif state in {"UNAVAILABLE", "ERROR", "PROTOCOL_ERROR", "BUDGET_EXCEEDED"}:
+            provider_registry.mark_error(
+                pm_name,
+                reason,
+                retry_after=_PROVIDER_FAILURE_BACKOFF,
+            )
 
 
 def build_inbox_planner_fn(
@@ -390,6 +460,8 @@ def build_inbox_planner_fn(
     # change can never leak an unsupported provider into intake.
     allowed = INBOX_PLANNER_PROVIDERS
     planner_command = _plan_command(command)
+    if subprocess_run is None:
+        subprocess_run = functools.partial(_bounded_subprocess_run, timeout=timeout_seconds)
 
     def plan(card: dict, projects: list[ProjectRecord]) -> Optional[dict]:
         indivisible = is_explicit_indivisible_inbox_source(card)
@@ -419,94 +491,114 @@ def build_inbox_planner_fn(
             candidate for candidate in allowed
             if provider_registry.is_available(candidate)
         )
-        for provider in allowed:
-            if not provider_registry.is_available(provider):
-                continue
-            agent = map_provider_to_agent(provider)
-            full_command = planner_command + ["--agent", agent]
-            provider_reason, model_reason = _inbox_selection_reason(
-                provider,
-                provider_registry,
-                available=available,
-            )
-            selection = {
-                "source_card_id": request["card"]["id"],
-                "source_card_name": request["card"]["name"],
-                "provider": provider,
-                "model": _inbox_model_hint(provider, provider_registry),
-                "provider_reason": provider_reason,
-                "model_reason": model_reason,
-                "task_type": TASK_INBOX_PLANNING,
-            }
-            if selection_notifier is not None:
-                try:
-                    selection_notifier(selection)
-                except Exception:  # noqa: BLE001 - observability must not block intake
-                    logger.exception("Inbox planner selection notification failed")
+        if not available:
+            return None
+        provider_order = [map_provider_to_agent(provider) for provider in available]
+        provider_reason = (
+            "ai-orchestrator centrálně zvolí první dostupný provider z pořadí "
+            + ", ".join(provider_order)
+            + "; PM pouze předává povolené pořadí a nepouští vlastní failover smyčku"
+        )
+        model_reason = (
+            "model volí provider přes centrální ai-orchestrator; PM nepředává --model"
+        )
+        selection = {
+            "source_card_id": request["card"]["id"],
+            "source_card_name": request["card"]["name"],
+            "provider": "auto",
+            "model": "centrální provider failover",
+            "provider_reason": provider_reason,
+            "model_reason": model_reason,
+            "task_type": TASK_INBOX_PLANNING,
+        }
+        if selection_notifier is not None:
             try:
-                if subprocess_run is None:
-                    completed = subprocess.run(
-                        full_command,
-                        input=json.dumps(request, ensure_ascii=False),
-                        capture_output=True,
-                        text=True,
-                        encoding="utf-8",
-                        errors="replace",
-                        timeout=timeout_seconds,
-                        check=False,
-                    )
-                else:
-                    completed = subprocess_run(
-                        full_command,
-                        input=json.dumps(request, ensure_ascii=False),
-                        timeout=timeout_seconds,
-                    )
-            except Exception as exc:  # noqa: BLE001 - planner failover is explicit
-                provider_registry.mark_error(provider, f"Inbox planner selhal: {type(exc).__name__}", timedelta(minutes=30))
-                continue
-            envelope = _json_object((completed.stdout or "") + "\n" + (completed.stderr or ""))
-            if not envelope:
-                provider_registry.mark_error(provider, "Inbox planner nevrátil JSON envelope", timedelta(minutes=30))
-                continue
-            if not envelope.get("success"):
-                reason = str(envelope.get("error") or "Inbox planner selhal")
-                if envelope.get("limited"):
-                    provider_registry.mark_limited(provider, timedelta(minutes=30), reason=reason)
-                else:
-                    provider_registry.mark_error(provider, reason, timedelta(minutes=30))
-                continue
-            plan_payload = _json_object(str(envelope.get("output") or ""))
-            tasks = _planner_tasks(plan_payload or {}, indivisible=indivisible)
-            if tasks is None:
-                contract_violation = enforce_indivisible_inbox_source_contract(
-                    (plan_payload or {}).get("tasks"),
-                    indivisible=indivisible,
-                )
-                reason = contract_violation or "AI Inbox planner vrátil neplatný task plán"
-                # A syntactically successful provider response with a task plan
-                # that fails PM's Inbox contract is a per-response planning
-                # failure, not evidence that the provider itself is unavailable.
-                # Preserve the diagnostic while keeping the provider callable.
-                provider_registry.get_status(provider).last_error = reason
-                continue
-            actual_model = envelope.get("model")
-            if not isinstance(actual_model, str) or not actual_model.strip():
-                actual_model = None
-            actual_model_reason = (
-                f"model {actual_model} je skutečně použitý model providera potvrzený "
-                "ai-orchestrátorem pro Inbox plánování"
-                if actual_model
-                else model_reason
+                selection_notifier(selection)
+            except Exception:  # noqa: BLE001 - observability must not block intake
+                logger.exception("Inbox planner selection notification failed")
+        full_command = planner_command + [
+            "--agent", "auto",
+            "--provider-order", ",".join(provider_order),
+        ]
+        try:
+            completed = subprocess_run(
+                full_command,
+                input=json.dumps(request, ensure_ascii=False),
             )
-            return {
-                "provider": provider,
-                "model": actual_model,
-                "provider_reason": provider_reason,
-                "model_reason": actual_model_reason,
-                "selection_reason": f"{provider_reason}; {actual_model_reason}",
-                "tasks": tasks,
-            }
-        return None
+        except Exception as exc:  # noqa: BLE001 - central planner is fail-closed
+            reason = f"Inbox planner selhal: {type(exc).__name__}"
+            for provider in available:
+                provider_registry.mark_error(provider, reason, _PROVIDER_FAILURE_BACKOFF)
+            logger.warning("Centrální Inbox planner nedokončil volání: %s", type(exc).__name__)
+            return None
+        envelope = _json_object((completed.stdout or "") + "\n" + (completed.stderr or ""))
+        if not envelope:
+            reason = "Inbox planner nevrátil JSON envelope"
+            for provider in available:
+                provider_registry.mark_error(provider, reason, _PROVIDER_FAILURE_BACKOFF)
+            return None
+        _apply_central_provider_statuses(
+            provider_registry,
+            envelope.get("provider_statuses"),
+            fallback_reason=str(envelope.get("error") or "Inbox planner selhal"),
+        )
+        if not envelope.get("success"):
+            return None
+        plan_payload = _json_object(str(envelope.get("output") or ""))
+        tasks = _planner_tasks(plan_payload or {}, indivisible=indivisible)
+        if tasks is None:
+            contract_violation = enforce_indivisible_inbox_source_contract(
+                (plan_payload or {}).get("tasks"),
+                indivisible=indivisible,
+            )
+            reason = contract_violation or "AI Inbox planner vrátil neplatný task plán"
+            active_provider = _pm_provider_name(
+                envelope.get("provider") or envelope.get("active_provider"),
+                provider_registry,
+            )
+            if active_provider:
+                provider_registry.mark_error(
+                    active_provider,
+                    reason,
+                    _PROVIDER_FAILURE_BACKOFF,
+                )
+            return None
+        actual_provider = _pm_provider_name(
+            envelope.get("provider") or envelope.get("active_provider"),
+            provider_registry,
+        ) or str(envelope.get("provider") or envelope.get("active_provider") or "auto")
+        actual_model = envelope.get("model")
+        if not isinstance(actual_model, str) or not actual_model.strip():
+            actual_model = None
+        actual_model_reason = (
+            f"model {actual_model} je skutečně použitý model providera potvrzený "
+            "ai-orchestrátorem pro Inbox plánování"
+            if actual_model
+            else model_reason
+        )
+        return {
+            "provider": actual_provider,
+            "model": actual_model,
+            "provider_reason": str(envelope.get("selection_reason") or provider_reason),
+            "model_reason": actual_model_reason,
+            "selection_reason": f"{provider_reason}; {actual_model_reason}",
+            "provider_statuses": (
+                envelope.get("provider_statuses")
+                if isinstance(envelope.get("provider_statuses"), dict)
+                else {}
+            ),
+            "provider_sequence": (
+                envelope.get("provider_sequence")
+                if isinstance(envelope.get("provider_sequence"), list)
+                else provider_order
+            ),
+            "usage": (
+                envelope.get("usage")
+                if isinstance(envelope.get("usage"), dict)
+                else {}
+            ),
+            "tasks": tasks,
+        }
 
     return plan
 

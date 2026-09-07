@@ -25,6 +25,7 @@ from ai_project_manager.orchestrator_runner import (
     parse_spec_markdown,
     resolve_project_path,
     spec_file_path,
+    _bounded_subprocess_run,
 )
 from ai_project_manager.providers import ProviderRegistry, ProviderState
 
@@ -1902,14 +1903,18 @@ def test_inbox_planner_excludes_retired_provider_names_and_returns_validated_ai_
     assert result["model"] == "openai/gpt-oss-120b"
     assert "první dostupný provider" in result["provider_reason"]
     assert "skutečně použitý model" in result["model_reason"]
-    assert selections[0]["provider"] == "groq"
-    assert "podle typu a náročnosti" in selections[0]["model"]
+    assert selections[0]["provider"] == "auto"
+    assert selections[0]["model"] == "centrální provider failover"
+    assert "centrálně zvolí" in selections[0]["provider_reason"]
     assert selections[0]["task_type"] == "inbox_planning"
     assert result["tasks"][0].priority == 4.01
     assert result["tasks"][0].project_key == "AI Project Manager"
     assert result["tasks"][0].work_type == "implementation"
     assert result["tasks"][0].split_reason == "samostatná atomická oprava"
-    assert calls[0][0] == ["python", "orchestrator.py", "plan-inbox", "--agent", "groq"]
+    assert calls[0][0] == [
+        "python", "orchestrator.py", "plan-inbox", "--agent", "auto",
+        "--provider-order", "groq,antigravity,codex",
+    ]
     assert "gemini" not in calls[0][0]
     assert "hermes" not in calls[0][0]
 
@@ -1976,6 +1981,120 @@ def test_inbox_planner_sends_only_human_source_text_and_project_identities():
     assert payload["existing_projects"] == [
         {"name": "AI Project Manager", "project_key": "AI Project Manager"}
     ]
+
+
+def test_inbox_planner_uses_one_central_call_and_projects_provider_receipt():
+    registry = ProviderRegistry()
+    registry.mark_available("groq")
+    registry.mark_available("antigravity")
+    calls = []
+
+    def fake_subprocess(command, **kwargs):
+        calls.append((command, kwargs))
+        return completed(json.dumps({
+            "success": True,
+            "provider": "antigravity",
+            "model": "gemini-test",
+            "selection_reason": "groq LIMITED; antigravity AVAILABLE",
+            "provider_statuses": {
+                "groq": {
+                    "state": "LIMITED",
+                    "reason": "rate limit",
+                    "retry_at": "2099-01-01T00:00:00+00:00",
+                },
+                "antigravity": {"state": "AVAILABLE", "reason": None},
+            },
+            "output": json.dumps({
+                "tasks": [{
+                    "scope": "feature",
+                    "task": "Vytvořit funkci.",
+                    "next_step": "Navrhnout rozhraní.",
+                    "priority": 2,
+                    "priority_reason": "výchozí priorita",
+                }],
+            }),
+            "usage": {"by_provider": {"groq": {"total_tokens": 10}}, "total": {"total_tokens": 10}},
+        }))
+
+    planner = build_inbox_planner_fn(
+        registry,
+        ["python", "orchestrator.py", "autonomous", "--no-commit"],
+        subprocess_run=fake_subprocess,
+    )
+
+    result = planner({"id": "source", "name": "Nápad", "desc": "Úkol"}, [])
+
+    assert result["provider"] == "antigravity"
+    assert result["model"] == "gemini-test"
+    assert result["provider_statuses"]["groq"]["state"] == "LIMITED"
+    assert result["provider_sequence"] == ["groq", "antigravity"]
+    assert result["usage"]["total"]["total_tokens"] == 10
+    assert len(calls) == 1
+    assert calls[0][0][-4:] == ["--agent", "auto", "--provider-order", "groq,antigravity"]
+    assert json.loads(calls[0][1]["input"])["card"]["description"] == "Úkol"
+    assert registry.get_status("groq").state == ProviderState.LIMITED
+    assert registry.get_status("groq").retry_after is not None
+    assert registry.get_status("antigravity").state == ProviderState.AVAILABLE
+
+
+def test_inbox_planner_marks_all_candidates_on_central_call_failure():
+    registry = ProviderRegistry()
+    registry.mark_available("groq")
+    registry.mark_available("antigravity")
+
+    def failing_subprocess(command, **kwargs):
+        raise subprocess.TimeoutExpired(command, timeout=120)
+
+    planner = build_inbox_planner_fn(
+        registry,
+        ["python", "orchestrator.py", "autonomous", "--no-commit"],
+        subprocess_run=failing_subprocess,
+    )
+
+    assert planner({"id": "source", "name": "Nápad", "desc": "Úkol"}, []) is None
+    assert registry.get_status("groq").state == ProviderState.ERROR
+    assert registry.get_status("antigravity").state == ProviderState.ERROR
+
+
+def test_bounded_inbox_subprocess_kills_windows_process_tree_on_timeout(monkeypatch):
+    class FakeProcess:
+        pid = 4321
+        returncode = None
+
+        def __init__(self):
+            self.communicate_calls = []
+            self.killed = False
+
+        def communicate(self, input=None, timeout=None):
+            self.communicate_calls.append((input, timeout))
+            if timeout is not None:
+                raise subprocess.TimeoutExpired("planner", timeout)
+            self.returncode = 1
+            return "", "timed out"
+
+        def kill(self):
+            self.killed = True
+
+    process = FakeProcess()
+    taskkill_calls = []
+
+    def fake_popen(command, **kwargs):
+        return process
+
+    def fake_run(command, **kwargs):
+        taskkill_calls.append((command, kwargs))
+        return completed(returncode=0)
+
+    monkeypatch.setattr("ai_project_manager.orchestrator_runner.os.name", "nt")
+    monkeypatch.setattr("ai_project_manager.orchestrator_runner.subprocess.Popen", fake_popen)
+    monkeypatch.setattr("ai_project_manager.orchestrator_runner.subprocess.run", fake_run)
+
+    with pytest.raises(subprocess.TimeoutExpired):
+        _bounded_subprocess_run(["planner"], timeout=3, input="{}")
+
+    assert taskkill_calls[0][0] == ["taskkill", "/PID", "4321", "/T", "/F"]
+    assert process.communicate_calls == [("{}", 3), (None, None)]
+    assert process.killed is False
 
 
 def _two_task_subprocess(command, **kwargs):
@@ -2095,7 +2214,7 @@ def test_inbox_planner_requires_an_explainable_priority_reason():
     assert planner({"id": "source", "name": "Nápad", "desc": "Úkol"}, []) is None
 
 
-def test_inbox_planner_invalid_task_plan_fails_over_without_marking_provider_error():
+def test_inbox_planner_invalid_task_plan_fails_closed_and_marks_active_provider_error():
     registry = ProviderRegistry()
     registry.mark_available("groq")
     registry.mark_available("antigravity")
@@ -2104,32 +2223,16 @@ def test_inbox_planner_invalid_task_plan_fails_over_without_marking_provider_err
     def fake_subprocess(command, **kwargs):
         agent = command[command.index("--agent") + 1]
         calls.append(agent)
-        if agent == "groq":
-            return completed(json.dumps({
-                "success": True,
-                "provider": "groq",
-                "model": "openai/gpt-oss-120b",
-                "output": json.dumps({
-                    "tasks": [{
-                        "scope": "feature",
-                        "task": "Vytvořit funkci.",
-                        "next_step": "Navrhnout rozhraní.",
-                        "priority": 5.1,
-                        "depends_on": [],
-                    }],
-                }),
-            }))
         return completed(json.dumps({
             "success": True,
-            "provider": "antigravity",
-            "model": "Gemini test model",
+            "provider": "groq",
+            "model": "openai/gpt-oss-120b",
             "output": json.dumps({
                 "tasks": [{
                     "scope": "feature",
                     "task": "Vytvořit funkci.",
                     "next_step": "Navrhnout rozhraní.",
                     "priority": 5.1,
-                    "priority_reason": "potvrzená oprava",
                     "depends_on": [],
                 }],
             }),
@@ -2143,11 +2246,10 @@ def test_inbox_planner_invalid_task_plan_fails_over_without_marking_provider_err
 
     result = planner({"id": "source", "name": "Nápad", "desc": "Úkol"}, [])
 
-    assert result is not None
-    assert result["provider"] == "antigravity"
-    assert calls == ["groq", "antigravity"]
-    assert registry.get_status("groq").state == ProviderState.AVAILABLE
-    assert registry.is_available("groq") is True
+    assert result is None
+    assert calls == ["auto"]
+    assert registry.get_status("groq").state == ProviderState.ERROR
+    assert registry.is_available("groq") is False
     assert registry.get_status("groq").last_error == "AI Inbox planner vrátil neplatný task plán"
 
 

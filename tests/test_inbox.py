@@ -1,3 +1,5 @@
+import json
+
 import pytest
 from pathlib import Path
 
@@ -607,6 +609,62 @@ def test_process_inbox_moves_contract_only_card_to_ready_with_priority_title():
     assert prepared_card["name"] == "P5 — Úprava zpráv PM do slacku"
     assert prepared_card["list_id"] == name_to_id["New"]
     assert "propagation scoring" not in prepared_card["desc"]
+
+
+def test_process_inbox_persists_central_provider_receipt_as_compact_card_data():
+    client = InMemoryTrelloClient()
+    _, name_to_id = build_list_maps(client)
+    source = client.create_card(
+        name_to_id["Inbox"],
+        "Central planner request",
+        desc="Prepare one implementation.",
+        labels=["Station Agent"],
+    )
+    planner_result = {
+        "provider": "antigravity",
+        "model": "gemini-test",
+        "provider_reason": "central failover",
+        "model_reason": "provider receipt",
+        "selection_reason": "groq LIMITED -> antigravity",
+        "provider_statuses": {
+            "groq": {
+                "state": "LIMITED",
+                "retry_at": "2099-01-01T00:00:00+00:00",
+                "reason": "rate limit",
+            },
+            "antigravity": {"state": "AVAILABLE", "reason": None},
+        },
+        "provider_sequence": ["groq", "antigravity"],
+        "usage": {"by_provider": {"groq": {"total_tokens": 10}}, "total": {"total_tokens": 10}},
+        "tasks": (
+            PreparedTask(
+                title="Implement feature",
+                task="Implement the requested feature.",
+                next_step="Inspect the target.",
+                scope="feature",
+                priority=2,
+                priority_reason="výchozí priorita",
+                project_key="Station Agent",
+            ),
+        ),
+    }
+
+    changed = process_inbox(
+        client,
+        [],
+        persist_project=lambda project: sync_project_to_trello(client, project),
+        project_paths={"Station Agent": "D:/station-agent"},
+        planner=lambda _card, _projects: planner_result,
+    )
+
+    assert len(changed) == 1
+    prepared_card = client.get_card(changed[0].trello_card_id)
+    contract_text = prepared_card["desc"].split("<!-- PM-DATA\n", 1)[1].split("\n-->", 1)[0]
+    contract = json.loads(contract_text)
+    assert contract["provider_statuses"]["groq"]["retry_at"] == "2099-01-01T00:00:00+00:00"
+    assert contract["provider_sequence"] == ["groq", "antigravity"]
+    assert contract["usage"]["total"]["total_tokens"] == 10
+    assert "provider_statuses" not in contract["inbox_preparation"]
 
 
 def test_process_inbox_creates_multiple_ready_tasks_from_one_source_card():

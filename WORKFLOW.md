@@ -168,19 +168,23 @@ podúkolu a jeho přímé návaznosti. Planner nesmí do jednoho vstupu smíchat
 projektové identity; při nejasnosti musí intake skončit v Inboxu s požadavkem
 na lidské upřesnění.
 
-Inbox planner je samostatná AI-planning fáze a volí pouze z povolených
-dostupných providerů (Hermes je z PM úplně vyřazen, viz sekci „Hermes -
-vyřazen z produkčního PM routingu" níže, ne jen z této fáze). PM planneru ani
+Inbox planner je samostatná AI-planning fáze a volá ai-orchestrator jediným
+read-only `plan-inbox --agent auto` requestem. PM do něj předá pouze aktuálně
+dostupné pořadí povolených providerů (Hermes je z PM úplně vyřazen, viz sekci
+„Hermes - vyřazen z produkčního PM routingu" níže, ne jen z této fáze). AO
+centrálně provede výběr i failover při limitu, timeoutu, nedostupnosti nebo
+explicitní chybě strukturovaného planning requestu. PM planneru ani
 implementaci/auditu nepředává `--model`: konkrétní model volí provider podle
-typu úkolu a skutečně použitý model se bere až z AO outboxu. Žádný free
+typu úkolu a skutečně použitý model se bere až z AO receipt. Žádný free
 provider nesmí při nedostupnosti svého povoleného free modelu tiše zvolit
 placený LLM.
-Před každým použitím providera PM oznámí jeho výběr, důvod, typ úkolu a modelový
-plán; po dokončení uloží skutečný model potvrzený providerem. Intake navíc
-zapisuje do `PM-DATA` `intake_provider_reason`, `intake_model_reason` a
-`intake_selection_reason`, aby byl výběr dohledatelný na každém podúkolu i ve
-Slacku. Pokud je provider omezený, Slack i stavová zpráva uvádí absolutní
-`retry_at` a odpočet `retry za`; PM jej do té doby znovu nevolá.
+Před jediným centrálním requestem PM oznámí routing mode, povolené pořadí a
+důvod; po dokončení uloží skutečný provider, model, celou provider sequence,
+status receipt a usage potvrzené AO. Intake navíc zapisuje do `PM-DATA`
+`intake_provider_reason`, `intake_model_reason` a `intake_selection_reason`,
+aby byl výběr dohledatelný na každém podúkolu i ve Slacku. Pokud je provider
+omezený, Slack i stavová zpráva uvádí absolutní `retry_at` a odpočet `retry za`;
+PM jej do té doby znovu nepředá do dalšího centrálního requestu.
 Globální stav `LIMITED` nebo `ERROR` s `retry_after` je závazný pro všechny
 workflow fáze: PM takového providera nepředá ani do dalšího AO failover řetězce
 až do termínu revalidace. Do té doby se provider pouze lokálně přeskočí;
@@ -269,21 +273,23 @@ Hermesu zůstávají pouze jako evidence minulých rozhodnutí a nejsou provozn�
 instrukcí.
 
 Inbox planning/intake je samostatná AI fáze před worker dispatch. Produkční PM
-musí lidský vstup nejprve předat prvnímu dostupnému provideru z pořadí
-`groq → antigravity → claude → codex` (viz `INBOX_PLANNER_PROVIDERS`) a pravidlo je
-vynucené i samostatným read-only `plan-inbox` handoffem přes ai-orchestrator.
+musí lidský vstup předat jedním read-only `plan-inbox --agent auto` handoffem
+do ai-orchestratoru s aktuálně dostupným pořadím
+`groq → antigravity → claude → codex` (viz `INBOX_PLANNER_PROVIDERS`); AO v
+tomto jediném requestu vlastní výběr, failover a receipt všech providerů.
 AI planner musí vrátit validní atomické úkoly s různými prioritami, jinak
-zdroj zůstane v Inboxu fail-closed. PM uloží skutečný intake provider a model
-do Card Contractu a oznámí je ve Slacku. Deterministické heuristiky jsou pouze
-testovací/fallback knihovna, nikoli produkční vlastník intake rozhodnutí.
+zdroj zůstane v Inboxu fail-closed. PM uloží skutečný intake provider, model,
+sequence, status a usage do Card Contractu a oznámí je ve Slacku.
+Deterministické heuristiky jsou pouze testovací/fallback knihovna, nikoli
+produkční vlastník intake rozhodnutí.
 Handoff je úspěšný teprve po ověření postcondition orchestrátorem: exit code,
 provider/model z usage, povolený rozsah změn a skutečný filesystem/Git diff.
 Přesun karty jiným providerem provider z pořadí neodstraňuje: při dalším ticku
 se smí znovu účastnit po úspěšné dostupnostní revalidaci, ale PM nesmí jeho
 stav `ERROR` nebo `LIMITED` slepě přepsat na `AVAILABLE`. V Card Contractu a
-Slacku se rozlišuje `selected_provider` (provider vybraný PM) od
-`actual_provider` a `actual_model` potvrzených outboxem; při interním failoveru
-se musí zobrazit celá `provider_sequence`.
+Slacku se rozlišuje `selected_provider` (routing mode `auto` předaný PM) od
+`actual_provider` a `actual_model` potvrzených AO receiptem; při interním
+failoveru se musí zobrazit celá `provider_sequence` a všechny statusy.
 Pokud provider pouze popisuje postup, vrátí „success" bez postcondition nebo
 selže na pracovním adresáři, výsledek je `rejected`/`blocked` a nesmí se
 započítat do DoD. Staré diagnostické hlášení o chybějícím `provider`/`model`

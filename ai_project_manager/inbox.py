@@ -721,13 +721,19 @@ def process_inbox(
                         "execution_order": execution_order.index(index),
                         "dod": [item.to_dict() for item in task.dod],
                         "project_path": preparation.project_path,
-                            "generated_project": preparation.generated_project,
-                            "intake_provider": (planner_result or {}).get("provider"),
-                            "intake_model": (planner_result or {}).get("model"),
-                            "intake_provider_reason": (planner_result or {}).get("provider_reason"),
-                            "intake_model_reason": (planner_result or {}).get("model_reason"),
-                            "intake_selection_reason": (planner_result or {}).get("selection_reason"),
+                        "generated_project": preparation.generated_project,
+                        "intake_provider": (planner_result or {}).get("provider"),
+                        "intake_model": (planner_result or {}).get("model"),
+                        "intake_provider_reason": (planner_result or {}).get("provider_reason"),
+                        "intake_model_reason": (planner_result or {}).get("model_reason"),
+                        "intake_selection_reason": (planner_result or {}).get("selection_reason"),
                         })
+                    if isinstance((planner_result or {}).get("provider_statuses"), dict):
+                        task.extra_data["provider_statuses"] = planner_result["provider_statuses"]
+                    if isinstance((planner_result or {}).get("provider_sequence"), list):
+                        task.extra_data["provider_sequence"] = planner_result["provider_sequence"]
+                    if isinstance((planner_result or {}).get("usage"), dict):
+                        task.extra_data["usage"] = planner_result["usage"]
                     record_inbox_receipt(task, card, target_card_id=task.trello_card_id)
                     if persist_project is not None:
                         persist_project(task)
@@ -774,6 +780,12 @@ def process_inbox(
                         }
                     },
                 )
+                if isinstance((planner_result or {}).get("provider_statuses"), dict):
+                    task.extra_data["provider_statuses"] = planner_result["provider_statuses"]
+                if isinstance((planner_result or {}).get("provider_sequence"), list):
+                    task.extra_data["provider_sequence"] = planner_result["provider_sequence"]
+                if isinstance((planner_result or {}).get("usage"), dict):
+                    task.extra_data["usage"] = planner_result["usage"]
                 record_inbox_receipt(task, card, target_card_id=task.trello_card_id)
                 projects_by_name[task.name] = task
                 if persist_project is not None:

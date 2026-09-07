@@ -87,6 +87,9 @@ class OrchestratorConfig:
     allowed_push_remotes: dict = field(default_factory=dict)
     finalize_paths: dict = field(default_factory=dict)
     timeout_seconds: Optional[float] = None
+    # Inbox planning is a short read-only admission call, separate from the
+    # longer implementation/audit subprocess budget.
+    inbox_planner_timeout_seconds: float = 120.0
     project_paths: dict = field(default_factory=dict)
     projects_root: Optional[str] = None
     spec_dir: str = "specs"
@@ -223,6 +226,7 @@ def load_config(env: Optional[Mapping[str, str]] = None) -> Config:
       AI_ORCHESTRATOR_ALLOWED_PUSH_REMOTES         (optional JSON identity -> exact remote URL)
       AI_ORCHESTRATOR_FINALIZE_PATHS               (optional JSON identity -> explicit path list)
       AI_ORCHESTRATOR_TIMEOUT_SECONDS              (optional)
+      AI_PM_INBOX_PLANNER_TIMEOUT_SECONDS         (optional, default 120)
       AI_PM_PROJECT_PATHS                          (optional JSON object: project name -> local path)
       AI_PM_PROJECTS_ROOT                          (optional shared base dir for project checkouts)
       AI_ORCHESTRATOR_SPEC_DIR                     (default "specs")
@@ -261,6 +265,18 @@ def load_config(env: Optional[Mapping[str, str]] = None) -> Config:
         not math.isfinite(timeout_seconds) or timeout_seconds <= 0
     ):
         raise ConfigError("AI_ORCHESTRATOR_TIMEOUT_SECONDS must be a finite positive number")
+    planner_timeout_raw = env.get("AI_PM_INBOX_PLANNER_TIMEOUT_SECONDS", "120")
+    try:
+        planner_timeout_seconds = float(planner_timeout_raw)
+    except ValueError as exc:
+        raise ConfigError(
+            "AI_PM_INBOX_PLANNER_TIMEOUT_SECONDS must be a number, "
+            f"got {planner_timeout_raw!r}"
+        ) from exc
+    if not math.isfinite(planner_timeout_seconds) or planner_timeout_seconds <= 0:
+        raise ConfigError(
+            "AI_PM_INBOX_PLANNER_TIMEOUT_SECONDS must be finite and positive"
+        )
     project_paths: dict = {}
     raw_project_paths = env.get("AI_PM_PROJECT_PATHS")
     if raw_project_paths:
@@ -284,6 +300,7 @@ def load_config(env: Optional[Mapping[str, str]] = None) -> Config:
         allowed_push_remotes=allowed_push_remotes,
         finalize_paths=finalize_paths,
         timeout_seconds=timeout_seconds,
+        inbox_planner_timeout_seconds=planner_timeout_seconds,
         project_paths=project_paths,
         projects_root=(
             _absolute_path_setting(env, "AI_PM_PROJECTS_ROOT", "")

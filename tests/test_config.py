@@ -66,6 +66,7 @@ def test_load_config_defaults_providers_and_orchestrator_command():
     assert config.providers == ["auto"]
     assert config.orchestrator.command == ["ai-orchestrator"]
     assert config.poll_interval_seconds == 300.0
+    assert config.orchestrator.inbox_planner_timeout_seconds == 120.0
     assert config.holder == "project-manager"
     assert config.inbox_enabled is False
 
@@ -98,6 +99,18 @@ def test_load_config_parses_custom_providers_and_orchestrator_command():
     assert config.poll_interval_seconds == 45.0
     assert config.holder == "worker-1"
     assert config.trello.inbox_list_name == "Intake"
+
+
+def test_load_config_parses_inbox_planner_timeout():
+    config = load_config(base_env(AI_PM_INBOX_PLANNER_TIMEOUT_SECONDS="37.5"))
+
+    assert config.orchestrator.inbox_planner_timeout_seconds == 37.5
+
+
+@pytest.mark.parametrize("value", ["0", "-1", "nan", "inf", "soon"])
+def test_load_config_rejects_invalid_inbox_planner_timeout(value):
+    with pytest.raises(ConfigError, match="AI_PM_INBOX_PLANNER_TIMEOUT_SECONDS"):
+        load_config(base_env(AI_PM_INBOX_PLANNER_TIMEOUT_SECONDS=value))
 
 
 def test_load_config_parses_ordered_models_for_each_provider():
