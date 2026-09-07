@@ -510,6 +510,32 @@ def test_maintenance_migrates_existing_rejected_audit_into_no_repeat_hold():
     assert "audit neopakuje automaticky" in reloaded.next_step
 
 
+def test_maintenance_ignores_historical_audit_rejection_when_stop_reason_is_clear():
+    client = InMemoryTrelloClient()
+    testing = client.get_list_id_by_name("Testing")
+    project = ProjectRecord(
+        name="P5 — historical rejection with current state cleared",
+        status=ProjectStatus.TESTING,
+        main_task="Verify current condition",
+        open_feedback=[
+            "ai-orchestrator audit rejected DoD index(es) [1]: historical evidence"
+        ],
+        stop_reason=None,
+        dod=[
+            DoDItem(text="implementation", checked=True),
+            DoDItem(text="independent audit", phase="audit"),
+        ],
+    )
+    card = sync_project_to_trello(client, project)
+
+    assert maintain_board_contract(client) == []
+
+    raw = _parse_data_block(client.get_card(card["id"])["desc"])
+    assert raw["stop_reason"] is None
+    assert raw["open_feedback"] == project.open_feedback
+    assert "audit_waiting_for_change" not in raw
+
+
 def test_lifecycle_write_rejects_controller_verification_as_implementation_work():
     client = InMemoryTrelloClient()
     project = ProjectRecord(

@@ -1351,13 +1351,11 @@ def _repair_nonterminal_audit_rejection(project: ProjectRecord) -> bool:
         return False
     if project.extra_data.get("audit_waiting_for_change") is True:
         return False
-    # Use the already migrated ProjectRecord, not the pre-migration raw
-    # PM-DATA snapshot. A safe contract migration may intentionally retire an
-    # obsolete audit rejection; consulting ``raw`` here would immediately
-    # recreate the anti-loop hold that the migration just removed.
-    sources = [project.stop_reason, *project.open_feedback]
-    combined = "\n".join(str(value) for value in sources if value).casefold()
-    if not any(marker in combined for marker in _AUDIT_REJECTION_MARKERS):
+    # ``stop_reason`` is the current lifecycle marker written by the audit
+    # path. ``open_feedback`` is an append-only historical archive and must
+    # never recreate a hold after the current reason has been cleared.
+    current_stop_reason = str(project.stop_reason or "").strip().casefold()
+    if not any(marker in current_stop_reason for marker in _AUDIT_REJECTION_MARKERS):
         return False
     project.extra_data["audit_waiting_for_change"] = True
     if not project.next_step:
