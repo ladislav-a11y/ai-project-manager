@@ -46,6 +46,32 @@ def test_card_update_bounds_untrusted_audit_history_before_trello_write():
     assert priority_from_labels([]) == 0
 
 
+
+def test_oversized_provider_stop_reason_is_bounded_without_losing_error_signature():
+    project = ProjectRecord(
+        name="P1 — provider failure",
+        priority=1,
+        status=ProjectStatus.ERROR,
+        main_task="keep task text intact",
+        checkpoint={"run_id": "keep-checkpoint"},
+        stop_reason=(
+            "Error code: 400 - {'error': {'code': 'tool_use_failed', "
+            "'message': 'Failed to parse tool call arguments as JSON', "
+            "'failed_generation': '" + ("README payload " * 3000) + "'}}"
+        ),
+    )
+
+    updates = card_updates_from_project(project, {"Čeká na AI": "waiting"})
+
+    assert len(updates["desc"]) <= 14000
+    data = _parse_data_block(updates["desc"])
+    assert data["main_task"] == "keep task text intact"
+    assert data["checkpoint"] == {"run_id": "keep-checkpoint"}
+    assert "tool_use_failed" in data["stop_reason"]
+    assert "Failed to parse tool call arguments as JSON" in data["stop_reason"]
+    assert "provider diagnostic truncated" in data["stop_reason"]
+
+
 def test_contract_history_truncation_always_makes_progress(monkeypatch):
     """Regression for the live post-audit 100% CPU loop.
 

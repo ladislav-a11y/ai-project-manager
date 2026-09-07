@@ -234,6 +234,7 @@ STATUS_TO_LIST_CANDIDATES = {
 }
 MAX_TRELLO_FEEDBACK_CHARS = 3500
 MAX_TRELLO_LAST_OUTPUT_CHARS = 2500
+MAX_TRELLO_DIAGNOSTIC_CHARS = 2500
 TITLE_PRIORITY_RE = re.compile(r"^\s*P([0-5](?:\.\d+)?)(?:\s|[-—–:])", re.IGNORECASE)
 TITLE_PRIORITY_PREFIX_RE = re.compile(r"^\s*P[0-5](?:\.\d+)?\s*(?:[-—–:]\s*)?", re.IGNORECASE)
 
@@ -526,6 +527,18 @@ def _render_data_block(data: dict) -> str:
     return f"{BLOCK_START}\n{_escape_block_terminator(body)}\n{BLOCK_END}"
 
 
+
+def _bound_diagnostic_text(value: str, limit: int = MAX_TRELLO_DIAGNOSTIC_CHARS) -> str:
+    """Keep both the provider error signature and the newest tail without storing huge payloads."""
+    if len(value) <= limit:
+        return value
+    marker = "\n...[provider diagnostic truncated]...\n"
+    available = max(0, limit - len(marker))
+    head = available // 2
+    tail = available - head
+    return value[:head] + marker + value[-tail:]
+
+
 def _bound_contract_history(data: dict) -> dict:
     """Keep Trello writes below the API description limit.
 
@@ -550,11 +563,15 @@ def _bound_contract_history(data: dict) -> dict:
         bounded["last_output"] = (
             "[starší výstup zkrácen]\n" + last_output[-MAX_TRELLO_LAST_OUTPUT_CHARS:]
         )
+    for field in ("stop_reason", "blocked_by", "human_notified_reason"):
+        value = bounded.get(field)
+        if isinstance(value, str):
+            bounded[field] = _bound_diagnostic_text(value)
     # The fixed per-field bounds above are not enough when a card also carries
     # a large checkpoint. Trim diagnostic history only. Task text and the
     # machine contract are never silently shortened because doing so could
     # change the work the agent receives or invalidate its checkpoint.
-    prose_fields = ("open_feedback", "last_output")
+    prose_fields = ("open_feedback", "last_output", "stop_reason", "blocked_by", "human_notified_reason")
     rendered_length = len(_render_data_block(bounded))
     while rendered_length > MAX_TRELLO_DESC_CHARS:
         changed = False
