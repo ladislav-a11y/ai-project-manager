@@ -1065,3 +1065,69 @@ def test_process_inbox_uses_planner_for_new_work_on_existing_project():
     assert client.get_card(source["id"])["closed"] is True
     assert client.list_cards(name_to_id["Inbox"]) == []
     assert client.get_card(changed[0].trello_card_id)["list_id"] == name_to_id["New"]
+
+
+def test_planner_project_key_prevents_generated_checkout_for_known_project(tmp_path):
+    """Regression for the controlled Groq Inbox failure.
+
+    A source card may be unlabelled while the AI planner correctly resolves
+    the task to an existing configured project. PM must preserve that
+    ``project_key`` and must not replace it with a generated source-title
+    checkout.
+    """
+    from ai_project_manager.orchestrator_runner import resolve_project_path
+
+    client = InMemoryTrelloClient()
+    _, name_to_id = build_list_maps(client)
+    source = client.create_card(
+        name_to_id["Inbox"],
+        "Test Groq intake – krátké atomické subtasky",
+        desc=(
+            "Projekt D:/orchestrator/ai-project-manager. "
+            "Do README přidat jednu krátkou větu."
+        ),
+    )
+    expected_path = r"D:\orchestrator\ai-project-manager"
+    project_paths = {"AI Project Manager": expected_path}
+
+    def planner(card, projects):
+        return {
+            "provider": "groq",
+            "model": "openai/gpt-oss-120b",
+            "tasks": (
+                PreparedTask(
+                    title="README věta",
+                    task="Přidat požadovanou větu do README.",
+                    next_step="Upravit pouze README.",
+                    scope="README",
+                    priority=2.2,
+                    priority_reason="malá atomická změna",
+                    project_key="AI Project Manager",
+                    work_type="implementation",
+                    split_reason="první atomický krok",
+                ),
+            ),
+        }
+
+    changed = process_inbox(
+        client,
+        [],
+        persist_project=lambda project: sync_project_to_trello(client, project),
+        project_paths=project_paths,
+        projects_root=str(tmp_path / "generated-projects"),
+        planner=planner,
+    )
+
+    assert len(changed) == 1
+    project = changed[0]
+    assert project.project_key == "AI Project Manager"
+    assert resolve_project_path(project, project_paths=project_paths) == expected_path
+    metadata = project.extra_data["inbox_preparation"]
+    assert metadata["work_type"] == "implementation"
+    assert metadata["split_reason"] == "první atomický krok"
+    assert metadata["generated_project"] is False
+    assert metadata["project_path"] is None
+    card = client.get_card(project.trello_card_id)
+    labels = {label["name"] for label in card["labels"]}
+    assert "AI Project Manager" in labels
+    assert not (tmp_path / "generated-projects").exists()

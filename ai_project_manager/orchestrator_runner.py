@@ -283,6 +283,9 @@ def _planner_tasks(payload: dict, *, indivisible: bool) -> Optional[list[Prepare
         next_step = item.get("next_step")
         priority = item.get("priority")
         priority_reason = item.get("priority_reason")
+        project_key = item.get("project_key")
+        work_type = item.get("work_type")
+        split_reason = item.get("split_reason")
         depends_on = item.get("depends_on", [])
         if not all(
             isinstance(value, str) and value.strip()
@@ -291,6 +294,11 @@ def _planner_tasks(payload: dict, *, indivisible: bool) -> Optional[list[Prepare
             return None
         if not isinstance(depends_on, list):
             return None
+        for optional_text in (project_key, work_type, split_reason):
+            if optional_text is not None and (
+                not isinstance(optional_text, str) or not optional_text.strip()
+            ):
+                return None
         if isinstance(priority, bool) or not isinstance(priority, (int, float)):
             return None
         if not math.isfinite(float(priority)) or not 0 <= float(priority) < 6:
@@ -304,6 +312,9 @@ def _planner_tasks(payload: dict, *, indivisible: bool) -> Optional[list[Prepare
                 priority=float(priority),
                 priority_reason=str(priority_reason).strip(),
                 depends_on=tuple(depends_on),
+                project_key=str(project_key).strip() if project_key is not None else None,
+                work_type=str(work_type).strip() if work_type is not None else None,
+                split_reason=str(split_reason).strip() if split_reason is not None else None,
             )
         )
     if len({task.priority for task in result}) != len(result):

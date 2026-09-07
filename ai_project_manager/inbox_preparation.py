@@ -121,10 +121,13 @@ class PreparedTask:
     # all listed sibling tasks are in Hotovo; priority orders only tasks that
     # are otherwise dependency-ready.
     depends_on: tuple[int, ...] = ()
-    # Resolved per-task project identity (see ``_task_project_key``).  ``None``
-    # until ``prepare_inbox_card`` assigns it; a task never invents its own
-    # identity, it only narrows the source card's resolution to its own scope.
+    # Planner-provided per-task identity. When present it is authoritative
+    # only after validation against the configured project allowlist.
     project_key: Optional[str] = None
+    # Planner semantics are retained for traceability and later routing
+    # decisions; they must not be silently discarded at the AO -> PM boundary.
+    work_type: Optional[str] = None
+    split_reason: Optional[str] = None
 
 
 @dataclass(frozen=True)
@@ -528,13 +531,16 @@ def _task_project_key(
     source_key: Optional[str],
     project_paths: Optional[Mapping[str, str]],
 ) -> Optional[str]:
-    """Resolve one subtask's own project identity from its own scope/content.
+    """Resolve one subtask's project identity without overriding the planner.
 
-    A subtask inherits the source card's identity by default. It is routed
-    elsewhere only when its own scope+text unambiguously names exactly one
-    *other* configured project; an absent or ambiguous match still falls
-    back to the source identity instead of guessing.
+    A planner-provided ``project_key`` is authoritative after allowlist
+    validation. Legacy/deterministic tasks without one retain the historical
+    bounded scope matching and source inheritance behavior.
     """
+    if task.project_key:
+        if project_paths is None or task.project_key in project_paths:
+            return task.project_key
+        return None
     if not project_paths:
         return source_key
     matches = _configured_project_matches(f"{task.scope} {task.task}", project_paths)
@@ -633,11 +639,52 @@ def prepare_inbox_card(
     source_name = str(card.get("name") or "Inbox úkol").strip()
     text = normalize_inbox_text(inbox_source_text(card) or source_name)
     project_key, human_reason = resolve_project_key(card, text, project_paths, card_project_keys)
+
+    # AI planner identity is per-task and must survive materialization. If the
+    # source itself has no identity but every planned task names an allowlisted
+    # project, that is sufficient and must never fall through to generated
+    # checkout creation. Conflicts/unknown keys fail closed.
+    planned_project_keys = {
+        str(task.project_key).strip()
+        for task in (planned_tasks or ())
+        if task.project_key and str(task.project_key).strip()
+    }
+    if planned_tasks is not None and planned_project_keys:
+        unknown_keys = (
+            sorted(key for key in planned_project_keys if key not in project_paths)
+            if project_paths is not None
+            else []
+        )
+        if unknown_keys:
+            project_key = None
+            human_reason = (
+                "AI planner vrátil projektovou identitu mimo povolenou mapu projektů: "
+                + ", ".join(unknown_keys)
+            )
+        elif len(planned_project_keys) == 1:
+            planner_key = next(iter(planned_project_keys))
+            if project_key and project_key != planner_key:
+                human_reason = (
+                    "Projektová identita AI planneru je v konfliktu s explicitní identitou zdrojové karty."
+                )
+            else:
+                project_key = planner_key
+                human_reason = None
+        elif project_key and project_key not in planned_project_keys:
+            human_reason = (
+                "Projektová identita zdrojové karty není obsažena v explicitních identitách AI planneru."
+            )
+        else:
+            # A valid cross-project split may legitimately have no single
+            # source-level project identity; each child remains explicitly bound.
+            human_reason = None
+
     project_path: Optional[str] = None
     generated_project = False
     if (
         allow_new_project
         and human_reason
+        and not planned_project_keys
         # A repair names an existing system boundary, but its title is not a
         # safe repository identity.  Never create a disposable slug checkout
         # for corrective work; require an explicit project label/mapping.

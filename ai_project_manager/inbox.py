@@ -711,6 +711,8 @@ def process_inbox(
                     metadata.update({
                         "subtask_count": len(preparation.tasks),
                         "scope": prepared_task.scope,
+                        "work_type": prepared_task.work_type,
+                        "split_reason": prepared_task.split_reason,
                         "source_priority": preparation.priority,
                         "source_priority_reason": preparation.priority_reason,
                         "task_priority": prepared_task.priority,
@@ -754,6 +756,8 @@ def process_inbox(
                             "subtask_index": index,
                             "subtask_count": len(preparation.tasks),
                             "scope": prepared_task.scope,
+                            "work_type": prepared_task.work_type,
+                            "split_reason": prepared_task.split_reason,
                             "source_priority": preparation.priority,
                             "source_priority_reason": preparation.priority_reason,
                             "task_priority": prepared_task.priority,

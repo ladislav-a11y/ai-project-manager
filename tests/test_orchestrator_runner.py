@@ -1874,11 +1874,14 @@ def test_inbox_planner_excludes_retired_provider_names_and_returns_validated_ai_
                         {
                             "tasks": [
                                 {
+                                    "project_key": "AI Project Manager",
                                     "scope": "regrese",
                                     "task": "Opravit potvrzenou regresi.",
                                     "next_step": "Reprodukovat regresi.",
                                     "priority": 4.01,
                                     "priority_reason": "potvrzená regrese; P5 pracovní oprava",
+                                    "work_type": "implementation",
+                                    "split_reason": "samostatná atomická oprava",
                                 }
                             ]
                         }
@@ -1903,6 +1906,9 @@ def test_inbox_planner_excludes_retired_provider_names_and_returns_validated_ai_
     assert "podle typu a náročnosti" in selections[0]["model"]
     assert selections[0]["task_type"] == "inbox_planning"
     assert result["tasks"][0].priority == 4.01
+    assert result["tasks"][0].project_key == "AI Project Manager"
+    assert result["tasks"][0].work_type == "implementation"
+    assert result["tasks"][0].split_reason == "samostatná atomická oprava"
     assert calls[0][0] == ["python", "orchestrator.py", "plan-inbox", "--agent", "groq"]
     assert "gemini" not in calls[0][0]
     assert "hermes" not in calls[0][0]
