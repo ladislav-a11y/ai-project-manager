@@ -84,6 +84,8 @@ from .orchestrator_handoff import (
 )
 from .providers import (
     ProviderRegistry,
+    TASK_AUDIT,
+    TASK_IMPLEMENTATION,
     TASK_INBOX_PLANNING,
     detect_limit,
 )
@@ -92,7 +94,8 @@ from .scheduler import audit_capability_key
 logger = logging.getLogger("ai_project_manager")
 
 # command (argv, already including --project/--goal/--spec/--agent/
-# --model/--run-id when a model is configured) -> a
+# --provider-models or --model when a model is configured/selected, plus
+# --run-id) -> a
 # subprocess.CompletedProcess-like object with
 # .returncode, .stdout, .stderr. Injectable so tests never spawn a real
 # process and callers can point at any ai-orchestrator invocation shape.
@@ -231,6 +234,31 @@ def map_provider_to_agent(provider: str, provider_agent_map: Optional[dict] = No
     pass through unchanged."""
     mapping = provider_agent_map if provider_agent_map is not None else DEFAULT_PROVIDER_AGENT_MAP
     return mapping.get(provider, provider)
+
+
+def _provider_model_overrides(
+    provider_registry: ProviderRegistry,
+    task_type: str,
+    *,
+    provider_agent_map: Optional[dict] = None,
+    provider_names: Optional[list[str] | tuple[str, ...]] = None,
+) -> dict[str, str]:
+    """Build AO's provider-specific model map for one workflow phase.
+
+    The PM registry stores an ordered catalog per PM provider: the first
+    entry is used for planning/implementation and the last for audit. AO
+    receives exact provider-keyed overrides, so failover never reuses a
+    model slug belonging to another provider.
+    """
+    names = provider_names or provider_registry.registered_names()
+    overrides: dict[str, str] = {}
+    for provider in names:
+        model = provider_registry.model_for_task(provider, task_type)
+        if not model:
+            continue
+        agent_name = map_provider_to_agent(provider, provider_agent_map)
+        overrides.setdefault(agent_name, model)
+    return overrides
 
 
 def _default_run_id() -> str:
@@ -509,19 +537,30 @@ def build_inbox_planner_fn(
         if not available:
             return None
         provider_order = [map_provider_to_agent(provider) for provider in available]
+        provider_models = _provider_model_overrides(
+            provider_registry,
+            TASK_INBOX_PLANNING,
+            provider_names=available,
+        )
+        selected_model = provider_models.get(provider_order[0])
         provider_reason = (
             "ai-orchestrator centrálně zvolí první dostupný provider z pořadí "
             + ", ".join(provider_order)
             + "; PM pouze předává povolené pořadí a nepouští vlastní failover smyčku"
         )
         model_reason = (
-            "model volí provider přes centrální ai-orchestrator; PM nepředává --model"
+            "PM předává provider-specific model map pro intake"
+            + (
+                f"; první kandidát {selected_model!r}"
+                if selected_model
+                else "; bez explicitního override používá provider svůj default"
+            )
         )
         selection = {
             "source_card_id": request["card"]["id"],
             "source_card_name": request["card"]["name"],
             "provider": "auto",
-            "model": "centrální provider failover",
+            "model": selected_model or "provider-specific AO defaults",
             "provider_reason": provider_reason,
             "model_reason": model_reason,
             "task_type": TASK_INBOX_PLANNING,
@@ -535,6 +574,11 @@ def build_inbox_planner_fn(
             "--agent", "auto",
             "--provider-order", ",".join(provider_order),
         ]
+        if provider_models:
+            full_command += [
+                "--provider-models",
+                json.dumps(provider_models, ensure_ascii=False, separators=(",", ":")),
+            ]
         try:
             completed = subprocess_run(
                 full_command,
@@ -1356,7 +1400,14 @@ def build_run_fn(
         # The PM selects a provider, not a model. Each provider owns its
         # model policy and may choose an appropriate model from the task
         # prompt. Never pass a stale PM-side --model override.
-        selected_model = None
+        provider_model_overrides = _provider_model_overrides(
+            provider_registry,
+            TASK_IMPLEMENTATION,
+            provider_agent_map=provider_agent_map,
+        )
+        selected_model = provider_model_overrides.get(
+            map_provider_to_agent(provider, provider_agent_map)
+        )
         task = build_orchestrator_task(project, definition_of_done=definition_of_done, provider=agent_name)
 
         try:
@@ -1432,6 +1483,17 @@ def build_run_fn(
                 "--provider-order",
                 ",".join(_tick_provider_order(provider, provider_registry, project, provider_agent_map)),
             ]
+            if provider_model_overrides:
+                full_command += [
+                    "--provider-models",
+                    json.dumps(
+                        provider_model_overrides,
+                        ensure_ascii=False,
+                        separators=(",", ":"),
+                    ),
+                ]
+        elif selected_model:
+            full_command += ["--model", selected_model]
         full_command += [
             "--run-id", run_id,
             "--implementation-only",
@@ -1619,9 +1681,14 @@ def build_audit_run_fn(
 
     def audit_run_fn(project: ProjectRecord, provider: str) -> dict:
         agent_name = "auto" if use_provider_failover else map_provider_to_agent(provider, provider_agent_map)
-        # Model selection belongs to the selected provider. The PM passes the
-        # audit task prompt and never forces a provider-specific model.
-        selected_model = None
+        provider_model_overrides = _provider_model_overrides(
+            provider_registry,
+            TASK_AUDIT,
+            provider_agent_map=provider_agent_map,
+        )
+        selected_model = provider_model_overrides.get(
+            map_provider_to_agent(provider, provider_agent_map)
+        )
         task = build_audit_task(project, provider=agent_name)
 
         try:
@@ -1658,6 +1725,17 @@ def build_audit_run_fn(
                 "--provider-order",
                 ",".join(_tick_provider_order(provider, provider_registry, project, provider_agent_map)),
             ]
+            if provider_model_overrides:
+                full_command += [
+                    "--provider-models",
+                    json.dumps(
+                        provider_model_overrides,
+                        ensure_ascii=False,
+                        separators=(",", ":"),
+                    ),
+                ]
+        elif selected_model:
+            full_command += ["--model", selected_model]
         full_command += [
             "--run-id", run_id,
             # Testování is an audit gate, not another implementation loop.

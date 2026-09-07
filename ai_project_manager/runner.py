@@ -129,9 +129,15 @@ def _model_selection_reason(
             f"model {model} je pro {task_label} skutečně použitý model providera "
             "potvrzený ai-orchestrátorem"
         )
+    configured_model = provider_registry.model_for_task(provider, task_type)
+    if configured_model:
+        return (
+            f"PM předává provideru {provider} pro {task_label} nakonfigurovaný model "
+            f"{configured_model}; AO jej použije pouze pro tohoto providera"
+        )
     return (
-        f"provider si model pro {task_label} vybere podle typu úkolu; "
-        "PM nepředává --model"
+        f"provider použije svůj nakonfigurovaný/default model pro {task_label}; "
+        "PM nemá ověřený explicitní modelový override"
     )
 
 
@@ -597,7 +603,7 @@ def run_once(
 
     project = decision.project
     provider = decision.provider
-    selected_model = None
+    selected_model = provider_registry.model_for_task(provider, TASK_IMPLEMENTATION)
     provider_detail = f"{provider} | model: {_display_model(provider, selected_model)}"
     provider_reason = _provider_selection_reason(
         project, provider, providers_for_project, default_providers, provider_registry, TASK_IMPLEMENTATION
@@ -835,7 +841,7 @@ def run_once_audit(
 
     project = decision.project
     provider = decision.provider
-    selected_model = None
+    selected_model = provider_registry.model_for_task(provider, TASK_AUDIT)
     provider_detail = f"{provider} | model: {_display_model(provider, selected_model)}"
     provider_reason = _provider_selection_reason(
         project, provider, providers_for_project, default_providers, provider_registry, TASK_AUDIT

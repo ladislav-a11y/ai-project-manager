@@ -50,12 +50,7 @@ class ProviderState:
 
 
 def supports_model_selection(name: str) -> bool:
-    """Whether ``name`` may use the PM model catalog for diagnostics.
-
-    Production dispatch never forwards a PM-selected ``--model`` to a
-    provider. All supported PM providers use the generic provider-owned model
-    policy, so this compatibility helper is true for every provider name.
-    """
+    """Whether ``name`` may receive a provider-specific model override."""
     return True
 
 
@@ -116,10 +111,11 @@ class ProviderRegistry:
         return self._statuses[name]
 
     def configure_models(self, name: str, models: list[str]) -> ProviderStatus:
-        """Record an ordered diagnostic/backwards-compatible model catalog.
+        """Record an ordered provider-specific model catalog.
 
-        Empty and duplicate values are discarded. The catalog is not used to
-        construct production argv; the provider owns model selection.
+        Empty and duplicate values are discarded. PM uses the first model for
+        Inbox planning/implementation and the last for independent audit;
+        AO receives the resulting exact model only for the matching provider.
         """
         status = self.register(name)
         self._configured_model_catalogs.add(name)
@@ -143,16 +139,12 @@ class ProviderRegistry:
         return status.selected_model if status is not None else None
 
     def model_for_task(self, name: str, task_type: str) -> Optional[str]:
-        """Return the legacy catalog suggestion for diagnostics only.
-
-        Production dispatch does not call this helper; it is retained for
-        diagnostics and compatibility with persisted model catalogs.
+        """Return the configured model for one workflow phase.
 
         A provider with zero or one configured models behaves exactly like
         ``selected_model`` for every task type - this only differentiates
         once an operator has actually configured more than one usable model
-        in ``AI_PM_PROVIDER_MODELS``, so it never changes behavior outside
-        that opt-in case. The ordered model list runs from the most
+        in ``AI_PM_PROVIDER_MODELS``. The ordered model list runs from the most
         economical default (index 0 - Inbox planning and routine
         implementation) to the highest-quality/most capable option (last
         index - the independent audit gate, where correctness matters more

@@ -488,15 +488,15 @@ def test_audit_run_fn_uses_supported_autonomous_cli_and_reads_internal_audit(tmp
 
     assert result["verdict"] == "accepted"
     assert "--mode" not in seen["command"]
-    assert "--model" not in seen["command"]
+    assert seen["command"][seen["command"].index("--model") + 1] == "claude-opus-4-1"
     assert seen["command"][seen["command"].index("--max-iterations") + 1] == "1"
     assert seen["command"][-1] == "--no-commit"
     assert result["active_provider"] == "anthropic"
     assert result["active_model"] == "claude-opus-4-1"
 
 
-def test_audit_and_implementation_delegate_model_selection_to_provider(tmp_path):
-    """PM passes task type/context, never a stale provider model override."""
+def test_audit_and_implementation_use_phase_specific_model_override(tmp_path):
+    """PM sends the economical model for implementation and the final catalog model for audit."""
     registry = ProviderRegistry()
     registry.mark_available("claude")
     registry.configure_models("claude", ["claude-sonnet-4", "claude-opus-4-1"])
@@ -519,7 +519,7 @@ def test_audit_and_implementation_delegate_model_selection_to_provider(tmp_path)
 
     run_fn, _, _ = make_run_fn(tmp_path, registry, subprocess_run=fake_impl_subprocess_run)
     run_fn(implementation_project, "claude")
-    assert "--model" not in implementation_seen["command"]
+    assert implementation_seen["command"][implementation_seen["command"].index("--model") + 1] == "claude-sonnet-4"
 
     audit_project = ProjectRecord(
         name="Demo",
@@ -552,7 +552,7 @@ def test_audit_and_implementation_delegate_model_selection_to_provider(tmp_path)
         run_id_fn=lambda: "audit-run",
     )(audit_project, "claude")
 
-    assert "--model" not in audit_seen["command"]
+    assert audit_seen["command"][audit_seen["command"].index("--model") + 1] == "claude-opus-4-1"
 
 
 def test_production_audit_starts_with_pm_selected_provider_and_skips_capability_limited_provider(tmp_path):
@@ -889,7 +889,7 @@ def test_run_fn_invokes_real_cli_with_project_goal_spec_and_agent(tmp_path):
     # provider "claude" is Project Manager's own name; the ai-orchestrator
     # CLI expects its agent identifier, "claude-code" (item 5).
     assert command[command.index("--agent") + 1] == "claude-code"
-    assert "--model" not in command
+    assert command[command.index("--model") + 1] == "claude-opus-4-1"
     assert command[command.index("--run-id") + 1] == "fixed-run-id"
 
     spec_path = command[command.index("--spec") + 1]
@@ -982,10 +982,9 @@ def test_auto_provider_alias_resolves_to_real_available_failover_order(tmp_path)
     )
 
 
-def test_production_failover_suppresses_pm_selected_model(tmp_path):
-    # Same-tick failover hands the whole provider chain to ai-orchestrator,
-    # so a single PM-selected model can never apply across it - this must
-    # A single PM-selected model must never apply across an AO failover chain.
+def test_production_failover_passes_provider_specific_model_map(tmp_path):
+    # Same-tick failover hands the whole provider chain to ai-orchestrator;
+    # each provider gets only its own configured model.
     registry = ProviderRegistry()
     for name in ("antigravity", "claude", "codex"):
         registry.mark_available(name)
@@ -1015,6 +1014,10 @@ def test_production_failover_suppresses_pm_selected_model(tmp_path):
 
     assert seen["command"][seen["command"].index("--agent") + 1] == "auto"
     assert "--model" not in seen["command"]
+    provider_models = json.loads(
+        seen["command"][seen["command"].index("--provider-models") + 1]
+    )
+    assert provider_models == {"codex": "gpt-5.6"}
 
 
 def test_production_failover_excludes_limited_providers_from_next_workflow_step(tmp_path):
@@ -1952,17 +1955,20 @@ def test_inbox_planner_excludes_retired_provider_names_and_returns_validated_ai_
     assert "první dostupný provider" in result["provider_reason"]
     assert "skutečně použitý model" in result["model_reason"]
     assert selections[0]["provider"] == "auto"
-    assert selections[0]["model"] == "centrální provider failover"
+    assert selections[0]["model"] == "openai/gpt-oss-120b"
     assert "centrálně zvolí" in selections[0]["provider_reason"]
     assert selections[0]["task_type"] == "inbox_planning"
     assert result["tasks"][0].priority == 4.01
     assert result["tasks"][0].project_key == "AI Project Manager"
     assert result["tasks"][0].work_type == "implementation"
     assert result["tasks"][0].split_reason == "samostatná atomická oprava"
-    assert calls[0][0] == [
+    assert calls[0][0][:7] == [
         "python", "orchestrator.py", "plan-inbox", "--agent", "auto",
         "--provider-order", "groq,antigravity,codex",
     ]
+    assert json.loads(calls[0][0][calls[0][0].index("--provider-models") + 1]) == {
+        "groq": "openai/gpt-oss-120b",
+    }
     assert "gemini" not in calls[0][0]
     assert "hermes" not in calls[0][0]
 

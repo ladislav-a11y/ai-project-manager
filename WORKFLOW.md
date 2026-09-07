@@ -185,9 +185,12 @@ dostupné pořadí povolených providerů (Hermes je z PM úplně vyřazen, viz 
 „Hermes - vyřazen z produkčního PM routingu" níže, ne jen z této fáze). AO
 centrálně provede výběr i failover při limitu, timeoutu, nedostupnosti nebo
 explicitní chybě strukturovaného planning requestu. PM planneru ani
-implementaci/auditu nepředává `--model`: konkrétní model volí provider podle
-typu úkolu a skutečně použitý model se bere až z AO receipt. Žádný free
-provider nesmí při nedostupnosti svého povoleného free modelu tiše zvolit
+implementaci/auditu předává `--provider-models` jako mapu konkrétních modelů
+pro jednotlivé providery, pokud je pro ně model nakonfigurovaný nebo potvrzený
+receiptem. Failover nikdy nepřenáší slug jednoho providera na jiného; chybějící
+mapa znamená providerův vlastní nakonfigurovaný/default model a skutečně
+použitý model se bere z AO receipt. Žádný free provider nesmí při nedostupnosti
+svého povoleného free modelu tiše zvolit
 placený LLM.
 Před jediným centrálním requestem PM oznámí routing mode, povolené pořadí a
 důvod; po dokončení uloží skutečný provider, model, celou provider sequence,

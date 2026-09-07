@@ -188,7 +188,7 @@ def _resume_due_provider_waits(
                 source="provider_default",
                 provider_reason=(
                     f"provider {project.provider} pokračuje z checkpointu; "
-                    "model vybere podle typu úkolu a PM nepředává --model"
+                    "modelový override se znovu vyhodnotí podle fáze při dalším dispatchi"
                 ),
             )
         sync_project_to_trello(client, project)

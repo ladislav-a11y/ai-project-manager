@@ -533,7 +533,7 @@ def test_run_once_notifies_slack_start_and_done_when_explicitly_enabled(monkeypa
     assert len(calls) == 2
     assert "PM zahajuje práci" in calls[0] and "Demo" in calls[0]
     assert "proč: provider je první dostupný" in calls[0]
-    assert "provider si model pro implementaci vybere podle typu úkolu" in calls[0]
+    assert "nakonfigurovaný model claude-opus-4-1" in calls[0]
     assert "Průběžný stav: PM ukončil tick" in calls[1] and "audit" in calls[1].lower()
     assert "total=n/a" in calls[1]
 
@@ -595,7 +595,7 @@ def test_run_once_does_not_report_unconfirmed_configured_model():
 
     assert outcome.ran is True
     assert project.extra_data["provider_selection"]["model"] is None
-    assert "must-not-be-forwarded" not in project.extra_data["provider_selection"]["provider_reason"]
+    assert "must-not-be-forwarded" in project.extra_data["provider_selection"]["provider_reason"]
 
 
 def test_run_once_audit_is_the_only_path_to_hotovo():
@@ -671,8 +671,8 @@ def test_run_once_audit_applies_limited_status_from_successful_failover_receipt(
     assert registry.get_status("codex").state == ProviderState.AVAILABLE
 
 
-def test_run_once_audit_leaves_model_selection_to_provider():
-    """A configured catalog is diagnostic only; the provider selects per task."""
+def test_run_once_audit_selects_quality_model_from_provider_catalog():
+    """Audit uses the last model in the provider's ordered catalog."""
     project = ProjectRecord(
         name="Demo",
         priority=3,
@@ -698,7 +698,7 @@ def test_run_once_audit_leaves_model_selection_to_provider():
 
     assert outcome.ran is True
     assert project.extra_data["provider_selection"]["model"] is None
-    assert "provider si model pro audit vybere podle typu úkolu" in project.extra_data["provider_selection"]["provider_reason"]
+    assert "nakonfigurovaný model claude-opus-4-1" in project.extra_data["provider_selection"]["provider_reason"]
 
 
 def test_implementation_receipt_preserves_catalog_for_following_audit_dispatch():
@@ -752,7 +752,7 @@ def test_implementation_receipt_preserves_catalog_for_following_audit_dispatch()
     )
 
     assert audit.ran is True
-    assert dispatched == [(None, "claude")]
+    assert dispatched == [("claude-opus-4-1", "claude")]
 
 
 def test_run_once_audit_rejected_returns_concrete_feedback_to_pracuje_se():

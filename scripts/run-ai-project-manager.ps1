@@ -36,6 +36,7 @@ if (-not $PythonExe) {
 $secretPath = Join-Path $projectRoot '.secrets\scheduler.clixml'
 $runtimeDir = Join-Path $projectRoot 'runtime\scheduler'
 $inheritedProviderStatePath = $env:AI_PM_PROVIDER_STATE_PATH
+$inheritedProviderModels = $env:AI_PM_PROVIDER_MODELS
 
 if ($PollIntervalSeconds -lt 1) {
     throw 'PollIntervalSeconds must be at least 1.'
@@ -124,9 +125,15 @@ try {
         }
         $env:AI_PM_PROVIDERS = $ProviderOverride.Trim()
     }
-    # Model selection belongs to each provider. PM passes only the task
-    # prompt and provider identity.
-    $env:AI_PM_PROVIDER_MODELS = '{}'
+    # Preserve an operator-configured provider -> model catalog so PM can pass
+    # provider-specific overrides to AO. An empty value means that each
+    # provider keeps its configured/default model.
+    if ([string]::IsNullOrWhiteSpace($inheritedProviderModels)) {
+        $env:AI_PM_PROVIDER_MODELS = '{}'
+    }
+    else {
+        $env:AI_PM_PROVIDER_MODELS = $inheritedProviderModels
+    }
     $env:AI_PM_POLL_INTERVAL_SECONDS = [string]$PollIntervalSeconds
     # Cleanup is constrained to direct, expired .pytest-basetemp-* children
     # of this checkout and runs only after a scheduler tick has completed.
@@ -302,7 +309,7 @@ finally {
     $env:TRELLO_INBOX_LIST = $null
     $env:AI_PM_ENABLE_INBOX = $null
     $env:AI_PM_PROVIDERS = $null
-    $env:AI_PM_PROVIDER_MODELS = $null
+    $env:AI_PM_PROVIDER_MODELS = $inheritedProviderModels
     $env:AI_PM_POLL_INTERVAL_SECONDS = $null
     $env:AI_PM_ARTIFACT_CLEANUP_ROOT = $null
     $env:AI_PM_ARTIFACT_RETENTION_HOURS = $null

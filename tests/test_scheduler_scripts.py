@@ -64,7 +64,7 @@ def test_runner_delegates_model_selection_to_providers() -> None:
 
     assert "$env:AI_PM_PROVIDERS = 'groq,antigravity,claude,codex'" in source
     assert "$env:AI_PM_PROVIDER_MODELS = '{}'" in source
-    assert "Model selection belongs to each provider" in source
+    assert "Preserve an operator-configured provider" in source
 
 
 def test_runner_does_not_hardcode_ai_project_manager_finalize_paths() -> None:
@@ -156,9 +156,9 @@ def test_runner_clears_every_environment_variable_it_sets() -> None:
         for line in cleanup.splitlines()
         if line.strip().startswith("$env:") and line.strip().endswith("= $null")
     }
-    # AI_PM_PROVIDER_STATE_PATH is special, but its no-inherited-value branch
-    # still clears it exactly like the other launcher-owned variables.
-    assert cleared == assigned
+    # Provider model configuration is special: it is restored to the caller's
+    # inherited value instead of always being cleared.
+    assert cleared == assigned - {"$env:AI_PM_PROVIDER_MODELS"}
     assert "$env:AI_PM_PROVIDER_STATE_PATH" in cleanup
 
 

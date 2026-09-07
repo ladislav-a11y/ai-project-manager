@@ -233,9 +233,9 @@ def load_config(env: Optional[Mapping[str, str]] = None) -> Config:
       AI_ORCHESTRATOR_OUTBOX_DIR                   (default "outbox")
       AI_PM_PROVIDERS                              (default "auto")
       AI_PM_PROVIDERS_FOR_PROJECT                  (optional JSON object)
-      AI_PM_PROVIDER_MODELS                        (optional diagnostic/backwards-compatible JSON
-                                                     provider -> model catalog; PM never forwards
-                                                     these entries as --model)
+      AI_PM_PROVIDER_MODELS                        (optional JSON provider -> ordered model catalog;
+                                                     first model is planning/implementation, last audit;
+                                                     PM passes exact per-provider overrides to AO)
       AI_PM_CARD_PROJECT_KEYS                      (optional JSON object: Trello card ID or exact title -> project identity)
       AI_PM_POLL_INTERVAL_SECONDS                  (default "300")
       AI_PM_HOLDER                                 (default "project-manager")
