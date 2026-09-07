@@ -1012,6 +1012,31 @@ def _mark_limited_result(
     return result
 
 
+def _status_paths(status_output: str) -> list[str]:
+    """Extract repository-relative paths from raw ``git status --porcelain``."""
+    paths = []
+    for line in (status_output or "").splitlines():
+        if len(line) < 4:
+            continue
+        path = line[3:].strip()
+        if " -> " in path:
+            path = path.rsplit(" -> ", 1)[1]
+        if path:
+            paths.append(path.replace("\\", "/"))
+    return paths
+
+
+def _controller_scope_checkpoint(checkpoint: Optional[dict], preexisting_paths: list[str]) -> dict:
+    """Persist the pre-dispatch baseline for the controller finalizer."""
+    result = dict(checkpoint or {})
+    if not preexisting_paths:
+        return result
+    context = dict(result.get("controller_finalization_context") or {})
+    context["preexisting_paths"] = list(preexisting_paths)
+    result["controller_finalization_context"] = context
+    return result
+
+
 def _identity_setting(settings: Optional[dict], identity: Optional[str]):
     if not settings or not identity:
         return None
@@ -1139,6 +1164,7 @@ def _controller_finalize(
     run_id: str,
     command: list,
     finalize_paths: Optional[dict],
+    preexisting_paths: Optional[list[str]],
     allowed_push_remotes: Optional[dict],
     subprocess_run: SubprocessFn,
     indices: list[int],
@@ -1154,6 +1180,8 @@ def _controller_finalize(
     ]
     for path in paths:
         full_command.extend(["--path", path])
+    for path in preexisting_paths or []:
+        full_command.extend(["--preexisting-path", path])
     if allowed_remote:
         full_command.extend(["--allowed-remote", allowed_remote])
     previous_head = get_git_head(project_path, run_git=run_git)
@@ -1252,13 +1280,21 @@ def build_finalize_fn(
             # transient Trello write failure) - nothing to do.
             return {"status": "done", "already_verified": True}
         run_id = run_id_fn()
+        context = (project.checkpoint or {}).get("controller_finalization_context")
+        preexisting_paths = []
+        if isinstance(context, dict) and isinstance(context.get("preexisting_paths"), list):
+            preexisting_paths = [
+                path for path in context["preexisting_paths"]
+                if isinstance(path, str) and path.strip()
+            ]
         goal = (
             f"Controller finalization: commit and push the verified, "
             f"already-implemented work for {project.name}."
         )
         return _controller_finalize(
             project, project_path, goal, run_id, command,
-            finalize_paths, allowed_push_remotes, subprocess_run, [], git_cmd,
+            finalize_paths, preexisting_paths, allowed_push_remotes,
+            subprocess_run, [], git_cmd,
         )
 
     return finalize_fn
@@ -1337,8 +1373,27 @@ def build_run_fn(
                 f"or is not a directory: {project_path}"
             )
 
-        run_id = run_id_fn()
         initial_head = get_git_head(project_path, run_git=git_cmd)
+        preexisting_paths = []
+        if initial_head:
+            initial_status = git_cmd(("git", "-C", project_path, "status", "--porcelain"))
+            if initial_status.returncode != 0:
+                raise OrchestratorProcessError(
+                    "could not capture the repository baseline before dispatch: "
+                    f"{initial_status.stderr.strip() or initial_status.stdout.strip()}"
+                )
+            preexisting_paths = _status_paths(initial_status.stdout)
+
+        def with_scope_context(result: dict) -> dict:
+            result = dict(result or {})
+            result["checkpoint"] = _controller_scope_checkpoint(
+                result.get("checkpoint", project.checkpoint), preexisting_paths
+            )
+            return result
+
+        task.checkpoint = _controller_scope_checkpoint(task.checkpoint, preexisting_paths)
+
+        run_id = run_id_fn()
         existing_finalization = (project.checkpoint or {}).get("finalization")
         finalization_verified = _controller_finalization_is_verified(
             existing_finalization, initial_head
@@ -1352,7 +1407,7 @@ def build_run_fn(
         if finalize_command and finalization_indices is not None and not finalization_verified:
             return _controller_finalize(
                 project, project_path, task.task, run_id, finalize_command,
-                finalize_paths, allowed_push_remotes, subprocess_run,
+                finalize_paths, preexisting_paths, allowed_push_remotes, subprocess_run,
                 finalization_indices or [], git_cmd,
             )
 
@@ -1388,7 +1443,9 @@ def build_run_fn(
         except Exception as exc:  # noqa: BLE001 - any spawn/timeout failure
             retry_after = detect_limit(exc)
             if retry_after is not None:
-                return _mark_limited_result(provider_registry, provider, project, retry_after, str(exc))
+                return with_scope_context(
+                    _mark_limited_result(provider_registry, provider, project, retry_after, str(exc))
+                )
             raise OrchestratorProcessError(f"failed to run ai-orchestrator: {exc}") from exc
 
         combined_output = "\n".join(
@@ -1406,9 +1463,9 @@ def build_run_fn(
                 failure = RuntimeError(combined_output.strip() or f"exit code {completed.returncode}")
                 retry_after = detect_limit(failure)
                 if retry_after is not None:
-                    return _mark_limited_result(
+                    return with_scope_context(_mark_limited_result(
                         provider_registry, provider, project, retry_after, str(failure)
-                    )
+                    ))
                 raise OrchestratorProcessError(
                     f"ai-orchestrator exited {completed.returncode} and no matching outbox result was found: {exc}; "
                     f"output: {combined_output.strip()}"
@@ -1436,7 +1493,7 @@ def build_run_fn(
                 if retry_seconds is not None
                 else (detect_limit(RuntimeError(str(reported_limit))) or _DEFAULT_LIMIT_BACKOFF)
             )
-            return _mark_limited_result(
+            return with_scope_context(_mark_limited_result(
                 provider_registry,
                 provider,
                 project,
@@ -1449,7 +1506,7 @@ def build_run_fn(
                 usage=payload.get("usage"),
                 provider_statuses=payload.get("provider_statuses"),
                 provider_agent_map=provider_agent_map,
-            )
+            ))
 
         result: dict = {}
         for key in (
@@ -1487,7 +1544,7 @@ def build_run_fn(
             )
         if "stop_reason" not in result and result["status"] != "done":
             result["stop_reason"] = payload.get("error") or str(orchestrator_status)
-        return result
+        return with_scope_context(result)
 
     return run_fn
 

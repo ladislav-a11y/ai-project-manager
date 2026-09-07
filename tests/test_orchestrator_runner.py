@@ -109,7 +109,7 @@ def test_run_fn_controller_finalizes_repo_tail_without_spending_agent_tick(tmp_p
             "commit_hash": "abc123", "remote_commit": "abc123",
         }))
 
-    heads = iter(("before123", "before123", "abc123"))
+    heads = iter(("before123", "before123", "before123", "abc123"))
 
     def fake_git(_command):
         return completed(next(heads) + "\n")
@@ -213,7 +213,12 @@ def test_build_finalize_fn_commits_a_fully_implemented_card(tmp_path):
     project = ProjectRecord(
         name="Demo",
         dod=[DoDItem(text="implementation complete", checked=True)],
-        checkpoint={"completed_dod_indices": [0]},
+        checkpoint={
+            "completed_dod_indices": [0],
+            "controller_finalization_context": {
+                "preexisting_paths": ["user-owned.txt"],
+            },
+        },
     )
     finalize_fn = build_finalize_fn(
         ["controller-finalize"],
@@ -232,6 +237,45 @@ def test_build_finalize_fn_commits_a_fully_implemented_card(tmp_path):
     assert len(registry_calls) == 1
     assert "--push" in registry_calls[0]
     assert registry_calls[0][registry_calls[0].index("--path") + 1] == "tracked.py"
+    assert registry_calls[0][registry_calls[0].index("--preexisting-path") + 1] == "user-owned.txt"
+
+
+def test_run_fn_persists_preexisting_paths_for_controller_finalization(tmp_path):
+    registry = ProviderRegistry()
+    registry.mark_available("claude")
+
+    def fake_git(command):
+        if "status" in command:
+            return completed(" M user-owned.txt\n")
+        return completed("head123\n")
+
+    def fake_subprocess_run(command):
+        run_id = command[command.index("--run-id") + 1]
+        write_outbox_result(
+            tmp_path / "outbox",
+            "Demo",
+            {"status": "in_progress", "checkpoint": {"completed_dod_indices": []}},
+            run_id=run_id,
+        )
+        return completed()
+
+    project = ProjectRecord(
+        name="Demo",
+        orchestrator_ready_task="Implement the task",
+        dod=[DoDItem(text="implement the task")],
+    )
+    run_fn, _, _ = make_run_fn(
+        tmp_path,
+        registry,
+        subprocess_run=fake_subprocess_run,
+        run_git=fake_git,
+    )
+
+    result = run_fn(project, "claude")
+
+    assert result["checkpoint"]["controller_finalization_context"] == {
+        "preexisting_paths": ["user-owned.txt"]
+    }
 
 
 def test_build_finalize_fn_skips_an_already_verified_checkout(tmp_path):

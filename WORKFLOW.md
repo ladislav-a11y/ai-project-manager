@@ -62,9 +62,12 @@ prací, která nikdy nebyla commitnutá, a každý nezávislý audit by pak naš
 nezměněný checkout). Popisná auditní evidence o už existujícím
 HEAD/status/diff/remote sama o sobě nikdy nevyvolá druhý, samostatný
 finalizační požadavek. Standardně pro dirty checkout finalizace před
-`Testování` zahrnuje: test, rozsah commitu, čistý pracovní strom a
-záloha/ověřený remote HEAD. Rozsah commitovaných cest
-se odvozuje ze skutečného `git status` daného projektu, pokud pro něj není
+`Testování` zahrnuje: test, rozsah commitu, čistý rozsah aktuálního úkolu a
+záloha/ověřený remote HEAD. Před dispatch PM zachytí dirty cesty existující
+před úkolem jako baseline. Finalizer je nestaguje ani necommitne; baseline
+může zůstat dirty, ale `clean=true` znamená, že nezůstala žádná
+neschválená dirty cesta aktuálního úkolu. Rozsah aktuálního commitu se
+odvozuje ze skutečného `git status` daného projektu, pokud pro něj není
 nakonfigurován explicitní kurátorovaný seznam (`AI_ORCHESTRATOR_FINALIZE_PATHS`)
 - takový seznam zůstává jen přísnější volitelnou výjimkou pro projekt, který
 smí měnit vlastní řídicí kód (např. AI Project Manager při self-update); pro
@@ -76,8 +79,9 @@ záznam pro daný projekt - bez něj finalizace zůstane commitnutá jen lokáln
 `pushed=true` se nesplní a karta se vrátí do `Pracuje se` s konkrétním
 důvodem, dokud povolení nepřidá člověk. Finalizer ukládá `finalization` důkaz
 s `status=completed`, `done=true`, `commit_hash`, `clean=true`,
-`tests_passed=true`, `pushed=true` a `remote_commit`, který se musí shodovat s
-aktuálním `commit_hash`. `committed=true` znamená nově vytvořený commit;
+`tests_passed=true`, `pushed=true`, `preexisting_paths`, `task_paths` a
+`remote_commit`, který se musí shodovat s aktuálním `commit_hash`.
+`committed=true` znamená nově vytvořený commit;
 `committed=false` je platný idempotentní no-op jen tehdy, když byl repozitář
 už čistý a aktuální HEAD, commit hash, testy, push i remote HEAD souhlasí s
 důkazem. Nezávislý audit tento důkaz spotřebuje a nesmí vyžadovat druhý
