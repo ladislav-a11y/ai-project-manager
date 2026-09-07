@@ -15,6 +15,7 @@ retry_after, last output and next step - back onto the Trello card.
 from __future__ import annotations
 
 import logging
+import math
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Callable, Optional
@@ -30,7 +31,7 @@ from .orchestrator_handoff import (
     implementation_dod,
     materialize_project_dod,
 )
-from .providers import ProviderRegistry, TASK_AUDIT, TASK_IMPLEMENTATION
+from .providers import ProviderRegistry, ProviderState, TASK_AUDIT, TASK_IMPLEMENTATION
 from .scheduler import (
     audit_capability_key,
     expand_provider_aliases,
@@ -376,8 +377,85 @@ class RunOutcome:
     restart_required: bool = False
 
 
+def _apply_provider_statuses(
+    provider_registry: ProviderRegistry,
+    provider_statuses: dict,
+    checkpoint: Optional[dict] = None,
+) -> None:
+    """Apply provider limits reported by an AO receipt to PM's registry.
+
+    A successful failover still carries evidence that an earlier provider
+    was limited.  Persist that evidence centrally so the next scheduler tick
+    does not immediately select the same provider again.  Only LIMITED
+    statuses are applied here: an AVAILABLE status from a receipt must not
+    clear a stricter local gate without an explicit provider recheck.
+    """
+    if not isinstance(provider_statuses, dict):
+        return
+
+    registered = set(provider_registry.registered_names())
+    now = datetime.now(timezone.utc)
+    for agent_name, receipt in provider_statuses.items():
+        if not isinstance(receipt, dict):
+            continue
+        if str(receipt.get("state") or "").upper() != ProviderState.LIMITED:
+            continue
+
+        provider_name = agent_name if agent_name in registered else None
+        if agent_name == "claude-code" and "claude" in registered:
+            provider_name = "claude"
+        if provider_name is None:
+            continue
+
+        retry_after = None
+        raw_retry_at = receipt.get("retry_at")
+        if isinstance(raw_retry_at, datetime):
+            retry_after = raw_retry_at
+        elif isinstance(raw_retry_at, str) and raw_retry_at.strip():
+            try:
+                retry_after = datetime.fromisoformat(raw_retry_at.strip().replace("Z", "+00:00"))
+            except ValueError:
+                retry_after = None
+        if retry_after is not None:
+            if retry_after.tzinfo is None:
+                retry_after = retry_after.replace(tzinfo=timezone.utc)
+            else:
+                retry_after = retry_after.astimezone(timezone.utc)
+        else:
+            try:
+                retry_seconds = float(receipt.get("retry_after_seconds"))
+            except (TypeError, ValueError):
+                retry_seconds = None
+            if retry_seconds is not None and math.isfinite(retry_seconds) and retry_seconds >= 0:
+                retry_after = now + timedelta(seconds=retry_seconds)
+            else:
+                # Missing or malformed provider timing is unsafe to treat as
+                # available; use the registry's conservative default window.
+                retry_after = now + timedelta(minutes=30)
+
+        current = provider_registry.get_status(provider_name)
+        current_retry_after = current.retry_after
+        if current.state in {ProviderState.LIMITED, ProviderState.ERROR} and current_retry_after:
+            if current_retry_after.tzinfo is None:
+                current_retry_after = current_retry_after.replace(tzinfo=timezone.utc)
+            else:
+                current_retry_after = current_retry_after.astimezone(timezone.utc)
+            if current_retry_after >= retry_after:
+                continue
+
+        provider_registry.mark_limited(
+            provider_name,
+            retry_after=retry_after,
+            checkpoint=checkpoint,
+            reason=str(receipt.get("reason") or "provider receipt reported LIMITED"),
+        )
+
+
 def _apply_run_result(
-    project: ProjectRecord, result: dict, finalize_fn: Optional[FinalizeFn] = None
+    project: ProjectRecord,
+    result: dict,
+    provider_registry: ProviderRegistry,
+    finalize_fn: Optional[FinalizeFn] = None,
 ) -> None:
     reported_status = result.get("status")
     if reported_status in {"done", "testing"} and not project.dod:
@@ -406,6 +484,7 @@ def _apply_run_result(
     provider_statuses = result.get("provider_statuses")
     if isinstance(provider_statuses, dict):
         project.extra_data["provider_statuses"] = provider_statuses
+        _apply_provider_statuses(provider_registry, provider_statuses, project.checkpoint)
     if "status" in result:
         status = result["status"]
         if status == "waiting_for_provider":
@@ -557,7 +636,12 @@ def run_once(
                         "orchestrator result must be a mapping, got "
                         f"{type(result).__name__}"
                     )
-                _apply_run_result(project, result, finalize_fn=finalize_fn)
+                _apply_run_result(
+                    project,
+                    result,
+                    provider_registry,
+                    finalize_fn=finalize_fn,
+                )
             except Exception as exc:  # noqa: BLE001 - run failures are reported on the card, not raised
                 signature = str(exc)
                 halted = guard.record_denial(project.name, signature)
@@ -854,6 +938,11 @@ def run_once_audit(
                     )
                 if isinstance(result.get("provider_statuses"), dict):
                     project.extra_data["provider_statuses"] = result["provider_statuses"]
+                    _apply_provider_statuses(
+                        provider_registry,
+                        result["provider_statuses"],
+                        project.checkpoint,
+                    )
                 if _audit_capability_failure(result):
                     capability_key = audit_capability_key(project)
                     actual_provider = result.get("active_provider") or provider

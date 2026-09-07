@@ -4,7 +4,7 @@ from ai_project_manager import slack_notify
 from ai_project_manager.guard import OrchestratorGuard
 from ai_project_manager.lock import ProjectLockManager
 from ai_project_manager.models import DoDItem, ProjectRecord, ProjectStatus
-from ai_project_manager.providers import ProviderRegistry
+from ai_project_manager.providers import ProviderRegistry, ProviderState
 from ai_project_manager.runner import (
     _capture_live_trello_readback,
     run_once,
@@ -68,6 +68,40 @@ def test_run_once_executes_and_syncs_full_state_back_to_trello():
     assert reloaded.retry_after == "2026-01-01T00:30:00+00:00"
     assert reloaded.status == ProjectStatus.PAUSED
     assert reloaded.provider == "claude"
+
+
+def test_run_once_applies_limited_status_from_successful_failover_receipt():
+    project = ProjectRecord(name="Demo", priority=3, status=ProjectStatus.READY)
+    client = make_client_with_project(project)
+    registry = ProviderRegistry()
+    registry.mark_available("groq")
+    registry.mark_available("codex")
+
+    outcome = run_once(
+        client,
+        [project],
+        registry,
+        lambda _project, _provider: {
+            "status": "in_progress",
+            "active_provider": "codex",
+            "provider_sequence": ["groq", "codex"],
+            "provider_statuses": {
+                "groq": {
+                    "state": "LIMITED",
+                    "retry_at": "2099-01-01T00:00:00+00:00",
+                    "retry_after_seconds": 1,
+                    "reason": "Groq TPD limit",
+                },
+                "codex": {"state": "AVAILABLE"},
+            },
+        },
+        default_providers=["groq", "codex"],
+    )
+
+    assert outcome.ran is True
+    assert registry.get_status("groq").state == ProviderState.LIMITED
+    assert registry.get_status("groq").retry_after.isoformat() == "2099-01-01T00:00:00+00:00"
+    assert registry.get_status("codex").state == ProviderState.AVAILABLE
 
 
 def test_run_once_releases_lock_and_reports_error_when_run_fn_raises():
@@ -594,6 +628,47 @@ def test_run_once_audit_is_the_only_path_to_hotovo():
     assert reloaded.status == ProjectStatus.DONE
     assert "ai-orchestrator verified" in reloaded.last_output
     assert reloaded.returned_from_testing is False
+
+
+def test_run_once_audit_applies_limited_status_from_successful_failover_receipt():
+    project = ProjectRecord(
+        name="Demo",
+        priority=3,
+        status=ProjectStatus.TESTING,
+        main_task="Implement and verify the feature",
+        dod=[DoDItem(text="implementation", checked=True)],
+    )
+    client = make_client_with_project(project)
+    registry = ProviderRegistry()
+    registry.mark_available("groq")
+    registry.mark_available("codex")
+
+    outcome = run_once_audit(
+        client,
+        [project],
+        registry,
+        lambda _project, _provider: {
+            "verdict": "accepted",
+            "evidence": "ai-orchestrator verified the implementation",
+            "active_provider": "codex",
+            "provider_sequence": ["groq", "codex"],
+            "provider_statuses": {
+                "groq": {
+                    "state": "LIMITED",
+                    "retry_at": "2099-01-01T00:00:00+00:00",
+                    "retry_after_seconds": 1,
+                    "reason": "Groq TPD limit",
+                },
+                "codex": {"state": "AVAILABLE"},
+            },
+        },
+        default_providers=["groq", "codex"],
+    )
+
+    assert outcome.ran is True
+    assert registry.get_status("groq").state == ProviderState.LIMITED
+    assert registry.get_status("groq").retry_after.isoformat() == "2099-01-01T00:00:00+00:00"
+    assert registry.get_status("codex").state == ProviderState.AVAILABLE
 
 
 def test_run_once_audit_leaves_model_selection_to_provider():
