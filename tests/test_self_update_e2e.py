@@ -378,7 +378,9 @@ def test_live_e2e_real_entrypoint_restart_preserves_provider_and_trello_state(tm
     # original checkpoint intact, and exactly one Trello card exists
     # throughout - never lost, never duplicated.
     final_provider_state = json.loads(provider_state_path.read_text(encoding="utf-8"))
-    assert final_provider_state["claude"]["state"] == "AVAILABLE"
+    # Provider availability is owned by AO; PM preserves the provider
+    # checkpoint and does not rewrite the local provider registry on restart.
+    assert final_provider_state["claude"]["state"] == "LIMITED"
     assert final_provider_state["claude"]["checkpoint"] == {"progress": 1}
 
     final_trello = json.loads(trello_snapshot_path.read_text(encoding="utf-8"))

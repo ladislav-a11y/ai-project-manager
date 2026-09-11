@@ -126,10 +126,10 @@ def test_project_manager_hands_off_to_orchestrator_and_syncs_result_back(tmp_pat
     assert reloaded.last_output == "wired up polling"
     assert reloaded.next_step == "add error states"
     assert reloaded.status == ProjectStatus.IN_PROGRESS
-    assert reloaded.provider == "claude"
+    assert reloaded.provider == "provider-broker"
 
 
-def test_project_manager_resumes_from_checkpoint_after_provider_limit_via_real_contract(tmp_path):
+def test_project_manager_dispatches_through_broker_even_with_legacy_limit_state(tmp_path):
     project = ProjectRecord(
         name="Dashboard",
         priority=3,
@@ -160,18 +160,11 @@ def test_project_manager_resumes_from_checkpoint_after_provider_limit_via_real_c
         subprocess_run=subprocess_run,
     )
 
-    # Still within the limit window: no call is made at all.
+    # PM does not use its legacy provider registry for routing; AO owns the
+    # broker decision and receives the checkpoint immediately.
     outcome_1 = run_tick(client, registry, run_fn, default_providers=["claude"], lock_manager=ProjectLockManager(), provider_state_path=str(tmp_path / "provider_state.json"))
-    assert outcome_1.ran is False
-    assert calls == []
-
-    # Past retry_after: resumes automatically, carrying the checkpoint
-    # through into the spec file handed to ai-orchestrator.
-    clock_holder["now"] += timedelta(minutes=31)
-    outcome_2 = run_tick(client, registry, run_fn, default_providers=["claude"], lock_manager=ProjectLockManager(), provider_state_path=str(tmp_path / "provider_state.json"))
-
-    assert outcome_2.ran is True
-    assert registry.get_status("claude").state == ProviderState.AVAILABLE
+    assert outcome_1.ran is True
+    assert len(calls) == 1
     spec = parse_spec_markdown(open(_args_to_dict(calls[0])["spec"], encoding="utf-8").read())
     assert spec["checkpoint"] == {"step": 5}
 
@@ -367,7 +360,7 @@ def test_project_manager_records_provider_limit_from_real_orchestrator_exit(tmp_
     outcome = run_tick(client, registry, run_fn, default_providers=["claude"], lock_manager=ProjectLockManager(), provider_state_path=str(tmp_path / "provider_state.json"))
 
     assert outcome.ran is True
-    assert registry.get_status("claude").state == ProviderState.LIMITED
+    assert registry.get_status("provider-broker").state == ProviderState.AVAILABLE
 
     id_to_name, _ = build_list_maps(client)
     reloaded = project_from_card(client.get_card(project.trello_card_id), id_to_name)

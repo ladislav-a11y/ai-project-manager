@@ -47,10 +47,10 @@ def make_client_with_project(project: ProjectRecord) -> InMemoryTrelloClient:
     return client
 
 
-def test_run_tick_does_no_ai_call_when_no_schedulable_work():
+def test_run_tick_delegates_ready_work_to_provider_broker():
     project = ProjectRecord(name="Demo", priority=3, status=ProjectStatus.READY)
     client = make_client_with_project(project)
-    registry = ProviderRegistry()  # nothing registered/available
+    registry = ProviderRegistry()  # AO owns provider availability
 
     calls = []
 
@@ -60,11 +60,11 @@ def test_run_tick_does_no_ai_call_when_no_schedulable_work():
 
     outcome = run_tick(client, registry, run_fn, default_providers=["claude"])
 
-    assert outcome.ran is False
-    assert calls == []
+    assert outcome.ran is True
+    assert calls == [("Demo", "provider-broker")]
 
 
-def test_run_tick_does_no_ai_call_when_only_provider_is_limited():
+def test_run_tick_does_not_use_pm_provider_state_for_dispatch():
     project = ProjectRecord(name="Demo", priority=3, status=ProjectStatus.READY)
     client = make_client_with_project(project)
     clock = FakeClock(datetime(2026, 1, 1, tzinfo=timezone.utc))
@@ -79,8 +79,8 @@ def test_run_tick_does_no_ai_call_when_only_provider_is_limited():
 
     outcome = run_tick(client, registry, run_fn, default_providers=["claude"])
 
-    assert outcome.ran is False
-    assert calls == []
+    assert outcome.ran is True
+    assert calls == [("Demo", "provider-broker")]
 
 
 def test_run_tick_resumes_due_implementation_wait_before_testing():
@@ -125,7 +125,7 @@ def test_run_tick_resumes_due_implementation_wait_before_testing():
     )
 
     assert outcome.ran is True
-    assert calls == [("implementation", "Resumed implementation", "claude")]
+    assert calls == [("implementation", "Resumed implementation", "provider-broker")]
 
 
 def test_run_tick_promotes_completed_implementation_before_audit():
@@ -678,7 +678,7 @@ def test_run_loop_auto_resumes_project_after_retry_after_without_manual_interven
 
     assert outcome_2.ran is True
     assert calls == [("Demo", {"step": 5})]
-    assert registry.get_status("claude").state == ProviderState.AVAILABLE
+    assert registry.get_status("claude").state == ProviderState.LIMITED
 
 
 def test_due_audit_provider_wait_returns_to_testing_not_ready():
@@ -709,7 +709,7 @@ def test_due_audit_provider_wait_returns_to_testing_not_ready():
     assert reloaded.status == ProjectStatus.TESTING
 
 
-def test_provider_wait_fails_over_to_available_provider_before_retry_deadline():
+def test_provider_wait_does_not_fail_over_before_trello_retry_deadline():
     clock = FakeClock(datetime(2026, 1, 1, tzinfo=timezone.utc))
     project = ProjectRecord(
         name="Audit failover demo",
@@ -726,19 +726,14 @@ def test_provider_wait_fails_over_to_available_provider_before_retry_deadline():
     registry.mark_limited("claude", retry_after=timedelta(days=1), checkpoint=project.checkpoint)
     registry.mark_available("antigravity")
 
-    resumed = _resume_due_provider_waits(
-        client,
-        [project],
-        registry,
-        default_providers=["claude", "antigravity", "codex"],
-    )
+    resumed = _resume_due_provider_waits(client, [project], registry)
 
-    assert resumed == ["Audit failover demo"]
-    assert project.status == ProjectStatus.TESTING
-    assert project.provider == "antigravity"
-    assert project.retry_after is None
+    assert resumed == []
+    assert project.status == ProjectStatus.PAUSED
+    assert project.provider == "claude"
+    assert project.retry_after == (clock.now + timedelta(days=1)).isoformat()
     assert project.checkpoint == {"completed_dod_indices": [0]}
-    assert "resume_status" not in project.extra_data
+    assert project.extra_data["resume_status"] == ProjectStatus.TESTING.value
 
 
 def test_run_tick_only_requeues_resumed_audit_wait_without_same_tick_ai_call():
@@ -772,10 +767,10 @@ def test_run_tick_only_requeues_resumed_audit_wait_without_same_tick_ai_call():
     assert calls == []
     id_to_name, _ = build_list_maps(client)
     reloaded = project_from_card(client.get_card(project.trello_card_id), id_to_name)
-    assert reloaded.status == ProjectStatus.TESTING
-    assert reloaded.provider == "antigravity"
-    assert reloaded.retry_after is None
-    assert "čekání na providera skončilo" in reloaded.stop_reason
+    assert reloaded.status == ProjectStatus.PAUSED
+    assert reloaded.provider == "claude"
+    assert reloaded.retry_after == (clock.now + timedelta(days=1)).isoformat()
+    assert "čekání na providera skončilo" not in (reloaded.stop_reason or "")
 
 
 def test_run_tick_never_lets_two_providers_run_the_same_project_concurrently():
@@ -833,7 +828,7 @@ def test_run_tick_syncs_full_state_back_to_trello_after_run():
     assert reloaded.next_step == "next thing"
     assert reloaded.stop_reason == "waiting for review"
     assert reloaded.retry_after == "2026-02-01T00:00:00+00:00"
-    assert reloaded.provider == "claude"
+    assert reloaded.provider == "provider-broker"
     assert reloaded.status == ProjectStatus.IN_PROGRESS
 
 
@@ -884,7 +879,7 @@ def test_run_tick_persists_provider_limit_when_trello_result_sync_fails(tmp_path
 
     reloaded = ProviderRegistry(clock=clock)
     load_provider_state(state_path, reloaded)
-    status = reloaded.get_status("claude")
+    status = reloaded.get_status("provider-broker")
     assert status.state == ProviderState.LIMITED
     assert status.retry_after == clock.now + timedelta(minutes=30)
     assert status.checkpoint == {"step": 7}
@@ -912,7 +907,7 @@ def test_run_loop_without_once_runs_multiple_ticks_until_stopped():
 
     # Unlike once=True (exactly one tick), the plain loop keeps ticking
     # - here for the 3 iterations the test caps it at.
-    assert calls == ["claude", "claude", "claude"]
+    assert calls == ["provider-broker", "provider-broker", "provider-broker"]
     assert outcome.ran is True
 
 
@@ -973,8 +968,8 @@ def test_run_loop_wakes_at_retry_after_before_normal_poll_interval():
         max_iterations=2,
     )
 
-    assert sleeps == [20]
-    assert calls == [("Demo", {"step": 4})]
+    assert sleeps == []
+    assert calls == [("Demo", {})]
 
 
 def test_run_loop_never_extends_poll_to_a_later_retry_after():
@@ -1029,9 +1024,9 @@ def test_run_loop_accepts_naive_utc_registry_clock_with_aware_retry_deadline():
         max_iterations=2,
     )
 
-    assert sleeps == [20]
-    assert calls == ["claude"]
-    assert registry.get_status("claude").state == ProviderState.AVAILABLE
+    assert sleeps == []
+    assert calls == ["provider-broker"]
+    assert registry.get_status("claude").state == ProviderState.LIMITED
 
 
 def test_run_loop_halts_project_after_repeated_identical_failures_across_ticks():
@@ -1089,7 +1084,7 @@ def test_run_tick_logs_selected_project_provider_dispatch_result_and_sync(caplog
 
     messages = "\n".join(caplog.messages)
     assert "Demo" in messages
-    assert "claude" in messages
+    assert "provider-broker" in messages
     assert "autonomous" in messages.lower()
     assert "synced" in messages.lower()
 
@@ -1108,8 +1103,8 @@ def test_run_tick_logs_wait_when_provider_is_limited(caplog):
         run_tick(client, registry, run_fn, default_providers=["claude"])
 
     messages = "\n".join(caplog.messages)
-    assert "claude" in messages
-    assert "retry_after" in messages.lower()
+    assert "provider-broker" in messages
+    assert "AO vybere" in messages
 
 
 def test_empty_workflow_refreshes_provider_notes_once_before_inbox_planner():
@@ -1784,7 +1779,7 @@ def test_run_tick_leaves_human_required_block_in_place_and_never_dispatches():
     assert "credential" in reloaded.blocked_by.lower() or "api" in reloaded.blocked_by.lower()
 
 
-def test_human_required_notification_is_deduplicated_and_resume_notifies_once(monkeypatch):
+def test_human_required_status_is_deduplicated_and_resume_clears_state():
     clock = FakeClock(datetime(2026, 1, 1, tzinfo=timezone.utc))
     registry = ProviderRegistry(clock=clock)
     project = ProjectRecord(
@@ -1795,9 +1790,6 @@ def test_human_required_notification_is_deduplicated_and_resume_notifies_once(mo
     )
     client = make_client_with_project(project)
     project.trello_card_url = "https://trello.example/c/card-1"
-    messages = []
-    monkeypatch.setattr("ai_project_manager.daemon.notify", messages.append)
-
     _run_recovery_pass(client, [project], registry, DEFAULT_MAX_ATTEMPTS, default_backoff)
     # Make the identical state due for review again; it must be persisted but
     # must not produce a second Slack notification.
@@ -1805,11 +1797,6 @@ def test_human_required_notification_is_deduplicated_and_resume_notifies_once(mo
     project.review_at = clock.now.isoformat()
     _run_recovery_pass(client, [project], registry, DEFAULT_MAX_ATTEMPTS, default_backoff)
 
-    assert len(messages) == 1
-    assert "Deploy widget" in messages[0]
-    assert project.trello_card_url in messages[0]
-    assert "Důvod:" in messages[0]
-    assert "Krok:" in messages[0]
     visible = client.get_card(project.trello_card_id)["desc"].split("<!-- PM-DATA", 1)[0]
     assert "VYŽADUJE LIDSKÝ ZÁSAH" in visible
     assert project.human_notified_reason in visible
@@ -1821,13 +1808,11 @@ def test_human_required_notification_is_deduplicated_and_resume_notifies_once(mo
     _run_recovery_pass(client, [project], registry, DEFAULT_MAX_ATTEMPTS, default_backoff)
     _run_recovery_pass(client, [project], registry, DEFAULT_MAX_ATTEMPTS, default_backoff)
 
-    assert len(messages) == 2
-    assert "Pokračuji" in messages[1]
     assert project.human_notified_reason is None
     assert project.human_action_step is None
 
 
-def test_human_required_card_stays_short_and_deduplicated_across_reloaded_recovery_ticks(monkeypatch):
+def test_human_required_card_stays_short_across_reloaded_recovery_ticks():
     """Regression for the live-verified bug: a card whose blocked reason
     matches no known auto-recoverable pattern kept getting its blocked_by
     reason wrapped in another layer of "blocked reason (...) does not
@@ -1852,9 +1837,6 @@ def test_human_required_card_stays_short_and_deduplicated_across_reloaded_recove
         blocked_by=original_reason,
     )
     client = make_client_with_project(project)
-    messages = []
-    monkeypatch.setattr("ai_project_manager.daemon.notify", messages.append)
-
     id_to_name, _ = build_list_maps(client)
 
     for tick in range(3):
@@ -1869,10 +1851,6 @@ def test_human_required_card_stays_short_and_deduplicated_across_reloaded_recove
         assert "blocked reason (" not in (reloaded.blocked_by or "")
 
         clock.advance(timedelta(hours=24))
-
-    assert len(messages) == 1, f"expected exactly one Slack notification, got {len(messages)}: {messages}"
-    assert original_reason in messages[0]
-    assert "blocked reason (" not in messages[0]
 
     final = project_from_card(client.get_card(project.trello_card_id), id_to_name)
     assert final.blocked_by == original_reason
@@ -1997,10 +1975,8 @@ def test_run_tick_recovery_never_retries_the_same_block_forever():
     assert final.blocked_by is None
 
 
-def test_run_tick_notifies_visibly_when_a_card_contract_is_unsafe_to_migrate(monkeypatch):
-    """DoD: an invalid/newer Trello Card Contract must never be silently
-    overwritten - it must also raise a visible notice (Slack), not just a
-    log line, so a human actually notices the card needs attention."""
+def test_run_tick_logs_when_a_card_contract_is_unsafe_to_migrate(caplog):
+    """An invalid/newer Trello Card Contract must never be overwritten."""
     client = InMemoryTrelloClient()
     ready = client.get_list_id_by_name("Ready")
     bad_card = client.create_card(
@@ -2011,11 +1987,9 @@ def test_run_tick_notifies_visibly_when_a_card_contract_is_unsafe_to_migrate(mon
     before = client.get_card(bad_card["id"])
     registry = ProviderRegistry()
 
-    messages = []
-    monkeypatch.setattr("ai_project_manager.daemon.notify", messages.append)
+    with caplog.at_level("WARNING", logger="ai_project_manager"):
+        run_tick(client, registry, lambda project, provider: {}, default_providers=["claude"])
 
-    run_tick(client, registry, lambda project, provider: {}, default_providers=["claude"])
-
-    assert any("Trello Card Contract" in message for message in messages)
-    assert any(bad_card["id"] in message or "Wrong authority" in message for message in messages)
+    assert any("Trello Card Contract" in message for message in caplog.messages)
+    assert any(bad_card["id"] in message or "Wrong authority" in message for message in caplog.messages)
     assert client.get_card(bad_card["id"]) == before

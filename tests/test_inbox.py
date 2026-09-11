@@ -34,6 +34,22 @@ from ai_project_manager.trello_client import InMemoryTrelloClient
 from ai_project_manager.trello_sync import build_list_maps, fetch_all_projects, sync_project_to_trello
 
 
+def make_inbox_client() -> InMemoryTrelloClient:
+    return InMemoryTrelloClient(
+        list_names=(
+            "INBOX / Nápady",
+            "New",
+            "Ready",
+            "In Progress",
+            "Testing",
+            "Paused",
+            "Blocked",
+            "Done",
+            "Error",
+        )
+    )
+
+
 def test_verification_plan_creates_specific_audit_evidence_dod():
     task = PreparedTask(
         title="mode-frequency",
@@ -124,11 +140,11 @@ def test_explicit_indivisible_marker_is_detected_in_title_or_description():
 def test_process_inbox_allows_multiple_tasks_for_ordinary_splittable_source():
     """An ordinary Inbox source card (no explicit ``[indivisible]`` marker)
     may be split by the AI planner into several dependency-ordered tasks."""
-    client = InMemoryTrelloClient()
+    client = make_inbox_client()
     _, name_to_id = build_list_maps(client)
 
     source = client.create_card(
-        name_to_id["Inbox"],
+        name_to_id["INBOX / Nápady"],
         "nový nápad",
         desc="Popis nápadu, který AI planner smí rozdělit na víc úkolů.",
     )
@@ -159,16 +175,16 @@ def test_process_inbox_allows_multiple_tasks_for_ordinary_splittable_source():
 
     assert changed != []
     assert client.get_card(source["id"])["closed"] is True
-    assert client.list_cards(name_to_id["Inbox"]) == []
+    assert client.list_cards(name_to_id["INBOX / Nápady"]) == []
     assert len(client.list_cards(name_to_id["New"])) == 2
     assert all(project.trello_card_id != source["id"] for project in changed)
 
 
 def test_process_inbox_keeps_source_card_immutable_while_preparing_children():
-    client = InMemoryTrelloClient()
+    client = make_inbox_client()
     _, name_to_id = build_list_maps(client)
     source = client.create_card(
-        name_to_id["Inbox"],
+        name_to_id["INBOX / Nápady"],
         "Station agent lookup",
         desc="Dohledat chybějící DXCC údaje z ověřitelných zdrojů.",
         labels=["Station Agent", "P5"],
@@ -207,11 +223,11 @@ def test_process_inbox_fails_closed_when_marked_indivisible_source_returns_multi
     """Fail-closed indivisible Inbox source contract: an AI plan describing
     more than one task for a card explicitly marked ``[indivisible]`` must
     never reach Připraveno; the card stays in Inbox with no project written."""
-    client = InMemoryTrelloClient()
+    client = make_inbox_client()
     _, name_to_id = build_list_maps(client)
 
     source = client.create_card(
-        name_to_id["Inbox"],
+        name_to_id["INBOX / Nápady"],
         "nový nápad [indivisible]",
         desc="Popis nápadu, který AI planner nesprávně rozdělí na víc úkolů.",
     )
@@ -242,7 +258,7 @@ def test_process_inbox_fails_closed_when_marked_indivisible_source_returns_multi
 
     assert changed == []
     assert client.get_card(source["id"])["closed"] is False
-    assert [card["id"] for card in client.list_cards(name_to_id["Inbox"])] == [source["id"]]
+    assert [card["id"] for card in client.list_cards(name_to_id["INBOX / Nápady"])] == [source["id"]]
 
 
 def test_ai_planner_cannot_raise_normal_feature_above_source_priority():
@@ -411,10 +427,10 @@ def test_read_only_research_task_gets_audit_only_dod_and_verification_handoff():
 
 
 def test_process_inbox_materializes_read_only_research_as_audit_only_child():
-    client = InMemoryTrelloClient()
+    client = make_inbox_client()
     _, name_to_id = build_list_maps(client)
     source = client.create_card(
-        name_to_id["Inbox"],
+        name_to_id["INBOX / Nápady"],
         "Verify README update",
         desc="Verify the existing README without changes.",
         labels=["AI Project Manager"],
@@ -611,10 +627,10 @@ def test_preparation_ignores_stale_pm_data_and_uses_visible_request():
 
 
 def test_process_inbox_moves_contract_only_card_to_ready_with_priority_title():
-    client = InMemoryTrelloClient()
+    client = make_inbox_client()
     _, name_to_id = build_list_maps(client)
     source = client.create_card(
-        name_to_id["Inbox"],
+        name_to_id["INBOX / Nápady"],
         "Úprava zpráv PM do slacku",
         desc=(
             "<!-- PM-DATA\n"
@@ -631,7 +647,7 @@ def test_process_inbox_moves_contract_only_card_to_ready_with_priority_title():
     )
 
     assert len(changed) == 1
-    assert client.get_card(source["id"])["list_id"] == name_to_id["Inbox"]
+    assert client.get_card(source["id"])["list_id"] == name_to_id["INBOX / Nápady"]
     prepared_card = client.get_card(changed[0].trello_card_id)
     assert prepared_card["id"] != source["id"]
     assert prepared_card["name"] == "P5 — Úprava zpráv PM do slacku"
@@ -640,10 +656,10 @@ def test_process_inbox_moves_contract_only_card_to_ready_with_priority_title():
 
 
 def test_process_inbox_persists_central_provider_receipt_as_compact_card_data():
-    client = InMemoryTrelloClient()
+    client = make_inbox_client()
     _, name_to_id = build_list_maps(client)
     source = client.create_card(
-        name_to_id["Inbox"],
+        name_to_id["INBOX / Nápady"],
         "Central planner request",
         desc="Prepare one implementation.",
         labels=["Station Agent"],
@@ -696,10 +712,10 @@ def test_process_inbox_persists_central_provider_receipt_as_compact_card_data():
 
 
 def test_process_inbox_creates_multiple_ready_tasks_from_one_source_card():
-    client = InMemoryTrelloClient()
+    client = make_inbox_client()
     _, name_to_id = build_list_maps(client)
     source = client.create_card(
-        name_to_id["Inbox"],
+        name_to_id["INBOX / Nápady"],
         "Station agent live chyby a rozšíření",
         desc="Bearing a vzdálenost. Auto tune a hold nefunguje. Přidat DX cluster poskytovatele.",
         labels=["Station Agent"],
@@ -718,7 +734,7 @@ def test_process_inbox_creates_multiple_ready_tasks_from_one_source_card():
     assert all(project.trello_card_id for project in changed)
     assert all(project.trello_card_id != source["id"] for project in changed)
     assert client.get_card(source["id"])["closed"] is True
-    assert client.list_cards(name_to_id["Inbox"]) == []
+    assert client.list_cards(name_to_id["INBOX / Nápady"]) == []
     assert len(client.list_cards(name_to_id["New"])) == 3
     for project in changed:
         metadata = project.extra_data["inbox_preparation"]
@@ -741,10 +757,10 @@ def test_process_inbox_routes_infra_subtask_away_from_station_agent_source_ident
     label/child-project path created for it must reflect that (not
     Station Agent).
     """
-    client = InMemoryTrelloClient()
+    client = make_inbox_client()
     _, name_to_id = build_list_maps(client)
     source = client.create_card(
-        name_to_id["Inbox"],
+        name_to_id["INBOX / Nápady"],
         "Station agent live chyby a rozšíření",
         desc=(
             "Bearing a vzdálenost. Auto tune a hold nefunguje. "
@@ -783,10 +799,10 @@ def test_process_inbox_routes_infra_subtask_away_from_station_agent_source_ident
 
 
 def test_split_retry_keeps_source_until_children_persist_and_does_not_duplicate_them():
-    client = InMemoryTrelloClient()
+    client = make_inbox_client()
     _, name_to_id = build_list_maps(client)
     source = client.create_card(
-        name_to_id["Inbox"],
+        name_to_id["INBOX / Nápady"],
         "Station agent live chyby a rozšíření",
         desc="Bearing a vzdálenost. Auto tune nefunguje. Přidat DX cluster poskytovatele.",
         labels=["Station Agent"],
@@ -809,8 +825,8 @@ def test_split_retry_keeps_source_until_children_persist_and_does_not_duplicate_
         )
 
     assert client.get_card(source["id"])["closed"] is False
-    assert [card["id"] for card in client.list_cards(name_to_id["Inbox"])] == [source["id"]]
-    partial = fetch_all_projects(client, exclude_list_names=("Inbox",))
+    assert [card["id"] for card in client.list_cards(name_to_id["INBOX / Nápady"])] == [source["id"]]
+    partial = fetch_all_projects(client, exclude_list_names=("INBOX / Nápady",))
     assert len(partial) == 1
     # The source may be restored/edited while a partial split is waiting for
     # retry; the identity must be recovered from the already durable child,
@@ -826,7 +842,7 @@ def test_split_retry_keeps_source_until_children_persist_and_does_not_duplicate_
 
     assert len({project.trello_card_id for project in changed}) == 3
     assert client.get_card(source["id"])["closed"] is True
-    assert client.list_cards(name_to_id["Inbox"]) == []
+    assert client.list_cards(name_to_id["INBOX / Nápady"]) == []
     assert len(client.list_cards(name_to_id["New"])) == 3
 
 
@@ -880,7 +896,7 @@ def test_looks_like_feedback_detects_bug_language():
 
 
 def test_process_inbox_assigns_cards_to_projects_end_to_end():
-    client = InMemoryTrelloClient()
+    client = make_inbox_client()
     _, name_to_id = build_list_maps(client)
 
     existing = ProjectRecord(
@@ -892,11 +908,11 @@ def test_process_inbox_assigns_cards_to_projects_end_to_end():
     sync_project_to_trello(client, existing)
 
     client.create_card(
-        name_to_id["Inbox"],
+        name_to_id["INBOX / Nápady"],
         "Dashboard spinner bug",
         desc="The orchestrator dashboard spinner never stops, this is a bug",
     )
-    client.create_card(name_to_id["Inbox"], "Brand new weather widget idea", desc="Build a weather widget", labels=["Weather Widget"])
+    client.create_card(name_to_id["INBOX / Nápady"], "Brand new weather widget idea", desc="Build a weather widget", labels=["Weather Widget"])
 
     projects = fetch_all_projects(client)
     first = process_inbox(
@@ -924,16 +940,16 @@ def test_process_inbox_assigns_cards_to_projects_end_to_end():
 
 
 def test_process_inbox_admits_only_highest_priority_source_card_per_tick():
-    client = InMemoryTrelloClient()
+    client = make_inbox_client()
     _, name_to_id = build_list_maps(client)
     high = client.create_card(
-        name_to_id["Inbox"],
+        name_to_id["INBOX / Nápady"],
         "P5 — Kritická oprava aplikace",
         desc="Opravit potvrzenou regresi.",
         labels=["Station Agent", "P5"],
     )
     low = client.create_card(
-        name_to_id["Inbox"],
+        name_to_id["INBOX / Nápady"],
         "P2 — Budoucí nápad",
         desc="Připravit budoucí rozšíření.",
         labels=["Weather Widget", "P2"],
@@ -952,7 +968,7 @@ def test_process_inbox_admits_only_highest_priority_source_card_per_tick():
     assert changed
     assert all(project.trello_card_id != high["id"] for project in changed)
     assert client.get_card(high["id"])["closed"] is True
-    assert [card["id"] for card in client.list_cards(name_to_id["Inbox"])] == [low["id"]]
+    assert [card["id"] for card in client.list_cards(name_to_id["INBOX / Nápady"])] == [low["id"]]
     assert all(
         project.extra_data["inbox_preparation"]["source_card_id"] == high["id"]
         for project in changed
@@ -960,10 +976,10 @@ def test_process_inbox_admits_only_highest_priority_source_card_per_tick():
 
 
 def test_persisted_new_inbox_project_reuses_created_card_on_next_sync():
-    client = InMemoryTrelloClient()
+    client = make_inbox_client()
     _, name_to_id = build_list_maps(client)
     inbox_card = client.create_card(
-        name_to_id["Inbox"],
+        name_to_id["INBOX / Nápady"],
         "Brand new weather widget idea",
         desc="Build a weather widget",
         labels=["Weather Widget"],
@@ -978,7 +994,7 @@ def test_persisted_new_inbox_project_reuses_created_card_on_next_sync():
     created_card_id = project.trello_card_id
     assert created_card_id != inbox_card["id"]
     assert client.get_card(inbox_card["id"])["closed"] is True
-    assert client.list_cards(name_to_id["Inbox"]) == []
+    assert client.list_cards(name_to_id["INBOX / Nápady"]) == []
 
     project.last_output = "first autonomous result"
     sync_project_to_trello(client, project)
@@ -992,10 +1008,10 @@ def test_persisted_new_inbox_project_reuses_created_card_on_next_sync():
 
 
 def test_unlabelled_new_inbox_idea_is_prepared_as_isolated_prioritized_project(tmp_path):
-    client = InMemoryTrelloClient()
+    client = make_inbox_client()
     _, name_to_id = build_list_maps(client)
     source = client.create_card(
-        name_to_id["Inbox"],
+        name_to_id["INBOX / Nápady"],
         "Budoucí projekt — Bazar Scout a multi-inzerce [VYSOKÁ PRIORITA]",
         desc="Získávat nabídky, rozdělit více inzerátů a ověřit export.",
     )
@@ -1011,7 +1027,7 @@ def test_unlabelled_new_inbox_idea_is_prepared_as_isolated_prioritized_project(t
 
     assert len(changed) >= 1
     assert client.get_card(source["id"])["closed"] is True
-    assert client.list_cards(name_to_id["Inbox"]) == []
+    assert client.list_cards(name_to_id["INBOX / Nápady"]) == []
     ready_cards = client.list_cards(name_to_id["New"])
     assert len(ready_cards) == len(changed)
     assert all(card["name"].startswith("P") for card in ready_cards)
@@ -1025,9 +1041,9 @@ def test_unlabelled_new_inbox_idea_is_prepared_as_isolated_prioritized_project(t
 
 
 def test_generated_inbox_project_mapping_is_rehydrated_after_restart(tmp_path):
-    client = InMemoryTrelloClient()
+    client = make_inbox_client()
     _, name_to_id = build_list_maps(client)
-    client.create_card(name_to_id["Inbox"], "New isolated catalog idea", desc="Build a catalog export")
+    client.create_card(name_to_id["INBOX / Nápady"], "New isolated catalog idea", desc="Build a catalog export")
     root = tmp_path / "projects"
     first_paths = {}
 
@@ -1055,7 +1071,7 @@ def test_generated_inbox_project_mapping_is_rehydrated_after_restart(tmp_path):
 
 
 def test_existing_project_feedback_moves_source_to_done_and_is_retry_idempotent():
-    client = InMemoryTrelloClient()
+    client = make_inbox_client()
     _, name_to_id = build_list_maps(client)
     existing = ProjectRecord(
         name="Orchestrator Dashboard",
@@ -1065,7 +1081,7 @@ def test_existing_project_feedback_moves_source_to_done_and_is_retry_idempotent(
     )
     sync_project_to_trello(client, existing)
     source = client.create_card(
-        name_to_id["Inbox"],
+        name_to_id["INBOX / Nápady"],
         "Dashboard spinner bug",
         desc="The orchestrator dashboard spinner never stops, this is a bug",
     )
@@ -1077,7 +1093,7 @@ def test_existing_project_feedback_moves_source_to_done_and_is_retry_idempotent(
         persist_project=lambda project: sync_project_to_trello(client, project),
     )
 
-    assert client.list_cards(name_to_id["Inbox"]) == []
+    assert client.list_cards(name_to_id["INBOX / Nápady"]) == []
     receipt = client.get_card(source["id"])
     assert receipt["list_id"] == name_to_id["Done"]
     target = changed[0]
@@ -1091,10 +1107,10 @@ def test_existing_project_feedback_moves_source_to_done_and_is_retry_idempotent(
 
 
 def test_process_inbox_does_not_acknowledge_card_when_project_persistence_fails():
-    client = InMemoryTrelloClient()
+    client = make_inbox_client()
     _, name_to_id = build_list_maps(client)
     inbox = client.create_card(
-        name_to_id["Inbox"],
+        name_to_id["INBOX / Nápady"],
         "Brand new weather widget idea",
         desc="Build a weather widget",
         labels=["Weather Widget"],
@@ -1106,7 +1122,7 @@ def test_process_inbox_does_not_acknowledge_card_when_project_persistence_fails(
     with pytest.raises(RuntimeError, match="project write failed"):
         process_inbox(client, [], persist_project=fail_persistence)
 
-    stored = next(card for card in client.list_cards(name_to_id["Inbox"]) if card["id"] == inbox["id"])
+    stored = next(card for card in client.list_cards(name_to_id["INBOX / Nápady"]) if card["id"] == inbox["id"])
     assert PROCESSED_MARKER not in stored["desc"]
 
 
@@ -1138,10 +1154,10 @@ def test_inbox_receipt_matches_revised_source_by_id_before_hash():
 
 
 def test_duplicate_inbox_copy_creates_only_a_done_receipt_not_new_work():
-    client = InMemoryTrelloClient()
+    client = make_inbox_client()
     _, name_to_id = build_list_maps(client)
     first = client.create_card(
-        name_to_id["Inbox"],
+        name_to_id["INBOX / Nápady"],
         "Weather widget",
         desc="Build a weather widget",
         labels=["Weather Widget"],
@@ -1160,7 +1176,7 @@ def test_duplicate_inbox_copy_creates_only_a_done_receipt_not_new_work():
     )
 
     duplicate = client.create_card(
-        name_to_id["Inbox"],
+        name_to_id["INBOX / Nápady"],
         first["name"],
         desc=first["desc"],
     )
@@ -1181,10 +1197,10 @@ def test_duplicate_inbox_copy_creates_only_a_done_receipt_not_new_work():
 
 
 def test_revised_inbox_source_updates_existing_project_without_new_work_card():
-    client = InMemoryTrelloClient()
+    client = make_inbox_client()
     _, name_to_id = build_list_maps(client)
     source = client.create_card(
-        name_to_id["Inbox"],
+        name_to_id["INBOX / Nápady"],
         "Weather widget",
         desc="Build a weather widget",
         labels=["Weather Widget"],
@@ -1204,7 +1220,7 @@ def test_revised_inbox_source_updates_existing_project_without_new_work_card():
     revised = client.update_card(source["id"], desc="Build a weather widget with a forecast")
     # Simulate a source card that remained in the board Inbox until the
     # previous write completed; the ID is stable while its content changes.
-    client.update_card(revised["id"], list_id=name_to_id["Inbox"])
+    client.update_card(revised["id"], list_id=name_to_id["INBOX / Nápady"])
     client._cards[revised["id"]]["closed"] = False
     process_inbox(
         client,
@@ -1220,7 +1236,7 @@ def test_revised_inbox_source_updates_existing_project_without_new_work_card():
     assert "forecast" in target.next_step
 
 def test_process_inbox_uses_planner_for_new_work_on_existing_project():
-    client = InMemoryTrelloClient()
+    client = make_inbox_client()
     _, name_to_id = build_list_maps(client)
 
     existing = ProjectRecord(
@@ -1232,7 +1248,7 @@ def test_process_inbox_uses_planner_for_new_work_on_existing_project():
     )
 
     source = client.create_card(
-        name_to_id["Inbox"],
+        name_to_id["INBOX / Nápady"],
         "oprava station agent",
         desc="Station Agent does not work; replace mock behavior with real behavior.",
         labels=["Station Agent"],
@@ -1273,7 +1289,7 @@ def test_process_inbox_uses_planner_for_new_work_on_existing_project():
     assert changed[0].trello_card_id != source["id"]
     assert changed[0].extra_data["inbox_preparation"]["source_card_id"] == source["id"]
     assert client.get_card(source["id"])["closed"] is True
-    assert client.list_cards(name_to_id["Inbox"]) == []
+    assert client.list_cards(name_to_id["INBOX / Nápady"]) == []
     assert client.get_card(changed[0].trello_card_id)["list_id"] == name_to_id["New"]
 
 
@@ -1287,10 +1303,10 @@ def test_planner_project_key_prevents_generated_checkout_for_known_project(tmp_p
     """
     from ai_project_manager.orchestrator_runner import resolve_project_path
 
-    client = InMemoryTrelloClient()
+    client = make_inbox_client()
     _, name_to_id = build_list_maps(client)
     source = client.create_card(
-        name_to_id["Inbox"],
+        name_to_id["INBOX / Nápady"],
         "Test Groq intake – krátké atomické subtasky",
         desc=(
             "Projekt D:/orchestrator/ai-project-manager. "

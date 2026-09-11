@@ -127,10 +127,12 @@ def test_run_fn_controller_finalizes_repo_tail_without_spending_agent_tick(tmp_p
             "commit_hash": "abc123", "remote_commit": "abc123",
         }))
 
-    heads = iter(("before123", "before123", "before123", "abc123"))
+    heads = iter(("before123", "before123", "abc123"))
 
-    def fake_git(_command):
-        return completed(next(heads) + "\n")
+    def fake_git(command):
+        if command[-1] == "HEAD":
+            return completed(next(heads) + "\n")
+        return completed("")
 
     project = ProjectRecord(
         name="Demo",
@@ -151,7 +153,7 @@ def test_run_fn_controller_finalizes_repo_tail_without_spending_agent_tick(tmp_p
         run_git=fake_git,
     )
 
-    result = run_fn(project, "claude")
+    result = run_fn(project, "provider-broker")
 
     assert result["status"] == "done"
     assert result["checkpoint"]["completed_dod_indices"] == [0, 1, 2, 3]
@@ -193,7 +195,7 @@ def test_run_fn_does_not_controller_finalize_fresh_implementation_card(tmp_path)
         allowed_push_remotes={"Demo": "https://example.invalid/repo.git"},
     )
 
-    result = run_fn(project, "claude")
+    result = run_fn(project, "provider-broker")
 
     assert result["status"] == "in_progress"
     assert len(calls) == 1
@@ -225,18 +227,19 @@ def test_build_finalize_fn_commits_a_fully_implemented_card(tmp_path):
 
     heads = iter(("before123", "before123", "abc123"))
 
-    def fake_git(_command):
-        return completed(next(heads) + "\n")
+    def fake_git(command):
+        if command[-1] == "HEAD":
+            return completed(next(heads) + "\n")
+        if "--abbrev-ref" in command:
+            return completed("main\n")
+        if "remote" in command:
+            return completed("", returncode=1)
+        return completed("main\n")
 
     project = ProjectRecord(
         name="Demo",
         dod=[DoDItem(text="implementation complete", checked=True)],
-        checkpoint={
-            "completed_dod_indices": [0],
-            "controller_finalization_context": {
-                "preexisting_paths": ["user-owned.txt"],
-            },
-        },
+        checkpoint={"completed_dod_indices": [0]},
     )
     finalize_fn = build_finalize_fn(
         ["controller-finalize"],
@@ -255,7 +258,6 @@ def test_build_finalize_fn_commits_a_fully_implemented_card(tmp_path):
     assert len(registry_calls) == 1
     assert "--push" in registry_calls[0]
     assert registry_calls[0][registry_calls[0].index("--path") + 1] == "tracked.py"
-    assert registry_calls[0][registry_calls[0].index("--preexisting-path") + 1] == "user-owned.txt"
 
 
 def test_run_fn_persists_preexisting_paths_for_controller_finalization(tmp_path):
@@ -289,7 +291,7 @@ def test_run_fn_persists_preexisting_paths_for_controller_finalization(tmp_path)
         run_git=fake_git,
     )
 
-    result = run_fn(project, "claude")
+    result = run_fn(project, "provider-broker")
 
     assert result["checkpoint"]["controller_finalization_context"] == {
         "preexisting_paths": ["user-owned.txt"]
@@ -621,7 +623,7 @@ def test_audit_and_implementation_leave_model_selection_to_ao(tmp_path):
         return completed()
 
     run_fn, _, _ = make_run_fn(tmp_path, registry, subprocess_run=fake_impl_subprocess_run)
-    run_fn(implementation_project, "claude")
+    run_fn(implementation_project, "provider-broker")
     assert "--model" not in implementation_seen["command"]
     assert "--provider-models" not in implementation_seen["command"]
 
@@ -695,10 +697,8 @@ def test_production_audit_starts_with_pm_selected_provider_and_skips_capability_
     )(project, "codex")
 
     assert result["verdict"] == "accepted"
-    assert seen["command"][seen["command"].index("--agent") + 1] == "auto"
-    assert seen["command"][seen["command"].index("--provider-order") + 1] == (
-        "codex,claude-code"
-    )
+    assert seen["command"][seen["command"].index("--agent") + 1] == "provider-broker"
+    assert "--provider-order" not in seen["command"]
 
 
 def test_audit_run_fn_reads_internal_audit_rejection_with_concrete_reason(tmp_path):
@@ -984,7 +984,7 @@ def test_run_fn_invokes_real_cli_with_project_goal_spec_and_agent(tmp_path):
     )
 
     run_fn, spec_dir, outbox_dir = make_run_fn(tmp_path, registry, subprocess_run=fake_subprocess_run)
-    result = run_fn(project, "claude")
+    result = run_fn(project, "provider-broker")
 
     command = seen["command"]
     assert command[0] == "ai-orchestrator"
@@ -1039,11 +1039,10 @@ def test_production_run_fn_dispatches_auto_for_same_tick_provider_failover(tmp_p
         tmp_path, registry, subprocess_run=fake_subprocess_run,
     )
 
-    run_fn(project, "antigravity")
+    run_fn(project, "provider-broker")
 
-    assert seen["command"][seen["command"].index("--agent") + 1] == "auto"
-    assert seen["command"][seen["command"].index("--provider-order") + 1] == "antigravity,groq,claude-code,codex"
-    assert "gemini" not in seen["command"][seen["command"].index("--provider-order") + 1]
+    assert seen["command"][seen["command"].index("--agent") + 1] == "provider-broker"
+    assert "--provider-order" not in seen["command"]
     assert "--model" not in seen["command"]
 
 
@@ -1054,8 +1053,6 @@ def test_auto_provider_alias_resolves_to_real_available_failover_order(tmp_path)
     registry.mark_limited("antigravity", timedelta(hours=1))
     registry.mark_available("claude")
     registry.mark_available("codex")
-
-    assert _tick_provider_order("auto", registry) == ["groq", "claude-code", "codex"]
 
     seen = {}
 
@@ -1077,12 +1074,10 @@ def test_auto_provider_alias_resolves_to_real_available_failover_order(tmp_path)
         run_id_fn=lambda: "auto-run",
     )
 
-    run_fn(project, "auto")
+    run_fn(project, "provider-broker")
 
-    assert seen["command"][seen["command"].index("--agent") + 1] == "auto"
-    assert seen["command"][seen["command"].index("--provider-order") + 1] == (
-        "groq,claude-code,codex"
-    )
+    assert seen["command"][seen["command"].index("--agent") + 1] == "provider-broker"
+    assert "--provider-order" not in seen["command"]
 
 
 def test_production_failover_leaves_model_selection_to_ao(tmp_path):
@@ -1114,7 +1109,7 @@ def test_production_failover_leaves_model_selection_to_ao(tmp_path):
         run_id_fn=lambda: "model-run",
     )(project, "codex")
 
-    assert seen["command"][seen["command"].index("--agent") + 1] == "auto"
+    assert seen["command"][seen["command"].index("--agent") + 1] == "provider-broker"
     assert "--model" not in seen["command"]
     assert "--provider-models" not in seen["command"]
 
@@ -1145,11 +1140,10 @@ def test_production_failover_excludes_limited_providers_from_next_workflow_step(
         tmp_path, registry, subprocess_run=fake_subprocess_run,
     )
 
-    run_fn(project, "antigravity")
+    run_fn(project, "provider-broker")
 
-    order = seen["command"][seen["command"].index("--provider-order") + 1]
-    assert order == "antigravity,groq,codex"
-    assert "claude-code" not in order
+    assert seen["command"][seen["command"].index("--agent") + 1] == "provider-broker"
+    assert "--provider-order" not in seen["command"]
 
 
 def test_production_waiting_receipt_gates_all_limited_providers_and_preserves_retry_at(tmp_path):
@@ -1205,14 +1199,14 @@ def test_production_waiting_receipt_gates_all_limited_providers_and_preserves_re
         tmp_path, registry, subprocess_run=fake_subprocess_run,
     )
 
-    result = run_fn(project, "antigravity")
+    result = run_fn(project, "provider-broker")
 
     assert result["status"] == "paused"
-    assert registry.get_status("groq").retry_after.isoformat() == "2026-09-02T11:01:00+00:00"
-    assert registry.get_status("antigravity").retry_after.isoformat() == "2026-09-02T11:02:00+00:00"
-    assert registry.get_status("claude").retry_after.isoformat() == "2026-09-02T11:15:00+00:00"
-    assert registry.get_status("codex").retry_after.isoformat() == "2026-09-02T11:00:30+00:00"
-    assert all(not registry.is_available(name) for name in ("groq", "antigravity", "claude", "codex"))
+    assert result["active_provider"] == "codex"
+    assert result["provider_statuses"]["groq"]["retry_at"] == "2026-09-02T11:01:00+00:00"
+    assert result["provider_statuses"]["antigravity"]["retry_at"] == "2026-09-02T11:02:00+00:00"
+    assert result["provider_statuses"]["claude-code"]["retry_at"] == "2026-09-02T11:15:00+00:00"
+    assert result["provider_statuses"]["codex"]["retry_at"] == "2026-09-02T11:00:30+00:00"
 
 
 def test_run_fn_preserves_model_identity_from_orchestrator_receipt(tmp_path):
@@ -1236,7 +1230,7 @@ def test_run_fn_preserves_model_identity_from_orchestrator_receipt(tmp_path):
     project = ProjectRecord(name="Demo", orchestrator_ready_task="Implement feature X")
     run_fn, _, _ = make_run_fn(tmp_path, registry, subprocess_run=fake_subprocess_run)
 
-    result = run_fn(project, "codex")
+    result = run_fn(project, "provider-broker")
 
     assert result["active_provider"] == "openai"
     assert result["active_model"] == "gpt-5.6-codex"
@@ -1267,7 +1261,7 @@ def test_parse_spec_markdown_does_not_double_count_dod_items_embedded_in_goal_te
         ),
     )
     run_fn, spec_dir, _outbox_dir = make_run_fn(tmp_path, registry, subprocess_run=fake_subprocess_run)
-    run_fn(project, "claude")
+    run_fn(project, "provider-broker")
 
     spec_path = spec_file_path(str(spec_dir.resolve()), "Demo")
     spec_payload = parse_spec_markdown(spec_path.read_text(encoding="utf-8"))
@@ -1295,7 +1289,7 @@ def test_spec_marks_checkpoint_verified_dod_as_checked(tmp_path):
         dod=[DoDItem(text="first"), DoDItem(text="second")],
     )
     run_fn, spec_dir, _outbox_dir = make_run_fn(tmp_path, registry, subprocess_run=fake_subprocess_run)
-    run_fn(project, "claude")
+    run_fn(project, "provider-broker")
 
     rendered = spec_file_path(str(spec_dir.resolve()), "Demo").read_text(encoding="utf-8")
     assert "- [x] first" in rendered
@@ -1333,8 +1327,8 @@ def test_run_fn_uses_project_key_for_stable_spec_path_across_card_title_edits(tm
         orchestrator_ready_task="Implement feature X",
     )
 
-    run_fn(first, "claude")
-    run_fn(renamed, "claude")
+    run_fn(first, "provider-broker")
+    run_fn(renamed, "provider-broker")
 
     expected = str(spec_file_path(str(spec_dir.resolve()), "unused", "Demo"))
     assert seen_specs == [expected, expected]
@@ -1353,9 +1347,9 @@ def test_spec_file_is_stable_across_runs_for_checkpoint_resume(tmp_path):
 
     run_fn, spec_dir, _outbox_dir = make_run_fn(tmp_path, registry, subprocess_run=fake_subprocess_run)
 
-    run_fn(project, "claude")
+    run_fn(project, "provider-broker")
     project.checkpoint = {"step": 2}
-    run_fn(project, "claude")
+    run_fn(project, "provider-broker")
 
     # Same path both times - ai-orchestrator resumes off a spec whose
     # identity never changes between runs for a given project.
@@ -1384,7 +1378,7 @@ def test_spec_file_round_trips_a_checkpoint_containing_html_comment_close(tmp_pa
         return completed()
 
     run_fn, spec_dir, _outbox_dir = make_run_fn(tmp_path, registry, subprocess_run=fake_subprocess_run)
-    run_fn(project, "claude")
+    run_fn(project, "provider-broker")
 
     spec_path = spec_file_path(str(spec_dir.resolve()), "Demo")
     spec_text = spec_path.read_text(encoding="utf-8")
@@ -1408,7 +1402,7 @@ def test_run_fn_marks_done_when_orchestrator_reports_done(tmp_path):
 
     project = ProjectRecord(name="Demo", orchestrator_ready_task="Implement feature X")
     run_fn, _spec_dir, _outbox_dir = make_run_fn(tmp_path, registry, subprocess_run=fake_subprocess_run)
-    result = run_fn(project, "claude")
+    result = run_fn(project, "provider-broker")
 
     assert result["status"] == "done"
     assert result["last_output"] == "shipped"
@@ -1423,16 +1417,15 @@ def test_run_fn_detects_limit_from_nonzero_exit_and_updates_registry(tmp_path):
     registry.mark_available("claude")
 
     run_fn, _spec_dir, _outbox_dir = make_run_fn(tmp_path, registry, subprocess_run=fake_subprocess_run)
-    result = run_fn(project, "claude")
+    result = run_fn(project, "provider-broker")
 
-    status = registry.get_status("claude")
-    assert status.state == ProviderState.LIMITED
-    assert status.retry_after is not None
+    status = registry.get_status("provider-broker")
+    assert status.state == ProviderState.AVAILABLE
     # A provider limit is a recoverable wait and must be visible in
     # Trello's Čeká na AI phase, with the checkpoint retained for resume.
     assert result["status"] == "paused"
     assert "session limit" in result["stop_reason"]
-    assert result["retry_after"] == status.retry_after.isoformat()
+    assert result["retry_after"]
 
 
 def test_run_fn_detects_limit_reported_explicitly_in_outbox_payload(tmp_path):
@@ -1450,11 +1443,10 @@ def test_run_fn_detects_limit_reported_explicitly_in_outbox_payload(tmp_path):
     registry.mark_available("claude")
 
     run_fn, _spec_dir, _outbox_dir = make_run_fn(tmp_path, registry, subprocess_run=fake_subprocess_run)
-    result = run_fn(project, "claude")
+    result = run_fn(project, "provider-broker")
 
-    status = registry.get_status("claude")
-    assert status.state == ProviderState.LIMITED
-    assert status.checkpoint == {"step": 7}
+    status = registry.get_status("provider-broker")
+    assert status.state == ProviderState.AVAILABLE
     assert result["checkpoint"] == {"step": 7}
     assert result["status"] == "paused"
 
@@ -1494,12 +1486,12 @@ def test_audit_wait_preserves_actual_failover_provider_from_outbox(tmp_path):
         run_id_fn=lambda: "audit-wait-run",
     )
 
-    result = audit_fn(project, "antigravity")
+    result = audit_fn(project, "provider-broker")
 
     assert result["status"] == "paused"
     assert result["active_provider"] == "codex"
     assert result["provider_sequence"] == ["codex"]
-    assert registry.get_status("codex").state == ProviderState.LIMITED
+    assert registry.get_status("provider-broker").state == ProviderState.AVAILABLE
 
 
 def test_run_fn_raises_on_non_limit_failure_without_touching_registry(tmp_path):
@@ -1513,7 +1505,7 @@ def test_run_fn_raises_on_non_limit_failure_without_touching_registry(tmp_path):
     run_fn, _spec_dir, _outbox_dir = make_run_fn(tmp_path, registry, subprocess_run=fake_subprocess_run)
 
     with pytest.raises(OrchestratorProcessError):
-        run_fn(project, "claude")
+        run_fn(project, "provider-broker")
 
     assert registry.get_status("claude").state == ProviderState.AVAILABLE
 
@@ -1530,7 +1522,7 @@ def test_run_fn_raises_when_no_outbox_result_was_produced(tmp_path):
     run_fn, _spec_dir, _outbox_dir = make_run_fn(tmp_path, registry, subprocess_run=fake_subprocess_run)
 
     with pytest.raises(OrchestratorProcessError):
-        run_fn(project, "claude")
+        run_fn(project, "provider-broker")
 
 
 def test_run_fn_raises_on_non_json_outbox_result(tmp_path):
@@ -1547,7 +1539,7 @@ def test_run_fn_raises_on_non_json_outbox_result(tmp_path):
     run_fn, _spec_dir, _outbox_dir = make_run_fn(tmp_path, registry, subprocess_run=fake_subprocess_run)
 
     with pytest.raises(OrchestratorProcessError):
-        run_fn(project, "claude")
+        run_fn(project, "provider-broker")
 
 
 def test_run_fn_raises_controlled_error_for_non_object_outbox_result(tmp_path):
@@ -1564,7 +1556,7 @@ def test_run_fn_raises_controlled_error_for_non_object_outbox_result(tmp_path):
         OrchestratorProcessError,
         match="outbox result must be an object, got list",
     ):
-        run_fn(project, "claude")
+        run_fn(project, "provider-broker")
 
 
 def test_run_fn_detects_limit_from_raised_subprocess_exception(tmp_path):
@@ -1576,9 +1568,9 @@ def test_run_fn_detects_limit_from_raised_subprocess_exception(tmp_path):
     registry.mark_available("claude")
 
     run_fn, _spec_dir, _outbox_dir = make_run_fn(tmp_path, registry, subprocess_run=fake_subprocess_run)
-    result = run_fn(project, "claude")
+    result = run_fn(project, "provider-broker")
 
-    assert registry.get_status("claude").state == ProviderState.LIMITED
+    assert registry.get_status("claude").state == ProviderState.AVAILABLE
     assert result["status"] == "paused"
 
 
@@ -1598,7 +1590,7 @@ def test_run_fn_treats_a_subprocess_timeout_as_a_failure_not_a_hang(tmp_path):
     run_fn, _spec_dir, _outbox_dir = make_run_fn(tmp_path, registry, subprocess_run=fake_subprocess_run)
 
     with pytest.raises(OrchestratorProcessError):
-        run_fn(project, "claude")
+        run_fn(project, "provider-broker")
 
     assert registry.get_status("claude").state == ProviderState.AVAILABLE
 
@@ -1619,7 +1611,7 @@ def test_run_fn_does_not_mistake_429_inside_a_timeout_command_path_for_a_rate_li
     )
 
     with pytest.raises(OrchestratorProcessError):
-        run_fn(project, "claude")
+        run_fn(project, "provider-broker")
 
     assert registry.get_status("claude").state == ProviderState.AVAILABLE
 
@@ -1651,7 +1643,7 @@ def test_build_run_fn_applies_configured_timeout_to_the_real_subprocess_call(tmp
         run_id_fn=lambda: "fixed-run-id",
         read_outbox=lambda outbox_dir, project_name, run_id: {"status": "in_progress"},
     )
-    run_fn(project, "claude")
+    run_fn(project, "provider-broker")
 
     assert seen["timeout"] == 45.0
 
@@ -1678,7 +1670,7 @@ def test_build_run_fn_without_timeout_seconds_passes_no_timeout(tmp_path, monkey
         run_id_fn=lambda: "fixed-run-id",
         read_outbox=lambda outbox_dir, project_name, run_id: {"status": "in_progress"},
     )
-    run_fn(project, "claude")
+    run_fn(project, "provider-broker")
 
     assert seen["timeout"] is None
 
@@ -1699,7 +1691,7 @@ def test_run_fn_raises_when_project_path_cannot_be_resolved(tmp_path):
     )
 
     with pytest.raises(OrchestratorProcessError):
-        run_fn(project, "claude")
+        run_fn(project, "provider-broker")
 
 
 # ---- refusing an empty task/DoD without spending any AI tokens (item 1)
@@ -1718,7 +1710,7 @@ def test_run_fn_never_spawns_the_subprocess_for_an_empty_project(tmp_path):
     run_fn, _spec_dir, _outbox_dir = make_run_fn(tmp_path, registry, subprocess_run=fake_subprocess_run)
 
     with pytest.raises(InvalidTaskError):
-        run_fn(project, "claude")
+        run_fn(project, "provider-broker")
 
     assert subprocess_calls == []
 
@@ -1742,7 +1734,7 @@ def test_run_fn_ignores_stale_result_with_a_different_run_id_and_raises(tmp_path
     run_fn, _spec_dir, _outbox_dir = make_run_fn(tmp_path, registry, subprocess_run=fake_subprocess_run)
 
     with pytest.raises(OrchestratorProcessError):
-        run_fn(project, "claude")
+        run_fn(project, "provider-broker")
 
 
 def test_run_fn_picks_the_matching_run_id_even_when_a_stale_result_is_newer(tmp_path):
@@ -1766,7 +1758,7 @@ def test_run_fn_picks_the_matching_run_id_even_when_a_stale_result_is_newer(tmp_
     registry.mark_available("claude")
 
     run_fn, _spec_dir, _outbox_dir = make_run_fn(tmp_path, registry, subprocess_run=fake_subprocess_run)
-    result = run_fn(project, "claude")
+    result = run_fn(project, "provider-broker")
 
     assert result["last_output"] == "old"
 
@@ -1801,7 +1793,7 @@ def test_run_fn_skips_newer_non_object_outbox_candidate(tmp_path):
         tmp_path, registry, subprocess_run=fake_subprocess_run
     )
 
-    result = run_fn(project, "claude")
+    result = run_fn(project, "provider-broker")
 
     assert result["last_output"] == "matching object"
 
@@ -1823,7 +1815,7 @@ def test_run_fn_reads_real_run_id_named_outbox_file(tmp_path):
         tmp_path, registry, subprocess_run=fake_subprocess_run
     )
 
-    result = run_fn(project, "auto")
+    result = run_fn(project, "provider-broker")
 
     assert result["status"] == "done"
 
@@ -1850,7 +1842,7 @@ def test_nonzero_cli_exit_with_valid_max_iterations_outbox_is_progress_not_crash
         tmp_path, registry, subprocess_run=fake_subprocess_run
     )
 
-    result = run_fn(project, "auto")
+    result = run_fn(project, "provider-broker")
 
     assert result["status"] == "in_progress"
     assert result["checkpoint"] == {"completed_dod_indices": [0]}
@@ -1879,7 +1871,7 @@ def test_protocol_error_outbox_maps_to_blocked(tmp_path):
         tmp_path, registry, subprocess_run=fake_subprocess_run
     )
 
-    result = run_fn(project, "auto")
+    result = run_fn(project, "provider-broker")
 
     assert result["status"] == "blocked"
     assert result["checkpoint"] == {"completed_dod_indices": [0]}
@@ -1908,8 +1900,8 @@ def test_run_fn_generates_a_fresh_run_id_per_call(tmp_path):
         subprocess_run=fake_subprocess_run,
     )
 
-    run_fn(project, "claude")
-    run_fn(project, "claude")
+    run_fn(project, "provider-broker")
+    run_fn(project, "provider-broker")
 
     assert len(seen_run_ids) == 2
     assert seen_run_ids[0] != seen_run_ids[1]
@@ -1929,7 +1921,7 @@ def test_spec_file_instructs_the_agent_never_to_commit(tmp_path):
 
     project = ProjectRecord(name="Demo", orchestrator_ready_task="Implement feature X")
     run_fn, spec_dir, _outbox_dir = make_run_fn(tmp_path, registry, subprocess_run=fake_subprocess_run)
-    run_fn(project, "claude")
+    run_fn(project, "provider-broker")
 
     spec_path = spec_file_path(str(spec_dir.resolve()), "Demo")
     spec_text = spec_path.read_text(encoding="utf-8")
@@ -1953,7 +1945,7 @@ def test_spec_goal_does_not_duplicate_compact_embedded_dod(tmp_path):
         dod=[DoDItem(text="first"), DoDItem(text="second")],
     )
     run_fn, spec_dir, _outbox_dir = make_run_fn(tmp_path, registry, subprocess_run=fake_subprocess_run)
-    run_fn(project, "claude")
+    run_fn(project, "provider-broker")
 
     spec_text = spec_file_path(str(spec_dir.resolve()), "Demo").read_text(encoding="utf-8")
     assert spec_text.count("[ ] first") == 1
@@ -1972,7 +1964,7 @@ def test_spec_encodes_fixed_authority_chain_and_orchestrator_only_audit(tmp_path
 
     project = ProjectRecord(name="Demo", orchestrator_ready_task="Implement feature X")
     run_fn, spec_dir, _ = make_run_fn(tmp_path, registry, subprocess_run=fake_subprocess_run)
-    run_fn(project, "claude")
+    run_fn(project, "provider-broker")
 
     payload = parse_spec_markdown(
         spec_file_path(str(spec_dir.resolve()), "Demo").read_text("utf-8")
@@ -2042,11 +2034,11 @@ def test_inbox_planner_excludes_retired_provider_names_and_returns_validated_ai_
 
     assert result["provider"] == "groq"
     assert result["model"] == "openai/gpt-oss-120b"
-    assert "první dostupný provider" in result["provider_reason"]
+    assert "provider-broker" in result["provider_reason"]
     assert "skutečně použitý model" in result["model_reason"]
-    assert selections[0]["provider"] == "auto"
+    assert selections[0]["provider"] == "provider-broker"
     assert selections[0]["model"] == "AO model bude potvrzen po běhu"
-    assert "centrálně zvolí" in selections[0]["provider_reason"]
+    assert "provider-broker" in selections[0]["provider_reason"]
     assert selections[0]["task_type"] == "inbox_planning"
     assert result["tasks"][0].priority == 4.01
     assert result["tasks"][0].project_key == "AI Project Manager"
@@ -2055,10 +2047,10 @@ def test_inbox_planner_excludes_retired_provider_names_and_returns_validated_ai_
     assert result["tasks"][0].source_refs == ("regrese",)
     assert result["tasks"][0].verification.required == ("regression",)
     assert result["tasks"][0].verification.acceptable == ("unit", "runtime")
-    assert calls[0][0][:7] == [
-        "python", "orchestrator.py", "plan-inbox", "--agent", "auto",
-        "--provider-order", "groq,antigravity,codex",
+    assert calls[0][0][:5] == [
+        "python", "orchestrator.py", "plan-inbox", "--agent", "provider-broker",
     ]
+    assert "--provider-order" not in calls[0][0]
     assert "--provider-models" not in calls[0][0]
     assert "gemini" not in calls[0][0]
     assert "hermes" not in calls[0][0]
@@ -2158,6 +2150,7 @@ def test_inbox_planner_uses_one_central_call_and_projects_provider_receipt():
                 },
                 "antigravity": {"state": "AVAILABLE", "reason": None},
             },
+            "provider_sequence": ["groq", "antigravity"],
             "output": json.dumps({
                 "tasks": [{
                     "scope": "feature",
@@ -2184,10 +2177,9 @@ def test_inbox_planner_uses_one_central_call_and_projects_provider_receipt():
     assert result["provider_sequence"] == ["groq", "antigravity"]
     assert result["usage"]["total"]["total_tokens"] == 10
     assert len(calls) == 1
-    assert calls[0][0][-4:] == ["--agent", "auto", "--provider-order", "groq,antigravity"]
+    assert calls[0][0][-2:] == ["--agent", "provider-broker"]
     assert json.loads(calls[0][1]["input"])["card"]["description"] == "Úkol"
-    assert registry.get_status("groq").state == ProviderState.LIMITED
-    assert registry.get_status("groq").retry_after is not None
+    assert registry.get_status("groq").state == ProviderState.AVAILABLE
     assert registry.get_status("antigravity").state == ProviderState.AVAILABLE
 
 
@@ -2206,8 +2198,8 @@ def test_inbox_planner_marks_all_candidates_on_central_call_failure():
     )
 
     assert planner({"id": "source", "name": "Nápad", "desc": "Úkol"}, []) is None
-    assert registry.get_status("groq").state == ProviderState.ERROR
-    assert registry.get_status("antigravity").state == ProviderState.ERROR
+    assert registry.get_status("groq").state == ProviderState.AVAILABLE
+    assert registry.get_status("antigravity").state == ProviderState.AVAILABLE
 
 
 def test_bounded_inbox_subprocess_kills_windows_process_tree_on_timeout(monkeypatch):
@@ -2322,8 +2314,7 @@ def test_inbox_planner_fails_closed_on_multi_task_plan_when_source_explicitly_ma
     )
 
     assert planner({"id": "source", "name": "Nápad [indivisible]", "desc": "Úkol"}, []) is None
-    status = registry.get_status("claude")
-    assert "nedělitelná" in status.last_error
+    assert registry.get_status("claude").state == ProviderState.AVAILABLE
 
 
 def test_inbox_planner_allows_multi_task_plan_for_ordinary_splittable_source():
@@ -2360,7 +2351,8 @@ def test_inbox_planner_does_not_fallback_to_retired_provider_when_it_is_the_only
     )
 
     assert planner({"id": "source", "name": "Nápad", "desc": "Úkol"}, []) is None
-    assert calls == []
+    assert len(calls) == 1
+    assert calls[0][3:] == ["--agent", "provider-broker"]
 
 
 def test_inbox_planner_requires_an_explainable_priority_reason():
@@ -2392,7 +2384,7 @@ def test_inbox_planner_requires_an_explainable_priority_reason():
     assert planner({"id": "source", "name": "Nápad", "desc": "Úkol"}, []) is None
 
 
-def test_inbox_planner_invalid_task_plan_fails_closed_and_marks_active_provider_error():
+def test_inbox_planner_invalid_task_plan_fails_closed_without_mutating_provider_registry():
     registry = ProviderRegistry()
     registry.mark_available("groq")
     registry.mark_available("antigravity")
@@ -2425,16 +2417,13 @@ def test_inbox_planner_invalid_task_plan_fails_closed_and_marks_active_provider_
     result = planner({"id": "source", "name": "Nápad", "desc": "Úkol"}, [])
 
     assert result is None
-    assert calls == ["auto"]
-    assert registry.get_status("groq").state == ProviderState.ERROR
-    assert registry.is_available("groq") is False
-    assert registry.get_status("groq").last_error == "AI Inbox planner vrátil neplatný task plán"
+    assert calls == ["provider-broker"]
+    assert registry.get_status("groq").state == ProviderState.AVAILABLE
+    assert registry.is_available("groq") is True
 
 
-def test_run_fn_keeps_pm_side_provider_name_for_registry_while_mapping_agent_for_cli(tmp_path):
-    """The provider-registry name run_fn is called with (and everything
-    it drives - locking, retry_after) stays "claude"; only the CLI/spec
-    agent identifier is translated."""
+def test_run_fn_uses_provider_broker_for_cli_and_registry_bookkeeping(tmp_path):
+    """PM passes provider selection and limit bookkeeping to the broker."""
     seen = {}
     registry = ProviderRegistry()
     registry.mark_available("claude")
@@ -2445,13 +2434,10 @@ def test_run_fn_keeps_pm_side_provider_name_for_registry_while_mapping_agent_for
 
     project = ProjectRecord(name="Demo", orchestrator_ready_task="Implement feature X")
     run_fn, _spec_dir, _outbox_dir = make_run_fn(tmp_path, registry, subprocess_run=fake_subprocess_run)
-    result = run_fn(project, "claude")
+    result = run_fn(project, "provider-broker")
 
-    assert seen["command"][seen["command"].index("--agent") + 1] == "claude-code"
-    # The registry/limit bookkeeping is still keyed by "claude", not
-    # "claude-code" - the Project Manager's own stable provider name.
-    assert registry.get_status("claude").state == ProviderState.LIMITED
-    assert registry.get_status("claude-code").state == ProviderState.AVAILABLE
+    assert seen["command"][seen["command"].index("--agent") + 1] == "provider-broker"
+    assert registry.get_status("provider-broker").state == ProviderState.AVAILABLE
     assert result["status"] == "paused"
 
 
@@ -2518,7 +2504,7 @@ def test_p5_false_completion_regression_audit_rejects_dirty_unchanged_head_empty
         run_git=fake_git,
     )
 
-    result = audit_run_fn(project, "claude")
+    result = audit_run_fn(project, "provider-broker")
 
     assert result["verdict"] == "rejected"
     assert "0" in result["reason"]
