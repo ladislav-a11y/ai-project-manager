@@ -34,19 +34,12 @@ from .orchestrator_handoff import (
 from .providers import ProviderRegistry, ProviderState, TASK_AUDIT, TASK_IMPLEMENTATION
 from .scheduler import (
     audit_capability_key,
-    expand_provider_aliases,
+    explain_no_audit_dispatch,
+    explain_no_implementation_dispatch,
     pick_next_audit_project,
     pick_next_project,
 )
 from .trello_sync import project_from_card, sync_project_to_trello
-from .slack_notify import (
-    notify,
-    provider_blocked_message,
-    result_model,
-    provider_route_detail,
-    status_message,
-    usage_suffix,
-)
 
 logger = logging.getLogger("ai_project_manager")
 
@@ -107,7 +100,7 @@ def _display_model(provider: str, model: Optional[str]) -> str:
 
 
 def _task_type_label(task_type: str) -> str:
-    """Return the human-facing task family used in Slack explanations."""
+    """Return the human-facing task family used in operator explanations."""
     return {
         TASK_IMPLEMENTATION: "implementaci",
         TASK_AUDIT: "audit",
@@ -129,15 +122,9 @@ def _model_selection_reason(
             f"model {model} je pro {task_label} skutečně použitý model providera "
             "potvrzený ai-orchestrátorem"
         )
-    configured_model = provider_registry.model_for_task(provider, task_type)
-    if configured_model:
-        return (
-            f"PM předává provideru {provider} pro {task_label} nakonfigurovaný model "
-            f"{configured_model}; AO jej použije pouze pro tohoto providera"
-        )
     return (
-        f"provider použije svůj nakonfigurovaný/default model pro {task_label}; "
-        "PM nemá ověřený explicitní modelový override"
+        f"AO vybere model podle vlastní konfigurace pro {task_label}; "
+        "PM model nepředává a čeká na skutečný model v AO receiptu"
     )
 
 
@@ -149,16 +136,10 @@ def _provider_selection_reason(
     provider_registry: ProviderRegistry,
     task_type: str,
 ) -> str:
-    ordered = (providers_for_project or {}).get(
-        project.name,
-        default_providers or provider_registry.registered_names(),
+    return (
+        "PM předává úlohu AO; provider-broker ověří všechny providery a vybere právě jednoho; "
+        + _model_selection_reason(provider, None, provider_registry, task_type)
     )
-    resolved_order = expand_provider_aliases(list(ordered), provider_registry)
-    provider_reason = f"provider je první dostupný v pořadí {', '.join(resolved_order or ordered)}"
-    model_reason = _model_selection_reason(
-        provider, None, provider_registry, task_type
-    )
-    return f"{provider_reason}; {model_reason}"
 
 
 def _actual_provider_selection_reason(
@@ -173,19 +154,6 @@ def _actual_provider_selection_reason(
     task_type: str,
 ) -> str:
     """Explain the provider and model that the orchestrator actually used."""
-    if actual_provider == selected_provider:
-        return _provider_selection_reason(
-            project,
-            actual_provider,
-            providers_for_project,
-            default_providers,
-            provider_registry,
-            task_type,
-        )
-
-    provider_reason = (
-        f"provider {actual_provider} byl použit po failoveru z {selected_provider}"
-    )
     model_reason = _model_selection_reason(
         actual_provider,
         actual_model,
@@ -193,7 +161,7 @@ def _actual_provider_selection_reason(
         task_type,
         confirmed=bool(confirmed_model),
     )
-    return f"{provider_reason}; {model_reason}"
+    return f"provider-broker vybral {actual_provider}; {model_reason}"
 
 
 def _capture_live_trello_readback(client, project: ProjectRecord) -> dict:
@@ -376,6 +344,10 @@ class RunOutcome:
     reason: Optional[str] = None
     halted: bool = False
     operational_error: bool = False
+    # The tick completed Inbox intake and stopped before dispatch. The outer
+    # daemon may start the next phase-boundary tick immediately because all
+    # intake/Trello writes have completed.
+    follow_up_immediately: bool = False
     # Set when a self-update was detected and safely prepared for restart
     # (see self_update.py / daemon.run_loop). The process should exit with
     # self_update.RESTART_REQUIRED_EXIT_CODE so a supervising watchdog -
@@ -598,13 +570,14 @@ def run_once(
         default_providers=default_providers,
     )
     if decision is None:
-        logger.info("no schedulable project with an available provider")
-        return RunOutcome(ran=False, reason="no schedulable project with an available provider")
+        reason = explain_no_implementation_dispatch(unlocked_projects)
+        logger.info("no implementation dispatch: %s", reason)
+        return RunOutcome(ran=False, reason=reason)
 
     project = decision.project
     provider = decision.provider
-    selected_model = provider_registry.model_for_task(provider, TASK_IMPLEMENTATION)
-    provider_detail = f"{provider} | model: {_display_model(provider, selected_model)}"
+    selected_model = None
+    provider_detail = f"{provider} | model: AO vybere při běhu"
     provider_reason = _provider_selection_reason(
         project, provider, providers_for_project, default_providers, provider_registry, TASK_IMPLEMENTATION
     )
@@ -614,18 +587,16 @@ def run_once(
         with lock_manager.hold(project.name, holder):
             # Announce only after the lock is actually held.  Another worker
             # may win the race after the optimistic filter above.
-            notify(status_message(
-                "PM zahajuje práci (Zahajuji)",
-                project=project.name,
-                provider=provider_detail,
-                provider_reason=provider_reason,
-            ))
+            logger.info(
+                "starting project=%r provider=%s model=%s reason=%s",
+                project.name, provider_detail, provider_reason, provider_reason,
+            )
             project.provider = provider
             project.extra_data["provider_selection"] = {
                 "provider": provider,
                 "model": selected_model,
                 "stage": "implementation",
-                "source": "AI_PM_PROVIDER_MODELS" if selected_model else "provider_default",
+                "source": "ao_runtime_selection",
             }
             # The Trello board must show the real flow while the provider is
             # working, not leave an active card looking idle in Připraveno.
@@ -661,12 +632,10 @@ def run_once(
                 )
                 sync_project_to_trello(client, project)
                 logger.info("synced project=%r state to trello (card=%s)", project.name, project.trello_card_id)
-                notify(status_message(
-                    "PM skončil chybou providera",
-                    project=project.name,
-                    provider=provider,
-                    detail=f"důvod: {signature}",
-                ))
+                logger.warning(
+                    "provider execution failed: project=%s provider=%s reason=%s",
+                    project.name, provider, signature,
+                )
                 return RunOutcome(
                     ran=True,
                     project_name=project.name,
@@ -689,16 +658,8 @@ def run_once(
                 project.name, actual_provider, provider, project.status.value,
                 project.stop_reason, project.retry_after,
             )
-            confirmed_model = result_model(result)
-            if confirmed_model and not provider_registry.get_status(actual_provider).models:
-                # Learn the model actually used from ai-orchestrator's receipt;
-                # this becomes the preferred model shown on the next dispatch
-                # only when no operator-configured catalog exists. Replacing an
-                # existing catalog here would discard its audit-quality model
-                # before the subsequent implementation -> audit dispatch.
-                provider_registry.configure_models(actual_provider, [confirmed_model])
+            confirmed_model = result.get("active_model") or result.get("model")
             actual_model = confirmed_model
-            actual_model_detail = _display_model(actual_provider, actual_model)
             actual_provider_reason = _actual_provider_selection_reason(
                 project,
                 provider,
@@ -733,58 +694,6 @@ def run_once(
                 "provider_sequence": project.extra_data["provider_selection"]["provider_sequence"],
                 "run_id": result.get("run_id"),
             }
-            status_messages: list[str] = []
-            if project.status == ProjectStatus.DONE:
-                status_messages.append(
-                    status_message(
-                        "PM dokončil práci",
-                        project=project.name,
-                        provider=f"{actual_provider} | model: {actual_model_detail}",
-                        provider_reason=actual_provider_reason,
-                        detail=(
-                            "výsledek zapsán do Trella | "
-                            + provider_route_detail(result, selected_provider=provider)
-                        ),
-                    )
-                    + usage_suffix(result)
-                )
-            elif project.retry_after:
-                status_messages.extend([
-                    provider_blocked_message(
-                        actual_provider,
-                        project.retry_after,
-                        reason=project.stop_reason,
-                    ),
-                    status_message(
-                        "PM ukončil tick a čeká",
-                        project=project.name,
-                        provider=f"{actual_provider} | model: {actual_model_detail}",
-                        provider_reason=actual_provider_reason,
-                        detail=(
-                            f"další pokus: {project.retry_after} | "
-                            + provider_route_detail(result, selected_provider=provider)
-                        ),
-                    ) + usage_suffix(result),
-                ])
-            else:
-                next_step = project.next_step or project.stop_reason or "pokračování v dalším běhu"
-                status_messages.append(
-                    status_message(
-                        "Průběžný stav: PM ukončil tick",
-                        project=project.name,
-                        provider=f"{actual_provider} | model: {actual_model_detail}",
-                        provider_reason=actual_provider_reason,
-                        detail=(
-                            f"další krok: {next_step} | "
-                            f"{provider_route_detail(result, selected_provider=provider)}"
-                        ),
-                    )
-                    + usage_suffix(result)
-                )
-            deliveries = []
-            for message in status_messages:
-                deliveries.append({"message": message, "delivered": notify(message)})
-            project.extra_data["provider_selection"]["slack_notifications"] = deliveries
             sync_project_to_trello(client, project)
             logger.info("synced project=%r state to trello (card=%s)", project.name, project.trello_card_id)
             return RunOutcome(
@@ -836,13 +745,14 @@ def run_once_audit(
         default_providers=default_providers,
     )
     if decision is None:
-        logger.info("no project awaiting audit with an available provider")
-        return RunOutcome(ran=False, reason="no project awaiting audit with an available provider")
+        reason = explain_no_audit_dispatch(unlocked_projects)
+        logger.info("no audit dispatch: %s", reason)
+        return RunOutcome(ran=False, reason=reason)
 
     project = decision.project
     provider = decision.provider
-    selected_model = provider_registry.model_for_task(provider, TASK_AUDIT)
-    provider_detail = f"{provider} | model: {_display_model(provider, selected_model)}"
+    selected_model = None
+    provider_detail = f"{provider} | model: AO vybere při běhu"
     provider_reason = _provider_selection_reason(
         project, provider, providers_for_project, default_providers, provider_registry, TASK_AUDIT
     )
@@ -864,11 +774,7 @@ def run_once_audit(
                 project.mark_returned_from_testing("incomplete_dod")
                 project.transition_to(ProjectStatus.IN_PROGRESS)
                 sync_project_to_trello(client, project)
-                notify(status_message(
-                    "PM odložil audit",
-                    project=project.name,
-                    detail="neúplné DoD vráceno do Pracuje se bez volání AI",
-                ))
+                logger.info("audit deferred: project=%s reason=%s", project.name, project.stop_reason)
                 return RunOutcome(
                     ran=True,
                     project_name=project.name,
@@ -895,11 +801,7 @@ def run_once_audit(
                     project.mark_returned_from_testing("finalization_failed")
                     project.transition_to(ProjectStatus.IN_PROGRESS)
                     sync_project_to_trello(client, project)
-                    notify(status_message(
-                        "PM odložil audit",
-                        project=project.name,
-                        detail=f"controller finalizace selhala: {reason}",
-                    ))
+                    logger.warning("audit deferred: project=%s reason=%s", project.name, reason)
                     return RunOutcome(
                         ran=True,
                         project_name=project.name,
@@ -908,19 +810,17 @@ def run_once_audit(
                     )
                 if not finalize_result.get("already_verified"):
                     project.checkpoint = finalize_result.get("checkpoint", project.checkpoint)
-            notify(status_message(
-                "PM zahajuje audit",
-                project=project.name,
-                provider=provider_detail,
-                provider_reason=provider_reason,
-            ))
+            logger.info(
+                "starting audit: project=%s provider=%s reason=%s",
+                project.name, provider_detail, provider_reason,
+            )
             project.provider = provider
             _remember_provider_selection(project)
             project.extra_data["provider_selection"] = {
                 "provider": provider,
                 "model": selected_model,
                 "stage": "audit",
-                "source": "AI_PM_PROVIDER_MODELS" if selected_model else "provider_default",
+                "source": "ao_runtime_selection",
             }
             sync_project_to_trello(client, project)
             logger.info(
@@ -1014,12 +914,10 @@ def run_once_audit(
                     project.name, provider, signature, halted,
                 )
                 sync_project_to_trello(client, project)
-                notify(status_message(
-                    "PM ukončil audit chybou providera",
-                    project=project.name,
-                    provider=provider,
-                    detail=f"důvod: {signature}",
-                ))
+                logger.warning(
+                    "audit provider execution failed: project=%s provider=%s reason=%s",
+                    project.name, provider, signature,
+                )
                 return RunOutcome(
                     ran=True,
                     project_name=project.name,
@@ -1029,11 +927,8 @@ def run_once_audit(
                 )
             guard.reset(project.name)
             actual_provider = result.get("active_provider") or provider
-            confirmed_model = result_model(result)
-            if confirmed_model and not provider_registry.get_status(actual_provider).models:
-                provider_registry.configure_models(actual_provider, [confirmed_model])
+            confirmed_model = result.get("active_model") or result.get("model")
             actual_model = confirmed_model
-            actual_model_detail = _display_model(actual_provider, actual_model)
             actual_provider_reason = _actual_provider_selection_reason(
                 project,
                 provider,
@@ -1060,51 +955,10 @@ def run_once_audit(
                 "audit result project=%r provider=%s status=%s stop_reason=%s",
                 project.name, provider, project.status.value, project.stop_reason,
             )
-            if project.status == ProjectStatus.DONE:
-                notify(
-                    status_message(
-                        "PM dokončil audit: přijato",
-                        project=project.name,
-                        provider=f"{actual_provider} | model: {actual_model_detail}",
-                        provider_reason=actual_provider_reason,
-                        detail=(
-                            "přesunuto do Hotovo | "
-                            + provider_route_detail(result, selected_provider=provider)
-                        ),
-                    )
-                    + usage_suffix(result)
-                )
-            elif project.retry_after:
-                notify(provider_blocked_message(
-                    actual_provider,
-                    project.retry_after,
-                    reason=project.stop_reason,
-                ))
-                notify(status_message(
-                    "PM ukončil auditní tick a čeká",
-                    project=project.name,
-                    provider=f"{actual_provider} | model: {actual_model_detail}",
-                    provider_reason=actual_provider_reason,
-                    detail=(
-                        f"další pokus: {project.retry_after} | "
-                        + provider_route_detail(result, selected_provider=provider)
-                    ),
-                ) + usage_suffix(result))
-            else:
-                notify(
-                    status_message(
-                        "PM dokončil audit: odmítnuto",
-                        project=project.name,
-                        provider=f"{actual_provider} | model: {actual_model_detail}",
-                        provider_reason=actual_provider_reason,
-                        detail=(
-                            f"vráceno do {project.status.value} | "
-                            f"důvod: {project.stop_reason} | "
-                            f"{provider_route_detail(result, selected_provider=provider)}"
-                        ),
-                    )
-                    + usage_suffix(result)
-                )
+            logger.info(
+                "audit result persisted: project=%s provider=%s status=%s reason=%s",
+                project.name, actual_provider, project.status.value, project.stop_reason,
+            )
             return RunOutcome(
                 ran=True,
                 project_name=project.name,

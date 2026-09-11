@@ -7,15 +7,15 @@ rem Scheduled Task and it does not use the one-shot --once mode. The Task
 rem Scheduler installer is scripts\install-scheduler.ps1.
 
 rem scripts\run-ai-project-manager.ps1 is the single, already-tested place
-rem that builds the PM's production configuration: Trello/Slack credentials
-rem from the DPAPI-protected .secrets\scheduler.clixml (never a hardcoded
-rem webhook/token in either script - see test_scheduler_scripts.py), the
+rem that builds the PM's production configuration: Trello credentials from
+rem the DPAPI-protected .secrets\scheduler.clixml (never hardcoded in either
+rem script - see test_scheduler_scripts.py), the
 rem AI_PM_PYTHON_EXE -> local .venv -> system-python interpreter fallback
 rem chain, and the ai_project_manager.watchdog invocation itself. This
 rem launcher used to duplicate a second, config-blind copy of that watchdog
 rem invocation with none of the credential/env-var setup, so every
-rem persistent start failed immediately with a missing Trello/Slack
-rem credential configuration error. Delegating here instead of
+rem persistent start failed immediately with a missing Trello credential
+rem configuration error. Delegating here instead of
 rem re-implementing it keeps exactly one implementation of "how the PM gets
 rem its production config" to keep correct and secret-safe.
 rem

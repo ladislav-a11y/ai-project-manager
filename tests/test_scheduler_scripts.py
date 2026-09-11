@@ -64,7 +64,7 @@ def test_runner_delegates_model_selection_to_providers() -> None:
 
     assert "$env:AI_PM_PROVIDERS = 'groq,antigravity,claude,codex'" in source
     assert "$env:AI_PM_PROVIDER_MODELS = '{}'" in source
-    assert "Preserve an operator-configured provider" in source
+    assert "Preserve an operator-configured legacy provider" in source
 
 
 def test_runner_does_not_hardcode_ai_project_manager_finalize_paths() -> None:
@@ -191,10 +191,10 @@ def test_persistent_bat_launcher_shares_config_with_the_runner_script() -> None:
     """``start_ai_project_manager.bat`` is the actual on-machine entrypoint
     for the long-running, watchdog-supervised PM. A prior version invoked
     ``ai_project_manager.watchdog`` directly with none of the production
-    configuration (Trello/Slack credentials, providers, project paths) that
+    configuration (Trello credentials, providers, project paths) that
     ``scripts/run-ai-project-manager.ps1`` loads - every persistent start
-    then failed immediately with a missing TRELLO_KEY/SLACK_WEBHOOK_URL
-    ``ConfigError``, since ``config.load_config`` requires those variables
+    then failed immediately with missing Trello configuration, since
+    ``config.load_config`` requires those variables
     (see ai_project_manager/config.py). It must instead delegate to the
     runner script - the single, already-tested place that loads
     ``.secrets/scheduler.clixml`` and resolves the Python interpreter - so
@@ -212,18 +212,6 @@ def test_persistent_bat_launcher_shares_config_with_the_runner_script() -> None:
     assert "Import-Clixml" not in source
     assert ".venv\\Scripts\\python.exe" not in source
     assert "where python" not in source
-
-
-def test_persistent_bat_launcher_never_hardcodes_a_webhook_or_credential() -> None:
-    """Secure configuration is shared by delegating to the runner script,
-    not by copying a webhook/token literal into the .bat - see
-    test_persistent_bat_launcher_shares_config_with_the_runner_script."""
-    source = (PROJECT_ROOT / "start_ai_project_manager.bat").read_text(encoding="utf-8")
-
-    assert "hooks.slack.com" not in source
-    assert "SLACK_WEBHOOK_URL" not in source
-    assert "TRELLO_KEY" not in source
-    assert "TRELLO_TOKEN" not in source
 
 
 def test_persistent_bat_launcher_detaches_from_the_invoking_console() -> None:
@@ -301,37 +289,10 @@ def test_runner_poll_interval_is_explicit_and_validated() -> None:
     assert "$env:AI_PM_POLL_INTERVAL_SECONDS = [string]$PollIntervalSeconds" in source
 
 
-def test_runner_loads_production_slack_opt_in_with_protected_webhook() -> None:
-    """A fresh production shell gets both halves of Slack configuration
-    from the runner; developers invoking Python directly get neither opt-in."""
-    source = (SCRIPTS / "run-ai-project-manager.ps1").read_text(encoding="utf-8")
-
-    import_index = source.index("Import-Clixml -LiteralPath $secretPath")
-    webhook_index = source.index(
-        "$env:SLACK_WEBHOOK_URL = ConvertFrom-ProtectedString $credentials.SlackWebhookUrl"
-    )
-    enabled_index = source.index("$env:AI_PM_SLACK_ENABLED = '1'")
-    launch_index = source.index("& $PythonExe @arguments")
-
-    assert import_index < webhook_index < enabled_index < launch_index
-    assert "$env:AI_PM_SLACK_ENABLED = $null" in source
-    assert "hooks.slack.com" not in source
-
-
-def test_runner_has_fresh_shell_slack_probe_that_does_not_run_a_tick() -> None:
-    source = (SCRIPTS / "run-ai-project-manager.ps1").read_text(encoding="utf-8")
-
-    assert "[switch]$SlackProbe" in source
-    assert "if ($SlackProbe)" in source
-    assert "'--slack-probe'" in source
-    assert "elseif ($Once)" in source
-
-
-def test_live_verifier_requires_task_watchdog_log_slack_and_next_tick() -> None:
+def test_live_verifier_requires_task_watchdog_log_and_next_tick() -> None:
     source = (SCRIPTS / "verify-scheduler.ps1").read_text(encoding="utf-8")
 
     assert "Get-ScheduledTask -TaskName $TaskName" in source
     assert "ai_project_manager.watchdog" in source
     assert "scheduler tick finished:" in source
-    assert "Slack notification delivered (HTTP 200)" in source
     assert "No subsequent automatic PM tick" in source

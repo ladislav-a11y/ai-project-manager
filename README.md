@@ -1,4 +1,4 @@
-# AI Project Manager
+# AI Project Manager v2
 
 Autonomní řídicí vrstva nad Trello boardem a `ai-orchestrator`. Trello je
 zdroj pravdy pro projekty i jediný ruční vstup (`Inbox`). Jeden scheduler tick
@@ -7,9 +7,18 @@ v názvu; při každém ticku nejdříve obnoví `Čeká na AI`, potom zpracuje 
 `Testování` a teprve po vyprázdnění těchto fází vybere práci v `Pracuje se` nebo
 `Připraveno`. Výsledek zapíše zpět do Trella.
 
-Pokud není práce nebo je provider dočasně omezený, tick nevolá AI. Stav
-providerů, `retry_after` a checkpointy se ukládají atomicky a po restartu se
-znovu načtou.
+V2 workflow má právě jeden implementační slot: karta ponechaná v `Pracuje se`
+po providerovém běhu (například při čekání na controller finalizaci) blokuje
+přijetí další karty z `Připraveno`. Další karta se zařadí až po vyřešení tohoto
+stavu.
+
+PM v2 nikdy nevolá broker ani žádného providera. Při práci pouze spustí
+`ai-orchestrator`; hodnota `--agent provider-broker` v předaném příkazu je
+instrukce pro AO, nikoli přímé volání z PM. Výběr, `lang`, limity, retry a
+samotné volání provideru vlastní AI Orchestrator. Pokud je workflow prázdné a
+v `INBOX / Nápady` čeká uživatelská karta, PM před Inbox plannerem jednou
+spustí AO brokerový příkaz `refresh-provider-notes`; teprve po úspěšném
+refreshi předá kartu do plánování. Při chybě refreshu karta zůstane v Inboxu.
 
 ## Požadavky a instalace
 
@@ -36,10 +45,11 @@ Nejdůležitější volitelné proměnné:
 
 | Proměnná | Výchozí hodnota | Význam |
 | --- | --- | --- |
-| `TRELLO_INBOX_LIST` | `Inbox` | Název jediného ručního vstupu |
+| `TRELLO_INBOX_LIST` | `INBOX / Nápady` | Jediný povolený hlavní boardový ruční vstup |
 | `AI_PM_ENABLE_INBOX` | `0` | Povolení řízeného intake hlavního boardového Inboxu |
-| `AI_ORCHESTRATOR_CMD` | `ai-orchestrator` | Příkaz orchestrátoru; předávají se další argumenty |
-| `AI_PM_PROVIDERS` | `auto` | Čárkou oddělené providery |
+| `AI_ORCHESTRATOR_CMD` | automaticky AO `.venv\Scripts\python.exe` + `orchestrator.py` | Volitelný explicitní příkaz orchestrátoru |
+| `AI_ORCHESTRATOR_ROOT` | automaticky nalezený AO checkout | Volitelný kořen checkoutu ai-orchestratoru pro automatické sestavení příkazu |
+| `AI_PM_PROVIDERS` | `groq,antigravity,claude-code,codex` | Metadata provider registry PM; konkrétního providera vybírá AO broker |
 | `AI_PM_POLL_INTERVAL_SECONDS` | `300` | Maximální prodleva mezi polling tick-y |
 | `AI_PM_ARTIFACT_CLEANUP_ROOT` | vypnuto | Explicitní kořen, v němž se mezi běhy mažou pouze expirované `.pytest-basetemp-*` adresáře |
 | `AI_PM_ARTIFACT_RETENTION_HOURS` | `24` | Minimální stáří testovacího artefaktu před cleanupem; nezáporné číslo |
@@ -52,8 +62,6 @@ Nejdůležitější volitelné proměnné:
 | `AI_ORCHESTRATOR_OUTBOX_DIR` | `outbox` | Outbox výsledků orchestrátoru |
 | `AI_PM_PROVIDER_STATE_PATH` | `provider_state.json` | Perzistentní stav providerů a checkpointů |
 | `AI_PM_HOLDER` | `project-manager` | Identita držitele projektového zámku |
-| `SLACK_WEBHOOK_URL` | prázdné | Slack incoming-webhook URL; samo o sobě notifikace nezapne |
-| `AI_PM_SLACK_ENABLED` | vypnuto | Explicitní opt-in (`1`, `true`, `yes`, `on`) pro Slack notifikace |
 
 JSON příklad mapování projektů:
 
@@ -100,8 +108,14 @@ nutné použít neměnné card ID.
 Nejprve proveďte jeden bezpečný integrační tick:
 
 ```powershell
-python -m ai_project_manager --once --enable-inbox-intake --log-level INFO
+python -m ai_project_manager --once --log-level INFO
 ```
+
+Je-li workflow prázdné a v `INBOX / Nápady` čeká uživatelská karta, tento
+jednorázový tick sám provede řízený refresh providerů a Inbox intake. Intake
+smí vytvořit více malých podúkolů; jejich pracovní text je kompaktní a
+provider-ready, aby se krátké úlohy mohly vejít do limitu Groq TPM. Závislosti
+mezi podúkoly a zdrojová identita zůstávají zachované podle `WORKFLOW.md`.
 
 Proces vrací kód `2` při chybné konfiguraci a v režimu `--once` kód `1` při
 provozní chybě (například nedostupné Trello nebo selhání zápisu stavu). Bez
@@ -154,7 +168,7 @@ Prodlevu před ověřením a restartem lze nastavit pomocí
 nezáporné a prodleva navíc musí být konečné číslo (`NaN`/`Infinity` se
 odmítnou při startu).
 `start_ai_project_manager.bat` deleguje na `scripts/run-ai-project-manager.ps1`
-(bez `-Once`), tedy na stejné místo, které načítá produkční Trello/Slack
+(bez `-Once`), tedy na stejné místo, které načítá produkční Trello
 konfiguraci z `.secrets/scheduler.clixml` a teprve pak spouští tento watchdog
 wrapper - `.bat` sám žádné tajemství nezná ani neduplikuje. Spouští se přes
 `start` ve vlastní, oddělené konzoli, aby zavření konzole, ze které byl
@@ -165,7 +179,7 @@ běžícího stromu watchdog+PM a neukončilo ho s `STATUS_CONTROL_C_EXIT`
 
 Na Windows lze použít připravené skripty v `scripts/`. Runner očekává DPAPI
 credential soubor `.secrets/scheduler.clixml`; jeho hodnoty musí odpovídat
-polím `TrelloKey`, `TrelloToken`, `TrelloBoardId` a `SlackWebhookUrl`. Po jeho
+polím `TrelloKey`, `TrelloToken` a `TrelloBoardId`. Po jeho
 přípravě zaregistrujte úlohu:
 
 ```powershell
@@ -197,20 +211,10 @@ repetition trigger znovu nespustil, a potom ukončí pouze dohledaný PM/watchdo
 podstrom podle cesty tohoto checkoutu. Úloha zůstane registrovaná pro pozdější
 opětovné zapnutí; jiné procesy `python.exe` se necílí.
 
-Live stav včetně doručení Slacku (HTTP 200 zaznamenané bez webhooku v logu)
-a následného automatického ticku ověří:
+Live stav watchdogu a následný automatický tick ověří:
 
 ```powershell
 powershell -NoProfile -File scripts/verify-scheduler.ps1 -WaitForNextTick
-```
-
-Když scheduler musí zůstat na HOLD, lze stejnou trvalou DPAPI konfiguraci
-ověřit izolovaným doručovacím testem z nového procesu PowerShellu. Příkaz
-nespouští tick, nečte ani nemění Trello a skončí nenulově, pokud Slack nevrátí
-HTTP 200:
-
-```powershell
-powershell -NoProfile -File scripts/run-ai-project-manager.ps1 -SlackProbe
 ```
 
 ## Stavový model a obnova
@@ -236,7 +240,10 @@ neúplný plán se do workflow nepřijme.
 Všechny podúkoly jedné zdrojové Inbox karty mají společný `source_card_id`,
 v Trellu zůstávají v jednom souvislém batchi a jejich karta viditelně ukazuje
 pořadí i přímé závislosti. Planner nesmí spojit dvě projektové identity do
-jednoho batchu.
+jednoho batchu. Pracovní text je omezen na `scope` 240, `task` 900 a
+`next_step` 360 znaků; odůvodnění a ověřovací popis na 320 znaků a odkaz na
+120 znaků. Celý Inbox popis, workflow a protokol se do providerového tasku
+nepřenášejí.
 
 ## Ověření
 
@@ -248,18 +255,22 @@ Testy jsou plně lokální; produkční Trello ani orchestrátor nevolají.
 
 # Provider model selection
 
-PM selects the provider and task family. `AI_PM_PROVIDER_MODELS` is an optional
-ordered model catalog per PM provider: the first entry is used for Inbox
-planning and implementation, the last entry for independent audit. PM passes
-the selected entries to ai-orchestrator as an exact provider-specific
-`--provider-models` map; a model is never copied to another provider during
-failover. An empty map keeps each provider's configured/default model.
-After the run, PM records the actual `active_model`/`model`/`usage.total.model`
+PM only starts the task-family handoff. The v2 ai-orchestrator provider-broker
+owns provider and model selection for Inbox planning, implementation, audit
+and failover, using its own provider notes and configuration. PM does not
+execute broker/provider code or pass a concrete provider/model choice on a
+production handoff, so a PM catalog cannot silently override AO routing.
+After the run, PM records only the actual `active_model`/`model`/`usage.total.model`
 returned by ai-orchestrator, or explicitly records that the provider default
 was not reported. It never guesses a model from the provider name.
 
-Inbox planning follows the same model-ownership rule, but has a separate
-provider allowlist. Hermes is retired from PM entirely (not just Inbox
+`AI_PM_PROVIDER_MODELS` remains readable for backward-compatible provider-state
+files and diagnostics, but it is not an operational model-routing input. A
+deliberate direct ai-orchestrator caller may still use its explicit
+`--provider-models` option; that is outside the PM production handoff.
+
+Inbox planning follows the same model-ownership rule and is executed by AO's
+Inbox Intake entry point. Hermes is retired from PM entirely (not just Inbox
 planning, see `WORKFLOW.md`) after production use showed it could not be used
 reliably as a PM provider; where ai-orchestrator still uses it outside PM
 (e.g. its own `poc/hermes_agent`), it enforces the exact Nous-only free model

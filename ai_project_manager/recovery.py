@@ -81,7 +81,7 @@ class RecoveryOutcome:
     # The concrete action a human should take, set only for
     # action == "human_required" - carried alongside ``reason`` so a
     # caller (see daemon._run_recovery_pass) can put both the "why" and
-    # the "what to do" into the Slack message and the visible Trello card
+    # the "what to do" into the operator status and the visible Trello card
     # text without re-deriving either from ``reason`` text.
     step: Optional[str] = None
 
@@ -152,7 +152,7 @@ def _missing_inbox_input_detail(project: ProjectRecord) -> Optional[str]:
     """Extract the bounded AO diagnosis for an unmaterialized Inbox request.
 
     The raw outbox text is retained in ``last_output`` for auditability, but
-    Trello/Slack need a short stable reason.  Return only the matching
+    Trello and operator status need a short stable reason. Return only the matching
     sentence(s), never a fabricated task definition.
     """
     sources = (
@@ -370,7 +370,7 @@ def _mark_human_required(
     # also meant a human shortening the reason directly on the card would be
     # re-wrapped on the very next pass. Leaving ``blocked_by`` untouched
     # keeps both the Trello field and every derived ``reason`` stable (and
-    # therefore Slack-deduplicable, see daemon._run_recovery_pass) across
+    # therefore status-deduplicable, see daemon._run_recovery_pass) across
     # any number of recovery ticks. The full human-facing diagnosis lives
     # only in the returned outcome / ``human_notified_reason`` (rendered
     # into the *visible* Trello banner, not into ``blocked_by``/PM-DATA).

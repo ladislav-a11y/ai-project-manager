@@ -15,6 +15,7 @@ import math
 import os
 import shlex
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Mapping, Optional
 
 
@@ -53,7 +54,7 @@ class TrelloConfig:
     key: str
     token: str
     board_id: str
-    inbox_list_name: str = "Inbox"
+    inbox_list_name: str = "INBOX / Nápady"
 
 
 @dataclass
@@ -87,9 +88,9 @@ class OrchestratorConfig:
     allowed_push_remotes: dict = field(default_factory=dict)
     finalize_paths: dict = field(default_factory=dict)
     timeout_seconds: Optional[float] = None
-    # Inbox planning is a short read-only admission call, separate from the
-    # longer implementation/audit subprocess budget.
-    inbox_planner_timeout_seconds: float = 120.0
+    # v2 Inbox planning budget covers AO's two broker/provider attempts and
+    # serialization overhead; the provider slice is derived in cli.py.
+    inbox_planner_timeout_seconds: float = 660.0
     project_paths: dict = field(default_factory=dict)
     projects_root: Optional[str] = None
     spec_dir: str = "specs"
@@ -215,27 +216,58 @@ def _load_string_mapping(raw: str, name: str, *, list_values: bool = False) -> d
     return value
 
 
+def _default_orchestrator_command(
+    env: Mapping[str, str], project_paths: Mapping[str, str]
+) -> list[str]:
+    """Resolve the v2 AO entrypoint without falling back to PATH aliases."""
+    roots: list[Path] = []
+    explicit_root = env.get("AI_ORCHESTRATOR_ROOT", "").strip()
+    if explicit_root:
+        roots.append(Path(explicit_root))
+    for key in ("AI Orchestrator", "ai-orchestrator"):
+        configured = project_paths.get(key)
+        if configured:
+            roots.append(Path(configured))
+    # The production checkout layout is PM and AO below one workspace root.
+    roots.append(Path(__file__).resolve().parents[2] / "ai-orchestrator")
+
+    for root in roots:
+        python_exe = root / ".venv" / "Scripts" / "python.exe"
+        entrypoint = root / "orchestrator.py"
+        if python_exe.is_file() and entrypoint.is_file():
+            return [str(python_exe), str(entrypoint), "autonomous", "--no-commit"]
+
+    searched = ", ".join(str(root) for root in roots)
+    raise ConfigError(
+        "AI_ORCHESTRATOR_CMD není nastaven a v2 AO prostředí nebylo nalezeno. "
+        "Nastav AI_ORCHESTRATOR_ROOT nebo AI_ORCHESTRATOR_CMD na AO checkout. "
+        f"Ověřené kořeny: {searched}"
+    )
+
+
 def load_config(env: Optional[Mapping[str, str]] = None) -> Config:
     """Build a ``Config`` from environment variables.
 
     Recognized variables:
       TRELLO_KEY, TRELLO_TOKEN, TRELLO_BOARD_ID   (required)
-      TRELLO_INBOX_LIST                            (default "Inbox")
-      AI_ORCHESTRATOR_CMD                          (default "ai-orchestrator")
+      TRELLO_INBOX_LIST                            (default "INBOX / Nápady")
+      AI_ORCHESTRATOR_CMD                          (optional; otherwise resolves AO .venv)
+      AI_ORCHESTRATOR_ROOT                         (optional AO checkout root)
       AI_ORCHESTRATOR_FINALIZE_CMD                 (optional controller finalize command)
       AI_ORCHESTRATOR_ALLOWED_PUSH_REMOTES         (optional JSON identity -> exact remote URL)
       AI_ORCHESTRATOR_FINALIZE_PATHS               (optional JSON identity -> explicit path list)
       AI_ORCHESTRATOR_TIMEOUT_SECONDS              (optional)
-      AI_PM_INBOX_PLANNER_TIMEOUT_SECONDS         (optional, default 120)
+      AI_PM_INBOX_PLANNER_TIMEOUT_SECONDS         (optional, default 660)
       AI_PM_PROJECT_PATHS                          (optional JSON object: project name -> local path)
       AI_PM_PROJECTS_ROOT                          (optional shared base dir for project checkouts)
       AI_ORCHESTRATOR_SPEC_DIR                     (default "specs")
       AI_ORCHESTRATOR_OUTBOX_DIR                   (default "outbox")
-      AI_PM_PROVIDERS                              (default "auto")
+      AI_PM_PROVIDERS                              (default "groq,antigravity,claude-code,codex";
+                                                     PM metadata only, AO broker selects the provider)
       AI_PM_PROVIDERS_FOR_PROJECT                  (optional JSON object)
       AI_PM_PROVIDER_MODELS                        (optional JSON provider -> ordered model catalog;
-                                                     first model is planning/implementation, last audit;
-                                                     PM passes exact per-provider overrides to AO)
+                                                     legacy metadata accepted for compatibility;
+                                                     production dispatch leaves model routing to AO)
       AI_PM_CARD_PROJECT_KEYS                      (optional JSON object: Trello card ID or exact title -> project identity)
       AI_PM_POLL_INTERVAL_SECONDS                  (default "300")
       AI_PM_HOLDER                                 (default "project-manager")
@@ -245,14 +277,21 @@ def load_config(env: Optional[Mapping[str, str]] = None) -> Config:
     """
     env = os.environ if env is None else env
 
+    inbox_list_name = _non_empty(
+        env, "TRELLO_INBOX_LIST", "INBOX / Nápady"
+    )
+    if inbox_list_name != "INBOX / Nápady":
+        raise ConfigError(
+            'TRELLO_INBOX_LIST must be exactly "INBOX / Nápady"'
+        )
+
     trello = TrelloConfig(
         key=_require(env, "TRELLO_KEY"),
         token=_require(env, "TRELLO_TOKEN"),
         board_id=_require(env, "TRELLO_BOARD_ID"),
-        inbox_list_name=_non_empty(env, "TRELLO_INBOX_LIST", "Inbox"),
+        inbox_list_name=inbox_list_name,
     )
 
-    orchestrator_cmd = env.get("AI_ORCHESTRATOR_CMD", "ai-orchestrator")
     finalize_cmd = env.get("AI_ORCHESTRATOR_FINALIZE_CMD", "").strip()
     timeout_raw = env.get("AI_ORCHESTRATOR_TIMEOUT_SECONDS")
     try:
@@ -265,7 +304,7 @@ def load_config(env: Optional[Mapping[str, str]] = None) -> Config:
         not math.isfinite(timeout_seconds) or timeout_seconds <= 0
     ):
         raise ConfigError("AI_ORCHESTRATOR_TIMEOUT_SECONDS must be a finite positive number")
-    planner_timeout_raw = env.get("AI_PM_INBOX_PLANNER_TIMEOUT_SECONDS", "120")
+    planner_timeout_raw = env.get("AI_PM_INBOX_PLANNER_TIMEOUT_SECONDS", "660")
     try:
         planner_timeout_seconds = float(planner_timeout_raw)
     except ValueError as exc:
@@ -281,6 +320,13 @@ def load_config(env: Optional[Mapping[str, str]] = None) -> Config:
     raw_project_paths = env.get("AI_PM_PROJECT_PATHS")
     if raw_project_paths:
         project_paths = _load_string_mapping(raw_project_paths, "AI_PM_PROJECT_PATHS")
+    raw_orchestrator_cmd = env.get("AI_ORCHESTRATOR_CMD")
+    orchestrator_cmd = raw_orchestrator_cmd.strip() if raw_orchestrator_cmd is not None else ""
+    orchestrator_command = (
+        _split_command(orchestrator_cmd)
+        if raw_orchestrator_cmd is not None
+        else _default_orchestrator_command(env, project_paths)
+    )
     allowed_push_remotes: dict = {}
     raw_allowed_push_remotes = env.get("AI_ORCHESTRATOR_ALLOWED_PUSH_REMOTES")
     if raw_allowed_push_remotes:
@@ -295,7 +341,7 @@ def load_config(env: Optional[Mapping[str, str]] = None) -> Config:
         )
 
     orchestrator = OrchestratorConfig(
-        command=_split_command(orchestrator_cmd),
+        command=orchestrator_command,
         finalize_command=_split_command(finalize_cmd) if finalize_cmd else None,
         allowed_push_remotes=allowed_push_remotes,
         finalize_paths=finalize_paths,
@@ -316,16 +362,13 @@ def load_config(env: Optional[Mapping[str, str]] = None) -> Config:
         outbox_dir=_absolute_path_setting(env, "AI_ORCHESTRATOR_OUTBOX_DIR", "outbox"),
     )
 
-    # ``auto`` delegates concrete provider choice to ai-orchestrator, whose
-    # failover policy is supplied by the launcher as
-    # groq -> antigravity -> claude -> codex. Selecting ``claude`` here
-    # would pass an explicit
-    # ``--agent claude-code`` and intentionally disable that failover.
-    providers = [p.strip() for p in env.get("AI_PM_PROVIDERS", "auto").split(",") if p.strip()]
+    providers = [p.strip() for p in env.get("AI_PM_PROVIDERS", "groq,antigravity,claude-code,codex").split(",") if p.strip()]
     if not providers:
         raise ConfigError("AI_PM_PROVIDERS must list at least one provider")
     if len(set(providers)) != len(providers):
         raise ConfigError("AI_PM_PROVIDERS must not contain duplicate provider names")
+    if "auto" in {provider.casefold() for provider in providers}:
+        raise ConfigError("AI_PM_PROVIDERS nesmí obsahovat alias 'auto'; výběr řídí provider-broker v AO")
 
     providers_for_project: dict = {}
     raw_map = env.get("AI_PM_PROVIDERS_FOR_PROJECT")

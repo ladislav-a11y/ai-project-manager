@@ -1,13 +1,9 @@
 """The persistent scheduler loop - the actual unattended ("bezobsluzny")
 runtime.
 
-Each tick: cheaply re-verify any provider past its ``retry_after``
-(``recheck_due_providers`` - no AI call, see providers.py), pull real
-project/Inbox state from Trello, and run at most one project's worth of
-work via ``runner.run_once``. ``run_once`` itself is already a no-op
-(no lock, no run_fn call, no Trello write) when nothing is schedulable,
-so a tick with no work or with every provider LIMITED never spends an
-AI token - it just logs and sleeps until the next poll.
+Each tick pulls real project/Inbox state from Trello and runs at most one
+project's worth of work via ``runner.run_once``. Provider inspection and
+selection belong exclusively to ai-orchestrator's provider broker.
 """
 
 from __future__ import annotations
@@ -22,7 +18,7 @@ from .guard import OrchestratorGuard
 from .artifact_cleanup import cleanup_test_artifacts
 from .inbox import InboxPlannerFn, archive_completed_inbox_sources, process_inbox
 from .lock import ProjectLockManager
-from .providers import ProviderRegistry, ProviderState
+from .providers import ProviderRegistry
 from .provider_state import save_provider_state
 from .orchestrator_runner import (
     _PRIORITY_PREFIX_RE, ProjectPathError, resolve_project_path,
@@ -45,90 +41,32 @@ from .self_update import (
     prepare_safe_restart,
 )
 from .trello_sync import build_list_maps, fetch_all_projects, maintain_board_contract, sync_project_to_trello
-from .slack_notify import notify
 
 logger = logging.getLogger("ai_project_manager")
 
 SleepFn = Callable[[float], None]
-ProbeFn = Callable[[], bool]
 
 
 def _seconds_until_next_tick(
-    provider_registry: ProviderRegistry,
     poll_interval_seconds: float,
 ) -> float:
-    """Return the shorter of the normal poll and the next provider retry.
+    """Return only the configured polling interval.
 
-    A long polling interval must not delay automatic recovery after an exact
-    ``retry_after`` deadline.  Conversely, provider deadlines never extend the
-    configured poll, because Trello may contain newly schedulable work.
+    Provider retry deadlines are owned by the AO provider broker and never
+    alter PM scheduling or sleep decisions.
     """
-    delay = max(0.0, poll_interval_seconds)
-    now = datetime.now(timezone.utc)
-    provider_clock = getattr(provider_registry, "_clock", None)
-    if callable(provider_clock):
-        now = provider_clock()
-
-    # Custom clocks are useful for embedding and tests, and older callers may
-    # still return a naive UTC datetime.  Persisted retry deadlines are
-    # normalized to aware UTC, so normalize the clock as well before doing
-    # arithmetic; mixing naive and aware datetimes raises TypeError and would
-    # terminate the unattended loop just when it is waiting for recovery.
-    if now.tzinfo is None:
-        now = now.replace(tzinfo=timezone.utc)
-
-    for name in provider_registry.registered_names():
-        status = provider_registry.get_status(name)
-        if status.state == ProviderState.AVAILABLE or status.retry_after is None:
-            continue
-        retry_after = status.retry_after
-        if retry_after.tzinfo is None and now.tzinfo is not None:
-            retry_after = retry_after.replace(tzinfo=timezone.utc)
-        delay = min(delay, max(0.0, (retry_after - now).total_seconds()))
-    return delay
-
-
-def _default_probe() -> bool:
-    """Cheap, free recheck: once retry_after has passed we simply allow
-    the provider to be tried again. We never spend a dedicated AI/network
-    call just to check - if it is still failing, the very next real
-    run_fn call will hit that failure and re-limit it (see
-    orchestrator_runner.build_run_fn)."""
-    return True
-
-
-def recheck_due_providers(provider_registry: ProviderRegistry, probe: ProbeFn = _default_probe) -> list:
-    """Re-verify every provider whose retry_after has passed. Returns the
-    names of providers that became AVAILABLE again this call, so a
-    previously LIMITED project can resume automatically without any
-    manual intervention."""
-    resumed = []
-    for name in provider_registry.registered_names():
-        if provider_registry.is_due_for_recheck(name):
-            status = provider_registry.recheck(name, probe)
-            if status.state == ProviderState.AVAILABLE:
-                logger.info("provider %s is available again, resuming (checkpoint=%s)", name, status.checkpoint)
-                resumed.append(name)
-    return resumed
+    return max(0.0, poll_interval_seconds)
 
 
 def _resume_due_provider_waits(
     client,
     projects: list,
     provider_registry: ProviderRegistry,
-    providers_for_project: Optional[dict] = None,
-    default_providers: Optional[list[str]] = None,
 ) -> list:
-    """Resume due provider-limit waits in their owning workflow phase.
+    """Resume provider waits when their recorded retry time has passed.
 
-    A provider limit is represented by the physical ``Čeká na AI`` list,
-    not by an active ``Pracuje se`` card.  Only waits with an explicit
-    ``retry_after`` and a currently available provider are resumed; when the
-    recorded provider is still limited but another configured provider is
-    available, the card fails over immediately on the next tick. Human holds
-    and other paused cards remain untouched. Audit waits return to
-    ``Testování``; ordinary implementation waits return to ``Připraveno``.
-    The existing checkpoint is deliberately preserved for the next tick.
+    PM does not inspect provider state or choose a fallback. The next AO run
+    delegates the complete availability check to provider-broker.
     """
     now = _registry_now(provider_registry)
     resumed = []
@@ -141,22 +79,8 @@ def _resume_due_provider_waits(
             continue
         if retry_after.tzinfo is None:
             retry_after = retry_after.replace(tzinfo=timezone.utc)
-        provider = project.provider
-        allowed_providers = (providers_for_project or {}).get(
-            project.name,
-            default_providers or provider_registry.registered_names(),
-        )
-        fallback_provider = next(
-            (
-                candidate
-                for candidate in allowed_providers
-                if candidate != provider and provider_registry.is_available(candidate)
-            ),
-            None,
-        )
-        current_provider_available = bool(provider and provider_registry.is_available(provider))
         retry_due = now >= retry_after
-        if not retry_due and fallback_provider is None:
+        if not retry_due:
             continue
 
         resume_status = project.extra_data.pop("resume_status", ProjectStatus.READY.value)
@@ -168,8 +92,7 @@ def _resume_due_provider_waits(
             resume_status = ProjectStatus.READY.value
         project.retry_after = None
         project.review_at = None
-        if fallback_provider is not None and not current_provider_available:
-            project.provider = fallback_provider
+        project.provider = "provider-broker"
         project.transition_to(ProjectStatus(resume_status))
         project.stop_reason = (
             f"čekání na providera skončilo; pokračování z checkpointu přes "
@@ -186,27 +109,18 @@ def _resume_due_provider_waits(
                 actual_model=None,
                 stage="audit" if resume_status == ProjectStatus.TESTING.value else "implementation",
                 source="provider_default",
-                provider_reason=(
-                    f"provider {project.provider} pokračuje z checkpointu; "
-                    "modelový override se znovu vyhodnotí podle fáze při dalším dispatchi"
-                ),
+                provider_reason="provider-broker při dalším dispatchi znovu prověří všechny providery",
             )
         sync_project_to_trello(client, project)
         resumed.append(project.name)
         destination = (
             "Testování" if resume_status == ProjectStatus.TESTING.value else "Připraveno"
         )
-        if fallback_provider is not None and not current_provider_available:
-            notify(
-                f"[AI Project Manager] Failover: {project.name} - provider {provider or 'neznámý'} "
-                f"není dostupný, karta vrácena do {destination} pro dostupný provider "
-                f"{fallback_provider} z checkpointu."
-            )
-        else:
-            notify(
-                f"[AI Project Manager] Čekání skončilo: {project.name} - "
-                f"karta vrácena do {destination} k pokračování z checkpointu."
-            )
+        logger.info(
+            "provider wait ended: project=%s destination=%s; next dispatch uses provider-broker",
+            project.name,
+            destination,
+        )
     return resumed
 
 
@@ -293,13 +207,13 @@ def _run_recovery_pass(
     actionable reason for a human. Projects not yet due for another look
     (their own backoff ``review_at``) are skipped without any write.
 
-    Human-required Slack notifications are deduplicated: ``project.
+    Human-required status transitions are deduplicated: ``project.
     human_notified_reason`` records the exact reason text already reported,
     and a repeat classification with the *same* reason (the normal case
     while the backoff review keeps coming due and nothing has changed) is
-    persisted but never re-sent to Slack - only a genuinely new reason, or
-    the block clearing, produces another message. See the resume pass
-    below for the "one Slack message when the blockage is lifted" half of
+    persisted but never re-emitted by PM - only a genuinely new reason, or
+    the block clearing, produces another status event. See the resume pass
+    below for the "one status event when the blockage is lifted" half of
     that contract - it also covers a human fixing the card directly on the
     Trello board, which never produces a "requeued" outcome here at all.
     """
@@ -339,22 +253,11 @@ def _run_recovery_pass(
                 outcome.project_name, outcome.cause.value if outcome.cause else None,
                 outcome.attempts, outcome.reason,
             )
-            # If this project was previously flagged human-required, the
-            # resume pass below sends the single "processing continues"
-            # message instead - never both for the same transition.
-            if not project.human_notified_reason:
-                notify(f"[AI Project Manager] Auto-recovery: {outcome.project_name} znovu zařazeno - {outcome.reason}")
         else:
             logger.info(
                 "recovery: human required project=%r cause=%s reason=%s",
                 outcome.project_name, outcome.cause.value if outcome.cause else None, outcome.reason,
             )
-            if not already_notified:
-                notify(
-                    f"[AI Project Manager] Vyžaduje zásah člověka: {project.name}{_card_url_suffix(project)}\n"
-                    f"Důvod: {outcome.reason}\n"
-                    f"Krok: {outcome.step}"
-                )
 
     # Resume-after-human-intervention pass: fires exactly once per
     # transition out of a human-required block, whether that happened via
@@ -367,10 +270,7 @@ def _run_recovery_pass(
             project.human_notified_reason = None
             project.human_action_step = None
             sync_project_to_trello(client, project)
-            notify(
-                f"[AI Project Manager] Pokračuji: {project.name}{_card_url_suffix(project)} - "
-                "blokace odstraněna, zpracování pokračuje."
-            )
+            logger.info("human block cleared: project=%s; processing continues", project.name)
 
     return outcomes
 
@@ -512,18 +412,21 @@ def _register_generated_project_paths(
 
 def load_projects_and_inbox(
     client,
-    inbox_list_name: str = "Inbox",
+    inbox_list_name: str = "INBOX / Nápady",
     default_priority: int = 2,
     project_paths: Optional[dict] = None,
     card_project_keys: Optional[dict] = None,
     process_inbox_enabled: bool = False,
+    auto_intake_when_workflow_empty: bool = False,
     projects_root: Optional[str] = None,
     planner: Optional[InboxPlannerFn] = None,
+    provider_refresh: Optional[Callable[[], bool]] = None,
 ) -> list:
     """Pull workflow project records from Trello.
 
-    Inbox intake is deliberately opt-in while its lifecycle is incomplete;
-    production PM scheduling only sees governed workflow lists.
+    The normal PM tick may request Inbox planning when no governed workflow
+    work exists. This decision belongs to PM; the planner subprocess remains
+    the only handoff to ai-orchestrator and owns no provider/model routing.
     """
     projects = fetch_all_projects(client, exclude_list_names=(inbox_list_name,))
     _bootstrap_project_keys(
@@ -531,8 +434,22 @@ def load_projects_and_inbox(
     )
     _register_generated_project_paths(projects, project_paths, projects_root)
 
-    if not process_inbox_enabled:
+    intake_gate_statuses = {
+        ProjectStatus.NEW,
+        ProjectStatus.READY,
+        ProjectStatus.IN_PROGRESS,
+        ProjectStatus.TESTING,
+        ProjectStatus.PAUSED,
+        ProjectStatus.BLOCKED,
+        ProjectStatus.ERROR,
+    }
+    workflow_empty = not any(project.status in intake_gate_statuses for project in projects)
+    if not process_inbox_enabled and not (auto_intake_when_workflow_empty and workflow_empty):
         return projects
+    if auto_intake_when_workflow_empty and workflow_empty and not process_inbox_enabled:
+        logger.info(
+            "Workflow queue is empty; PM requests one read-only Inbox intake handoff to AO"
+        )
 
     archived_sources = archive_completed_inbox_sources(
         client, projects, inbox_list_name=inbox_list_name
@@ -542,6 +459,38 @@ def load_projects_and_inbox(
             "Inbox intake reconciliation archived completed sources: %s",
             ", ".join(archived_sources),
         )
+
+    # Refresh broker-owned provider notes exactly once at the admission
+    # boundary.  This is intentionally after source reconciliation (a fully
+    # handled source may have just been archived) and before the AI planner.
+    # PM never constructs a broker or provider; ``provider_refresh`` is the
+    # AO handoff supplied by the production CLI.
+    if planner is not None and workflow_empty:
+        id_to_name, name_to_id = build_list_maps(client)
+        inbox_id = name_to_id.get(inbox_list_name)
+        pending_inbox_cards = client.list_cards(inbox_id) if inbox_id else []
+        if pending_inbox_cards and provider_refresh is not None:
+            try:
+                refreshed = provider_refresh()
+            except Exception:  # noqa: BLE001 - intake must fail closed
+                logger.exception("AO provider refresh handoff raised before Inbox intake")
+                refreshed = False
+            if not refreshed:
+                logger.warning(
+                    "Inbox intake left in Inbox: AO provider refresh did not complete; "
+                    "planner was not called"
+                )
+                return projects
+            logger.info(
+                "Inbox intake provider refresh completed once before planner; "
+                "inbox_cards=%s",
+                len(pending_inbox_cards),
+            )
+        elif pending_inbox_cards and provider_refresh is None:
+            logger.error(
+                "Inbox intake blocked: AO provider refresh handoff is not wired"
+            )
+            return projects
 
     def persist_inbox_project(project):
         card = sync_project_to_trello(client, project)
@@ -563,15 +512,6 @@ def load_projects_and_inbox(
     # not spend a planner call on a new Inbox project while any governed work
     # is already queued or active; the scheduler below will select the
     # dependency-ready card from Připraveno after the intake gate.
-    intake_gate_statuses = {
-        ProjectStatus.NEW,
-        ProjectStatus.READY,
-        ProjectStatus.IN_PROGRESS,
-        ProjectStatus.TESTING,
-        ProjectStatus.PAUSED,
-        ProjectStatus.BLOCKED,
-        ProjectStatus.ERROR,
-    }
     if any(project.status in intake_gate_statuses for project in projects):
         id_to_name, name_to_id = build_list_maps(client)
         inbox_id = name_to_id.get(inbox_list_name)
@@ -595,7 +535,7 @@ def load_projects_and_inbox(
         planner=planner,
     )
     if changed:
-        # Emit one compact Slack event per source card. The intake provider is
+        # Emit one compact local status event per source card. The intake provider is
         # persisted in each child Card Contract so this event names the AI
         # that actually planned the human request; retired providers must never appear.
         by_source: dict[str, list] = {}
@@ -631,10 +571,7 @@ def load_projects_and_inbox(
                 f"source_card_id={source_id}; prepared_tasks={len(prepared)}; priorities=[{priorities}]; "
                 "worker_provider=not_selected_in_intake"
             )
-            # Keep the exact compact event in the local log as well as Slack;
-            # HTTP 200 alone does not make the provider/model observable.
-            logger.info("Inbox intake notification: %s", message)
-            notify(message)
+            logger.info("Inbox intake: %s", message)
     known_card_ids = {p.trello_card_id for p in projects if p.trello_card_id is not None}
     for project in changed:
         # Intake admission and implementation dispatch are separate phases.
@@ -675,11 +612,7 @@ def _fail_closed_invalid_project_identities(client, projects: list, project_path
             project.blocked_by = reason
             project.transition_to(ProjectStatus.BLOCKED)
             sync_project_to_trello(client, project)
-            notify(
-                f"[AI Project Manager] Dispatch odmítnut: {project.name}{_card_url_suffix(project)}\n"
-                f"Důvod: {reason}\nKrok: přidejte právě jeden známý projektový štítek "
-                "a opravte jeho AI_PM_PROJECT_PATHS cestu."
-            )
+            logger.error("dispatch rejected: project=%s reason=%s", project.name, reason)
 
 
 def run_tick(
@@ -689,10 +622,10 @@ def run_tick(
     holder: str = DEFAULT_HOLDER,
     providers_for_project: Optional[dict] = None,
     default_providers: Optional[list] = None,
-    inbox_list_name: str = "Inbox",
+    inbox_list_name: str = "INBOX / Nápady",
     process_inbox_enabled: bool = False,
+    auto_intake_when_workflow_empty: bool = False,
     lock_manager: Optional[ProjectLockManager] = None,
-    probe: ProbeFn = _default_probe,
     provider_state_path: str = "provider_state.json",
     guard: Optional[OrchestratorGuard] = None,
     project_paths: Optional[dict] = None,
@@ -702,14 +635,17 @@ def run_tick(
     recovery_backoff: Callable[[int], timedelta] = default_backoff,
     audit_run_fn: Optional[AuditRunFn] = None,
     inbox_planner: Optional[InboxPlannerFn] = None,
+    provider_refresh: Optional[Callable[[], bool]] = None,
     finalize_fn: Optional[FinalizeFn] = None,
 ) -> RunOutcome:
-    """Run exactly one scheduler tick: recheck due providers, load real
-    Trello state, revisit any blocked project that is due for an
+    """Run exactly one scheduler tick: load real Trello state, resume
+    provider waits whose Trello retry_after is due, revisit any blocked project that is due for an
     unattended recovery pass (see recovery.py - independent of the normal
     priority scheduler, which never picks a blocked project at all), and
     run at most one project. Never spends an AI token when there is
-    nothing schedulable.
+    nothing schedulable. A completed Inbox intake is an explicit phase
+    boundary: it returns without dispatch, while the outer daemon can start
+    the next tick immediately because all intake/Trello writes are complete.
 
     A project sitting in Testování is never eligible for the normal
     implementation dispatch below (see scheduler.NOT_SCHEDULABLE_STATUSES).
@@ -727,17 +663,16 @@ def run_tick(
     # board outage cannot lose retry_after/checkpoint state and cause an
     # immediate provider retry after process restart.
     try:
-        # notify("AI Project Manager scheduler tick")
-        recheck_due_providers(provider_registry, probe=probe)
-
         projects = load_projects_and_inbox(
             client,
             inbox_list_name=inbox_list_name,
             process_inbox_enabled=process_inbox_enabled,
+            auto_intake_when_workflow_empty=auto_intake_when_workflow_empty,
             project_paths=project_paths,
             card_project_keys=card_project_keys,
             projects_root=projects_root,
             planner=inbox_planner,
+            provider_refresh=provider_refresh,
         )
         # ``run_tick`` is also a generic scheduler primitive used with
         # non-repository run functions. The production CLI supplies the
@@ -748,7 +683,7 @@ def run_tick(
 
         contract_issues = maintain_board_contract(client)
         for issue in contract_issues:
-            notify(f"[AI Project Manager] Trello Card Contract vyžaduje zásah: {issue}")
+            logger.warning("Trello Card Contract requires attention: %s", issue)
 
         # Board maintenance writes migrations through its own strict
         # read/write pass. Refresh the scheduler snapshot afterward so a
@@ -790,6 +725,7 @@ def run_tick(
             # where intake prepared nothing new falls through unchanged.
             return RunOutcome(
                 ran=False,
+                follow_up_immediately=True,
                 reason=(
                     "Inbox intake připravil novou práci do Připraveno; tick končí "
                     "před audit/scheduler selection a dispatchem: "
@@ -801,8 +737,6 @@ def run_tick(
             client,
             projects,
             provider_registry,
-            providers_for_project=providers_for_project,
-            default_providers=default_providers,
         ))
 
         audit_waits_resumed = {
@@ -839,6 +773,26 @@ def run_tick(
             project for project in projects
             if not getattr(project, "_prepared_this_tick", False)
         ]
+
+        # V2 workflow has exactly one implementation slot.  A card that
+        # remains in Pracuje se after provider work (for example while
+        # controller finalization is retried) still owns that slot, even when
+        # its implementation DoD is already complete and the scheduler's
+        # normal eligibility check excludes it from a new provider call.
+        # Restrict dispatch to existing active cards so a READY card cannot
+        # silently become the second card in Pracuje se on the next tick.
+        active_implementation_projects = [
+            project
+            for project in dispatch_projects
+            if project.status == ProjectStatus.IN_PROGRESS
+        ]
+        if active_implementation_projects:
+            logger.info(
+                "implementation slot occupied; dispatch restricted to existing Pracuje se card(s): %s",
+                ", ".join(project.name for project in active_implementation_projects),
+            )
+            # V2: retain completed siblings for dependency checks. The scheduler
+            # restricts candidates to the occupied slot without losing context.
 
         outcome = None
         resumed_implementation_projects = [
@@ -906,7 +860,6 @@ def run_tick(
             )
         else:
             logger.info("no schedulable work this tick (%s)", outcome.reason)
-            _log_providers_waiting_on_retry_after(provider_registry)
 
         return outcome
     finally:
@@ -929,9 +882,9 @@ def run_maintenance_only(
     and card identity, and reorders every list (see
     ``trello_sync.maintain_board_contract``). Every unsafe card is
     reported the same visible way as a normal tick (see ``run_tick``),
-    plus a final Slack summary so a human has explicit, verifiable proof
+    plus a final local summary so a human has explicit, verifiable proof
     the pass ran, how many cards it covered and what it found - the
-    result is checkable directly on the Trello board and in Slack,
+    result is checkable directly on the Trello board and in local evidence,
     without needing to trust this process's own logs.
     """
     # Apply only explicit, stable identity migrations before the generic
@@ -967,34 +920,18 @@ def run_maintenance_only(
             project.human_notified_reason = None
             project.human_action_step = None
             sync_project_to_trello(client, project)
-            notify(
-                "[AI Project Manager] Opravena stale identita a znovu zařazena "
-                f"karta do Připraveno: {project.name}{_card_url_suffix(project)}"
-            )
+            logger.info("stale identity repaired: project=%s; card returned to Ready", project.name)
 
     issues = maintain_board_contract(client)
     for issue in issues:
-        notify(f"[AI Project Manager] Trello Card Contract vyžaduje zásah: {issue}")
+        logger.warning("Trello Card Contract requires attention: %s", issue)
     id_to_name, _ = build_list_maps(client)
     card_count = sum(len(client.list_cards(list_id)) for list_id in id_to_name)
-    notify(
-        "[AI Project Manager] Živá údržba Trello Card Contract dokončena: "
-        f"{card_count} karet zkontrolováno, {len(issues)} problém(ů) vyžaduje zásah."
+    logger.info(
+        "Trello Card Contract maintenance complete: cards=%s issues=%s",
+        card_count, len(issues),
     )
     return issues
-
-
-def _log_providers_waiting_on_retry_after(provider_registry: ProviderRegistry) -> None:
-    """Log every provider that is currently gating scheduling because it
-    is LIMITED/ERROR and not yet due for a recheck, so an operator
-    watching the logs can see exactly what the loop is waiting on."""
-    for name in provider_registry.registered_names():
-        status = provider_registry.get_status(name)
-        if status.state != ProviderState.AVAILABLE and status.retry_after is not None:
-            logger.info(
-                "provider %s is %s, waiting until retry_after=%s",
-                name, status.state, status.retry_after.isoformat(),
-            )
 
 
 def run_loop(
@@ -1007,10 +944,10 @@ def run_loop(
     holder: str = DEFAULT_HOLDER,
     providers_for_project: Optional[dict] = None,
     default_providers: Optional[list] = None,
-    inbox_list_name: str = "Inbox",
+    inbox_list_name: str = "INBOX / Nápady",
     process_inbox_enabled: bool = False,
+    auto_intake_when_workflow_empty: bool = False,
     lock_manager: Optional[ProjectLockManager] = None,
-    probe: ProbeFn = _default_probe,
     max_iterations: Optional[int] = None,
     provider_state_path: str = "provider_state.json",
     guard: Optional[OrchestratorGuard] = None,
@@ -1028,6 +965,7 @@ def run_loop(
     self_update_run_tests=None,
     self_update_run_git=None,
     inbox_planner: Optional[InboxPlannerFn] = None,
+    provider_refresh: Optional[Callable[[], bool]] = None,
     artifact_cleanup_root: Optional[str] = None,
     artifact_cleanup_retention_seconds: float = 86400.0,
     finalize_fn: Optional[FinalizeFn] = None,
@@ -1035,7 +973,9 @@ def run_loop(
     """Run the scheduler forever (or, with ``once=True``, exactly one tick
     and return - the safe live-smoke-test mode). Sleeps between ticks
     only when a tick found no work, and that sleep never involves an AI
-    call - it is a plain wait for the next poll.
+    call - it is a plain wait for the next poll. A tick that completed Inbox
+    intake is a special phase boundary: it never dispatches in the same tick
+    but immediately starts the next tick once all Trello writes are done.
 
     When ``once`` is False this is the one long-running process whose own
     already-imported code can go stale after ``ai-orchestrator`` edits this
@@ -1099,14 +1039,15 @@ def run_loop(
                     default_providers=default_providers,
                     inbox_list_name=inbox_list_name,
                     process_inbox_enabled=process_inbox_enabled,
+                    auto_intake_when_workflow_empty=auto_intake_when_workflow_empty,
                     lock_manager=lock_manager,
-                    probe=probe,
                     provider_state_path=provider_state_path,
                     guard=guard,
                     project_paths=project_paths,
                     card_project_keys=card_project_keys,
                     projects_root=projects_root,
                     inbox_planner=inbox_planner,
+                    provider_refresh=provider_refresh,
                     recovery_max_attempts=recovery_max_attempts,
                     recovery_backoff=recovery_backoff,
                     audit_run_fn=audit_run_fn,
@@ -1179,10 +1120,14 @@ def run_loop(
         if max_iterations is not None and iterations >= max_iterations:
             return outcome
 
-        if not outcome.ran:
-            sleep_seconds = _seconds_until_next_tick(
-                provider_registry,
-                poll_interval_seconds,
+        if outcome.follow_up_immediately:
+            logger.info(
+                "intake phase completed; starting the next tick immediately "
+                "before any dispatch"
             )
+            continue
+
+        if not outcome.ran:
+            sleep_seconds = _seconds_until_next_tick(poll_interval_seconds)
             logger.info("sleeping %.0fs until next tick", sleep_seconds)
             sleep(sleep_seconds)

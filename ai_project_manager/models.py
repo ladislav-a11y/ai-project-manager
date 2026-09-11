@@ -164,14 +164,14 @@ class ProjectRecord:
 
     # Human-intervention visibility (see daemon._run_recovery_pass):
     # ``human_notified_reason`` is the exact reason text already reported to
-    # Slack/Trello for the current block - comparing against it is what lets
-    # the recovery pass send exactly one Slack message per distinct blocked
-    # state instead of repeating it every time the backoff review comes due.
+    # Trello/operator status for the current block - comparing against it is what lets
+    # the recovery pass record one visible status per distinct blocked state
+    # instead of repeating it every time the backoff review comes due.
     # ``human_action_step`` is the concrete action a human should take,
-    # shown alongside the reason in both the Slack message and the visible
+    # shown alongside the reason in the visible
     # Trello card text. Both are cleared back to None the moment the block
     # is lifted (auto-recovered or fixed by a human directly on the board),
-    # which is what triggers the one-time "processing resumed" message.
+    # which records the one-time "processing resumed" transition.
     human_notified_reason: Optional[str] = None
     human_action_step: Optional[str] = None
 
@@ -179,7 +179,7 @@ class ProjectRecord:
     # from Trello on every fetch (see trello_sync.project_from_card) - never
     # persisted through PM-DATA, since it is derived Trello metadata, not
     # something this process owns. Included here (rather than threaded
-    # separately) so any caller that already has a ProjectRecord - Slack
+    # separately) so any caller that already has a ProjectRecord - operator
     # notification, visible card text - can link straight to the card.
     trello_card_url: Optional[str] = None
 

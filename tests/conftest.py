@@ -44,12 +44,6 @@ def pytest_sessionfinish(session, exitstatus):
 
 
 @pytest.fixture(autouse=True)
-def _disable_real_slack_webhook(monkeypatch):
-    """Tests must never send notifications to the real Slack webhook."""
-    monkeypatch.delenv("SLACK_WEBHOOK_URL", raising=False)
-
-
-@pytest.fixture(autouse=True)
 def _isolate_provider_model_catalog(monkeypatch):
     """Do not let the production launcher leak provider models into tests.
 

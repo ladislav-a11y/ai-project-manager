@@ -37,17 +37,6 @@ def test_parser_supports_once_flag():
     assert args.enable_inbox_intake is True
 
 
-def test_slack_probe_returns_delivery_status_without_loading_trello(monkeypatch):
-    monkeypatch.setattr("ai_project_manager.cli.notify", lambda _message: True)
-    for name in ("TRELLO_KEY", "TRELLO_TOKEN", "TRELLO_BOARD_ID"):
-        monkeypatch.delenv(name, raising=False)
-
-    assert main(["--slack-probe"]) == 0
-
-    monkeypatch.setattr("ai_project_manager.cli.notify", lambda _message: False)
-    assert main(["--slack-probe"]) == 1
-
-
 def test_parser_supports_maintain_only_flag():
     args = build_parser().parse_args(["--maintain-only"])
     assert args.maintain_only is True
@@ -112,15 +101,15 @@ def test_main_once_runs_a_full_tick_through_the_real_entrypoint_wiring(monkeypat
     exit_code = main(["--once"], client=client, run_fn=fake_run_fn)
 
     assert exit_code == 0
-    assert calls == [("Demo", "claude")]
+    assert calls == [("Demo", "provider-broker")]
 
     id_to_name, _ = build_list_maps(client)
     reloaded = project_from_card(client.get_card(project.trello_card_id), id_to_name)
     assert reloaded.last_output == "done via entrypoint"
-    assert reloaded.provider == "claude"
+    assert reloaded.provider == "provider-broker"
 
 
-def test_main_auto_provider_alias_selects_first_supported_provider(monkeypatch):
+def test_main_rejects_removed_auto_provider_alias(monkeypatch):
     _set_trello_env(monkeypatch)
     monkeypatch.setenv("AI_PM_PROVIDERS", "auto")
 
@@ -128,14 +117,7 @@ def test_main_auto_provider_alias_selects_first_supported_provider(monkeypatch):
     client = InMemoryTrelloClient()
     created = sync_project_to_trello(client, project)
     project.trello_card_id = created["id"]
-    calls = []
-
-    def fake_run_fn(project, provider):
-        calls.append((project.name, provider))
-        return {"status": "in_progress"}
-
-    assert main(["--once"], client=client, run_fn=fake_run_fn) == 0
-    assert calls == [("Demo", "groq")]
+    assert main(["--once"], client=client, run_fn=lambda *_: {"status": "in_progress"}) == 2
 
 
 def test_main_maintain_only_migrates_and_notifies_without_ever_dispatching(monkeypatch):
@@ -148,9 +130,6 @@ def test_main_maintain_only_migrates_and_notifies_without_ever_dispatching(monke
     client = InMemoryTrelloClient()
     ready = client.get_list_id_by_name("Ready")
     legacy = client.create_card(ready, "P3 legacy card", desc="legacy free text", labels=["P3"])
-
-    messages = []
-    monkeypatch.setattr("ai_project_manager.daemon.notify", messages.append)
 
     dispatched = []
 
@@ -169,7 +148,6 @@ def test_main_maintain_only_migrates_and_notifies_without_ever_dispatching(monke
     assert data["card_identity"]["card_id"] == legacy["id"]
     assert data["governance"] == GOVERNANCE_POLICY
 
-    assert any("Živá údržba" in message for message in messages)
 
 
 def test_main_maintain_only_applies_explicit_source_identity_migration(monkeypatch):
@@ -210,7 +188,6 @@ def test_main_maintain_only_applies_explicit_source_identity_migration(monkeypat
         labels=["P5.40", "oprava station agent [Inbox source-1]"],
     )
 
-    monkeypatch.setattr("ai_project_manager.daemon.notify", lambda message: None)
     assert main(["--maintain-only"], client=client, run_fn=lambda *_: (_ for _ in ()).throw(AssertionError())) == 0
 
     migrated = client.get_card(card["id"])
@@ -230,14 +207,10 @@ def test_main_maintain_only_reports_unsafe_card_without_overwriting_it(monkeypat
     )
     before = client.get_card(bad_card["id"])
 
-    messages = []
-    monkeypatch.setattr("ai_project_manager.daemon.notify", messages.append)
-
     exit_code = main(["--maintain-only"], client=client, run_fn=lambda project, provider: {})
 
     assert exit_code == 1
     assert client.get_card(bad_card["id"]) == before
-    assert any("Trello Card Contract" in message for message in messages)
 
 
 def test_main_once_resolves_project_path_via_real_wiring_without_exact_title_override(monkeypatch, tmp_path):

@@ -113,9 +113,9 @@ class ProviderRegistry:
     def configure_models(self, name: str, models: list[str]) -> ProviderStatus:
         """Record an ordered provider-specific model catalog.
 
-        Empty and duplicate values are discarded. PM uses the first model for
-        Inbox planning/implementation and the last for independent audit;
-        AO receives the resulting exact model only for the matching provider.
+        Empty and duplicate values are discarded. This metadata is retained
+        for backward-compatible state files and diagnostics; production PM
+        dispatch does not use it to select or override an AO model.
         """
         status = self.register(name)
         self._configured_model_catalogs.add(name)
@@ -139,16 +139,14 @@ class ProviderRegistry:
         return status.selected_model if status is not None else None
 
     def model_for_task(self, name: str, task_type: str) -> Optional[str]:
-        """Return the configured model for one workflow phase.
+        """Return legacy PM catalog metadata for one workflow phase.
 
         A provider with zero or one configured models behaves exactly like
         ``selected_model`` for every task type - this only differentiates
         once an operator has actually configured more than one usable model
         in ``AI_PM_PROVIDER_MODELS``. The ordered model list runs from the most
-        economical default (index 0 - Inbox planning and routine
-        implementation) to the highest-quality/most capable option (last
-        index - the independent audit gate, where correctness matters more
-        than throughput; see PROJECT_AUDIT_ROADMAP.md section 8.4).
+        economical default to the highest-quality option. Production dispatch
+        must not call this method for routing; AO owns the effective model.
         """
         if task_type not in TASK_TYPES:
             raise ValueError(f"unknown task_type {task_type!r}; expected one of {TASK_TYPES}")

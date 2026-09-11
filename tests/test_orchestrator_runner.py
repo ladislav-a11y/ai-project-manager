@@ -8,24 +8,23 @@ import pytest
 from ai_project_manager.models import DoDItem, ProjectRecord as _ProjectRecord, ProjectStatus
 from ai_project_manager.orchestrator_handoff import InvalidTaskError
 from ai_project_manager.orchestrator_runner import (
-    DEFAULT_PROVIDER_AGENT_MAP,
-    INBOX_PLANNER_PROVIDERS,
     NO_COMMIT_INSTRUCTION,
     OrchestratorProcessError,
     ProjectPathError,
     build_audit_run_fn,
     build_finalize_fn,
     build_inbox_planner_fn,
+    build_provider_refresh_fn,
     build_run_fn,
-    _tick_provider_order,
     _controller_finalization_is_verified,
     _finalization_needs_refresh,
     _terminal_finalization_issue,
-    map_provider_to_agent,
     parse_spec_markdown,
     resolve_project_path,
     spec_file_path,
     _bounded_subprocess_run,
+    _default_subprocess_run,
+    _planner_tasks,
 )
 from ai_project_manager.providers import ProviderRegistry, ProviderState
 
@@ -37,9 +36,28 @@ def ProjectRecord(*args, **kwargs):
     return _ProjectRecord(*args, **kwargs)
 
 
-def test_inbox_planner_provider_allowlist_never_contains_hermes():
-    assert INBOX_PLANNER_PROVIDERS == ("groq", "antigravity", "claude", "codex")
-    assert "hermes" not in INBOX_PLANNER_PROVIDERS
+def test_inbox_planner_rejects_source_ref_assigned_to_two_tasks():
+    task_fields = {
+        "project_key": "Station Agent",
+        "next_step": "Prověřit změnu.",
+        "priority_reason": "Samostatný zdrojový bod.",
+        "work_type": "implementation",
+        "split_reason": "Oddělený výsledek.",
+        "verification": {
+            "required": ["unit"],
+            "acceptable": ["static"],
+            "reason": "Změna má cílený test.",
+        },
+        "depends_on": [],
+    }
+    payload = {
+        "tasks": [
+            {**task_fields, "scope": "první", "task": "První změna.", "priority": 2.1, "source_refs": ["1"]},
+            {**task_fields, "scope": "druhá", "task": "Druhá změna.", "priority": 2.2, "source_refs": ["1"]},
+        ]
+    }
+
+    assert _planner_tasks(payload, indivisible=False) is None
 
 
 @pytest.fixture(autouse=True)
@@ -311,6 +329,71 @@ def test_build_finalize_fn_skips_an_already_verified_checkout(tmp_path):
     assert result == {"status": "done", "already_verified": True}
 
 
+def test_build_finalize_fn_reconciles_existing_controller_commit_after_card_move(tmp_path):
+    """A lifecycle-only Trello move must not make PM attempt a second commit.
+
+    The implementation commit can already be at HEAD while the card retains
+    the implementation checkpoint but has lost the persisted finalization
+    proof.  PM may recover that proof only from the controller marker, the
+    allowlisted remote and the captured baseline paths.
+    """
+    head = "dc3a91014dc5993d11efc8a4853d13910e3dcac1"
+    calls = []
+
+    def fake_subprocess_run(_command):
+        raise AssertionError("an existing controller commit must not be committed again")
+
+    def fake_git(command):
+        calls.append(tuple(command))
+        if "rev-parse" in command:
+            return completed(head + "\n")
+        if "branch" in command:
+            return completed("master\n")
+        if "status" in command:
+            return completed(" M user-owned.txt\n")
+        if "diff" in command:
+            return completed()
+        if "show" in command:
+            return completed("[ai-orchestrator] Controller finalization: existing work\n")
+        if "get-url" in command:
+            return completed("https://example.invalid/repo.git\n")
+        if "ls-remote" in command:
+            return completed(f"{head}\trefs/heads/master\n")
+        raise AssertionError(f"unexpected git command: {command}")
+
+    project = ProjectRecord(
+        name="Demo",
+        dod=[DoDItem(text="implementation complete", checked=True)],
+        checkpoint={
+            "completed_dod_indices": [0],
+            "controller_finalization_context": {
+                "preexisting_paths": ["user-owned.txt"],
+            },
+        },
+    )
+    finalize_fn = build_finalize_fn(
+        ["controller-finalize"],
+        project_paths={"Demo": str(tmp_path / "demo-checkout")},
+        allowed_push_remotes={"Demo": "https://example.invalid/repo.git"},
+        subprocess_run=fake_subprocess_run,
+        run_git=fake_git,
+    )
+
+    from ai_project_manager.orchestrator_runner import _reconcile_existing_controller_commit
+    reconciled = _reconcile_existing_controller_commit(
+        project, str(tmp_path / "demo-checkout"), fake_git,
+        {"Demo": "https://example.invalid/repo.git"},
+    )
+    assert reconciled is not None, calls
+    result = finalize_fn(project)
+
+    assert result["status"] == "done"
+    assert result["already_verified"] is True
+    assert result["finalization"]["reconciled_existing_commit"] is True
+    assert result["checkpoint"]["finalization"]["commit_hash"] == head
+    assert calls
+
+
 def test_finalization_refresh_is_needed_when_card_proof_has_old_head(tmp_path):
     project = ProjectRecord(
         name="Demo",
@@ -464,6 +547,24 @@ def test_audit_run_fn_uses_supported_autonomous_cli_and_reads_internal_audit(tmp
                 "status": "completed",
                 "active_provider": "anthropic",
                 "active_model": "claude-opus-4-1",
+                "provider_statuses": {
+                    "groq": {
+                        "state": "LIMITED",
+                        "attempt_kind": "preflight_rejected",
+                        "diagnostics": {
+                            "signals": {"limited": True, "timed_out": False},
+                            "reasons": {"limited": "local quota"},
+                        },
+                    },
+                    "anthropic": {
+                        "state": "AVAILABLE",
+                        "attempt_kind": "api_call",
+                        "diagnostics": {
+                            "signals": {"limited": False, "timed_out": False},
+                            "reasons": {},
+                        },
+                    },
+                },
                 "last_output": "tests and independent audit passed",
                 "iterations": [{
                     "audit_performed": True,
@@ -488,15 +589,17 @@ def test_audit_run_fn_uses_supported_autonomous_cli_and_reads_internal_audit(tmp
 
     assert result["verdict"] == "accepted"
     assert "--mode" not in seen["command"]
-    assert seen["command"][seen["command"].index("--model") + 1] == "claude-opus-4-1"
+    assert "--model" not in seen["command"]
+    assert "--provider-models" not in seen["command"]
     assert seen["command"][seen["command"].index("--max-iterations") + 1] == "1"
     assert seen["command"][-1] == "--no-commit"
     assert result["active_provider"] == "anthropic"
     assert result["active_model"] == "claude-opus-4-1"
+    assert result["provider_statuses"]["groq"]["diagnostics"]["signals"]["limited"] is True
 
 
-def test_audit_and_implementation_use_phase_specific_model_override(tmp_path):
-    """PM sends the economical model for implementation and the final catalog model for audit."""
+def test_audit_and_implementation_leave_model_selection_to_ao(tmp_path):
+    """PM sends no model override; AO owns both phase selections."""
     registry = ProviderRegistry()
     registry.mark_available("claude")
     registry.configure_models("claude", ["claude-sonnet-4", "claude-opus-4-1"])
@@ -519,7 +622,8 @@ def test_audit_and_implementation_use_phase_specific_model_override(tmp_path):
 
     run_fn, _, _ = make_run_fn(tmp_path, registry, subprocess_run=fake_impl_subprocess_run)
     run_fn(implementation_project, "claude")
-    assert implementation_seen["command"][implementation_seen["command"].index("--model") + 1] == "claude-sonnet-4"
+    assert "--model" not in implementation_seen["command"]
+    assert "--provider-models" not in implementation_seen["command"]
 
     audit_project = ProjectRecord(
         name="Demo",
@@ -552,7 +656,8 @@ def test_audit_and_implementation_use_phase_specific_model_override(tmp_path):
         run_id_fn=lambda: "audit-run",
     )(audit_project, "claude")
 
-    assert audit_seen["command"][audit_seen["command"].index("--model") + 1] == "claude-opus-4-1"
+    assert "--model" not in audit_seen["command"]
+    assert "--provider-models" not in audit_seen["command"]
 
 
 def test_production_audit_starts_with_pm_selected_provider_and_skips_capability_limited_provider(tmp_path):
@@ -587,7 +692,6 @@ def test_production_audit_starts_with_pm_selected_provider_and_skips_capability_
         project_paths={"Station Agent": str(tmp_path / "demo-checkout")},
         spec_dir=str(tmp_path / "specs"), outbox_dir=str(tmp_path / "outbox"),
         subprocess_run=fake_subprocess_run, run_id_fn=lambda: "audit-run",
-        use_provider_failover=True,
     )(project, "codex")
 
     assert result["verdict"] == "accepted"
@@ -886,10 +990,11 @@ def test_run_fn_invokes_real_cli_with_project_goal_spec_and_agent(tmp_path):
     assert command[0] == "ai-orchestrator"
     assert command[command.index("--project") + 1] == str(tmp_path / "demo-checkout")
     assert command[command.index("--goal") + 1] == "Implement feature X"
-    # provider "claude" is Project Manager's own name; the ai-orchestrator
-    # CLI expects its agent identifier, "claude-code" (item 5).
-    assert command[command.index("--agent") + 1] == "claude-code"
-    assert command[command.index("--model") + 1] == "claude-opus-4-1"
+    # PM never maps a provider to a direct AO agent; all production work uses
+    # the central broker dispatch.
+    assert command[command.index("--agent") + 1] == "provider-broker"
+    assert "--model" not in command
+    assert "--provider-models" not in command
     assert command[command.index("--run-id") + 1] == "fixed-run-id"
 
     spec_path = command[command.index("--spec") + 1]
@@ -900,7 +1005,7 @@ def test_run_fn_invokes_real_cli_with_project_goal_spec_and_agent(tmp_path):
     spec_payload = parse_spec_markdown(open(spec_path, encoding="utf-8").read())
     assert spec_payload["goal"] == "Implement feature X"
     assert spec_payload["checkpoint"] == {"step": 1}
-    assert spec_payload["provider"] == "claude-code"
+    assert spec_payload["provider"] == "provider-broker"
     assert spec_payload["run_id"] == "fixed-run-id"
     assert "Wire up auth" in spec_payload["definition_of_done"]
     # No DoD line was ever left blank.
@@ -932,7 +1037,6 @@ def test_production_run_fn_dispatches_auto_for_same_tick_provider_failover(tmp_p
     )
     run_fn, _, _ = make_run_fn(
         tmp_path, registry, subprocess_run=fake_subprocess_run,
-        use_provider_failover=True,
     )
 
     run_fn(project, "antigravity")
@@ -971,7 +1075,6 @@ def test_auto_provider_alias_resolves_to_real_available_failover_order(tmp_path)
         registry,
         subprocess_run=fake_subprocess_run,
         run_id_fn=lambda: "auto-run",
-        use_provider_failover=True,
     )
 
     run_fn(project, "auto")
@@ -982,9 +1085,9 @@ def test_auto_provider_alias_resolves_to_real_available_failover_order(tmp_path)
     )
 
 
-def test_production_failover_passes_provider_specific_model_map(tmp_path):
-    # Same-tick failover hands the whole provider chain to ai-orchestrator;
-    # each provider gets only its own configured model.
+def test_production_failover_leaves_model_selection_to_ao(tmp_path):
+    # Same-tick failover hands only the provider chain to ai-orchestrator;
+    # each provider selects its model from AO's own configuration.
     registry = ProviderRegistry()
     for name in ("antigravity", "claude", "codex"):
         registry.mark_available(name)
@@ -1009,15 +1112,11 @@ def test_production_failover_passes_provider_specific_model_map(tmp_path):
         outbox_dir=str(tmp_path / "outbox"),
         subprocess_run=fake_subprocess_run,
         run_id_fn=lambda: "model-run",
-        use_provider_failover=True,
     )(project, "codex")
 
     assert seen["command"][seen["command"].index("--agent") + 1] == "auto"
     assert "--model" not in seen["command"]
-    provider_models = json.loads(
-        seen["command"][seen["command"].index("--provider-models") + 1]
-    )
-    assert provider_models == {"codex": "gpt-5.6"}
+    assert "--provider-models" not in seen["command"]
 
 
 def test_production_failover_excludes_limited_providers_from_next_workflow_step(tmp_path):
@@ -1044,7 +1143,6 @@ def test_production_failover_excludes_limited_providers_from_next_workflow_step(
     )
     run_fn, _, _ = make_run_fn(
         tmp_path, registry, subprocess_run=fake_subprocess_run,
-        use_provider_failover=True,
     )
 
     run_fn(project, "antigravity")
@@ -1105,7 +1203,6 @@ def test_production_waiting_receipt_gates_all_limited_providers_and_preserves_re
     )
     run_fn, _, _ = make_run_fn(
         tmp_path, registry, subprocess_run=fake_subprocess_run,
-        use_provider_failover=True,
     )
 
     result = run_fn(project, "antigravity")
@@ -1395,7 +1492,6 @@ def test_audit_wait_preserves_actual_failover_provider_from_outbox(tmp_path):
         outbox_dir=str(tmp_path / "outbox"),
         subprocess_run=fake_subprocess_run,
         run_id_fn=lambda: "audit-wait-run",
-        use_provider_failover=True,
     )
 
     result = audit_fn(project, "antigravity")
@@ -1530,16 +1626,16 @@ def test_run_fn_does_not_mistake_429_inside_a_timeout_command_path_for_a_rate_li
 
 def test_build_run_fn_applies_configured_timeout_to_the_real_subprocess_call(tmp_path, monkeypatch):
     """AI_ORCHESTRATOR_TIMEOUT_SECONDS (build_run_fn's timeout_seconds)
-    must actually reach subprocess.run - previously it was parsed into
+    must actually reach the bounded subprocess runner - previously it was parsed into
     Config but never wired anywhere, so a hung real ai-orchestrator
     process could block the scheduler forever."""
     seen = {}
 
-    def fake_run(command, capture_output, text, check, timeout):
+    def fake_run(command, timeout=None, **kwargs):
         seen["timeout"] = timeout
         return completed()
 
-    monkeypatch.setattr("ai_project_manager.orchestrator_runner.subprocess.run", fake_run)
+    monkeypatch.setattr("ai_project_manager.orchestrator_runner._bounded_subprocess_run", fake_run)
 
     project = ProjectRecord(name="Demo", orchestrator_ready_task="Implement feature X")
     registry = ProviderRegistry()
@@ -1563,11 +1659,11 @@ def test_build_run_fn_applies_configured_timeout_to_the_real_subprocess_call(tmp
 def test_build_run_fn_without_timeout_seconds_passes_no_timeout(tmp_path, monkeypatch):
     seen = {}
 
-    def fake_run(command, capture_output, text, check, timeout):
+    def fake_run(command, timeout=None, **kwargs):
         seen["timeout"] = timeout
         return completed()
 
-    monkeypatch.setattr("ai_project_manager.orchestrator_runner.subprocess.run", fake_run)
+    monkeypatch.setattr("ai_project_manager.orchestrator_runner._bounded_subprocess_run", fake_run)
 
     project = ProjectRecord(name="Demo", orchestrator_ready_task="Implement feature X")
     registry = ProviderRegistry()
@@ -1889,19 +1985,6 @@ def test_spec_encodes_fixed_authority_chain_and_orchestrator_only_audit(tmp_path
     assert "Only ai-orchestrator may perform the audit" in payload["constraints"]
 
 
-# ---- provider -> agent identifier mapping (item 5) ---------------------
-
-def test_map_provider_to_agent_translates_claude_to_claude_code():
-    assert map_provider_to_agent("claude") == "claude-code"
-    assert DEFAULT_PROVIDER_AGENT_MAP["claude"] == "claude-code"
-
-
-def test_map_provider_to_agent_passes_through_unknown_providers():
-    assert map_provider_to_agent("groq") == "groq"
-    assert map_provider_to_agent("gpt") == "gpt"
-    assert map_provider_to_agent("gemini") == "gemini"
-
-
 def test_inbox_planner_excludes_retired_provider_names_and_returns_validated_ai_tasks():
     registry = ProviderRegistry()
     for name in ("hermes", "gemini", "groq", "antigravity", "codex"):
@@ -1930,6 +2013,12 @@ def test_inbox_planner_excludes_retired_provider_names_and_returns_validated_ai_
                                     "priority_reason": "potvrzená regrese; P5 pracovní oprava",
                                     "work_type": "implementation",
                                     "split_reason": "samostatná atomická oprava",
+                                    "source_refs": ["regrese"],
+                                    "verification": {
+                                        "required": ["regression"],
+                                        "acceptable": ["unit", "runtime"],
+                                        "reason": "Jde o potvrzenou regresi.",
+                                    },
                                 }
                             ]
                         }
@@ -1942,6 +2031,7 @@ def test_inbox_planner_excludes_retired_provider_names_and_returns_validated_ai_
         registry,
         ["python", "orchestrator.py", "autonomous", "--no-commit"],
         subprocess_run=fake_subprocess,
+        provider_timeout_seconds=96.0,
         project_paths={
             "AI Project Manager": "D:/orchestrator/ai-project-manager",
             "Station Agent": "D:/orchestrator/station-agent",
@@ -1955,22 +2045,24 @@ def test_inbox_planner_excludes_retired_provider_names_and_returns_validated_ai_
     assert "první dostupný provider" in result["provider_reason"]
     assert "skutečně použitý model" in result["model_reason"]
     assert selections[0]["provider"] == "auto"
-    assert selections[0]["model"] == "openai/gpt-oss-120b"
+    assert selections[0]["model"] == "AO model bude potvrzen po běhu"
     assert "centrálně zvolí" in selections[0]["provider_reason"]
     assert selections[0]["task_type"] == "inbox_planning"
     assert result["tasks"][0].priority == 4.01
     assert result["tasks"][0].project_key == "AI Project Manager"
     assert result["tasks"][0].work_type == "implementation"
     assert result["tasks"][0].split_reason == "samostatná atomická oprava"
+    assert result["tasks"][0].source_refs == ("regrese",)
+    assert result["tasks"][0].verification.required == ("regression",)
+    assert result["tasks"][0].verification.acceptable == ("unit", "runtime")
     assert calls[0][0][:7] == [
         "python", "orchestrator.py", "plan-inbox", "--agent", "auto",
         "--provider-order", "groq,antigravity,codex",
     ]
-    assert json.loads(calls[0][0][calls[0][0].index("--provider-models") + 1]) == {
-        "groq": "openai/gpt-oss-120b",
-    }
+    assert "--provider-models" not in calls[0][0]
     assert "gemini" not in calls[0][0]
     assert "hermes" not in calls[0][0]
+    assert calls[0][0][-2:] == ["--provider-timeout-seconds", "96.0"]
 
 
 def test_inbox_planner_sends_only_human_source_text_and_project_identities():
@@ -2155,8 +2247,32 @@ def test_bounded_inbox_subprocess_kills_windows_process_tree_on_timeout(monkeypa
         _bounded_subprocess_run(["planner"], timeout=3, input="{}")
 
     assert taskkill_calls[0][0] == ["taskkill", "/PID", "4321", "/T", "/F"]
-    assert process.communicate_calls == [("{}", 3), (None, None)]
-    assert process.killed is False
+    assert process.communicate_calls == [("{}", 3), (None, 5.0)]
+    assert process.killed is True
+
+
+def test_default_subprocess_run_uses_timeout_safe_process_tree_runner(monkeypatch):
+    seen = {}
+
+    def fake_bounded(command, *, timeout=None, **kwargs):
+        seen["command"] = command
+        seen["timeout"] = timeout
+        seen["kwargs"] = kwargs
+        return "completed"
+
+    monkeypatch.setattr(
+        "ai_project_manager.orchestrator_runner._bounded_subprocess_run",
+        fake_bounded,
+    )
+
+    result = _default_subprocess_run(["ai-orchestrator", "autonomous"], timeout=42, input="{}")
+
+    assert result == "completed"
+    assert seen == {
+        "command": ["ai-orchestrator", "autonomous"],
+        "timeout": 42,
+        "kwargs": {"input": "{}"},
+    }
 
 
 def _two_task_subprocess(command, **kwargs):
@@ -2494,3 +2610,24 @@ def test_p5_false_completion_regression_run_once_audit_never_moves_to_done(tmp_p
     assert reloaded.status == ProjectStatus.IN_PROGRESS
     assert reloaded.status != ProjectStatus.DONE
     assert reloaded.dod[0].checked is False
+
+
+def test_provider_refresh_handoff_uses_dedicated_ao_command_once():
+    calls = []
+
+    def fake_subprocess(command):
+        calls.append(command)
+        return subprocess.CompletedProcess(
+            command,
+            0,
+            stdout='{"success": true, "command": "refresh_provider_notes"}',
+            stderr="",
+        )
+
+    refresh = build_provider_refresh_fn(
+        ["python", "orchestrator.py", "autonomous", "--no-commit"],
+        subprocess_run=fake_subprocess,
+    )
+
+    assert refresh() is True
+    assert calls == [["python", "orchestrator.py", "refresh-provider-notes"]]

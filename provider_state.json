@@ -1,35 +1,87 @@
 {
-  "hermes": {
-    "state": "AVAILABLE",
-    "retry_after": null,
-    "last_error": null,
-    "checkpoint": {},
-    "models": ["upstage/solar-pro4:free"],
-    "selected_model": "upstage/solar-pro4:free",
+  "groq": {
+    "state": "LIMITED",
+    "retry_after": "2026-09-11T05:26:20.194743+00:00",
+    "last_error": "Lok\u00e1ln\u00ed Groq limiter odm\u00edtl po\u017eadavek kv\u016fli limitu: tpm",
+    "checkpoint": {
+      "run_id": "8a0c78af308346b69cc6086a686827e4",
+      "completed_dod_indices": [
+        0
+      ],
+      "controller_finalization_context": {
+        "preexisting_paths": [
+          "AUDIT_ITERATION_2.md",
+          "AUDIT_ITERATION_3.md",
+          "AUDIT_ITERATION_4.md",
+          "AUDIT_ITERATION_5.md",
+          "AUDIT_ITERATION_6.md",
+          "README.md",
+          "station_agent/cli.py",
+          "station_agent/db.py",
+          "station_agent/web/server.py",
+          "station_agent/web/static/app.js",
+          "station_agent/web/static/index.html",
+          "station_agent/web/static/selected_score.js",
+          "station_agent/web/static/style.css",
+          "tests/test_cli_sources.py",
+          "tests/test_db.py",
+          "tests/test_station_geodata_regression.py",
+          "tests/test_web_api.py",
+          "AUDIT_ITERATION_1.md",
+          "DIAGNOSIS_LX0FOUR_70MHZ.md"
+        ]
+      }
+    },
+    "models": [],
+    "selected_model": null,
     "capability_limits": {}
   },
   "antigravity": {
-    "state": "LIMITED",
-    "retry_after": "2026-09-06T11:00:00+00:00",
-    "last_error": "Provider reported exhausted quota; do not retry before the conservative reset deadline.",
+    "state": "ERROR",
+    "retry_after": "2026-09-08T16:40:21.461722+00:00",
+    "last_error": "Antigravity CLI nevr\u00e1tilo platn\u00fd JSON (exit kod 1): ERROR: logging before google.Init: E0908 18:10:13.070135       1 main.go:626] Failed to redirect output for CLI: creating log file: creating log directory: mkdir C:\\Users\\Admin\\.gemini\\antigravity-cli\\log: Nelze vytvo\u0159it soubor, kter\u00fd ji\u017e existuje.\nERROR: logging before google.Init: I0908 18:10:13.073408      36 server.go:1530] Starting language server process with pid 29316\nERROR: logging before google.Init: E0908 18:10:13.076551      36 server.go:1506] Failed to initialize crash reporter: failed to create crash directory: mkdir C:\\Users\\Admin\\.gemini\\antigravity-cli\\crashes: Nelze vytvo\u0159it soubor, kter\u00fd ji\u017e existuje.\nERROR: logging before google.Init: E0908 18:10:13.080206      36 main.go:794] CLI failed to start - open C:/Users/Admin/.gemini/antigravity-cli/installation_id: P\u0159\u00edstup byl odep\u0159en.\n(1) attached stack trace\n  -- stack trace:\n  | google3/third_party/jetski/language_server/language_server.setUpInstallationID\n  | \tthird_party/jetski/language_server/server.go:469\n  | google3/third_party/jetski/language_server/language_server.CreateLanguageServerAndServe\n  | \tthird_party/jetski/language_server/server.go:1573\n  | main.main.func4\n  | \tthird_party/jetski/cmd/cli/main.go:792\n  | runtime.goexit\n  | \tthird_party/go/gc/src/runtime/asm_amd64.s:1264\nWraps: (2) open C:/Users/Admin/.gemini/antigravity-cli/installation_id\nWraps: (3) P\u0159\u00edstup byl odep\u0159en.\nError types: (1) *withstack.withStack (2) *fs.PathError (3) syscall.Errno\nFailed to start: open C:/Users/Admin/.gemini/antigravity-cli/installation_id: P\u0159\u00edstup byl odep\u0159en.",
     "checkpoint": {},
     "models": [],
     "selected_model": null,
     "capability_limits": {}
   },
-  "claude": {
-    "state": "AVAILABLE",
-    "retry_after": null,
-    "last_error": null,
-    "checkpoint": {},
+  "claude-code": {
+    "state": "LIMITED",
+    "retry_after": "2026-09-10T15:41:12.787262+00:00",
+    "last_error": "Claude Code hl\u00e1s\u00ed vy\u010derp\u00e1n\u00ed kv\u00f3ty/limitu (LIMITED): exit code 4294967295",
+    "checkpoint": {
+      "run_id": "9527ede7d96845d9a538526e67bdcc80",
+      "completed_dod_indices": [],
+      "controller_finalization_context": {
+        "preexisting_paths": [
+          "AUDIT_ITERATION_2.md",
+          "AUDIT_ITERATION_3.md",
+          "AUDIT_ITERATION_4.md",
+          "AUDIT_ITERATION_5.md",
+          "AUDIT_ITERATION_6.md",
+          "README.md",
+          "station_agent/cli.py",
+          "station_agent/db.py",
+          "station_agent/web/server.py",
+          "station_agent/web/static/app.js",
+          "station_agent/web/static/selected_score.js",
+          "station_agent/web/static/style.css",
+          "tests/test_cli_sources.py",
+          "tests/test_db.py",
+          "tests/test_web_api.py",
+          ".gui_evidence_tmp/",
+          "DIAGNOSIS_LX0FOUR_70MHZ.md"
+        ]
+      }
+    },
     "models": [],
     "selected_model": null,
     "capability_limits": {}
   },
   "codex": {
-    "state": "AVAILABLE",
-    "retry_after": null,
-    "last_error": null,
+    "state": "ERROR",
+    "retry_after": "2026-09-08T16:40:21.461740+00:00",
+    "last_error": "Codex CLI nevr\u00e1tilo platn\u00fd JSON v\u00fdstup (exit kod 1): WARNING: proceeding, even though we could not create PATH aliases: Could not find home directory\nError finding codex home: Could not find home directory",
     "checkpoint": {},
     "models": [],
     "selected_model": null,

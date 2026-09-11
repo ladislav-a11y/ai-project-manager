@@ -1,4 +1,4 @@
-"""Supervising watchdog for the long-running AI Project Manager process.
+"""AI Project Manager v2 supervising watchdog.
 
 ``ai_project_manager.cli.main`` detects a self-update, verifies it is safe
 (tests + Git checkpoint - see ``self_update.py``) and exits with
@@ -42,7 +42,6 @@ from pathlib import Path
 from typing import Callable, Optional, Sequence
 
 from .self_update import RESTART_REQUIRED_EXIT_CODE, default_run_command
-from .slack_notify import notify
 
 logger = logging.getLogger("ai_project_manager.watchdog")
 
@@ -53,7 +52,6 @@ DEFAULT_RESTART_BACKOFF_SECONDS = 5.0
 ROLLBACK_WORKTREE_RELATIVE_PATH = str(Path("runtime") / "self_update_rollback_worktree")
 
 LaunchFn = Callable[..., "subprocess.CompletedProcess"]
-NotifyFn = Callable[[str], None]
 
 
 class WatchdogAlreadyRunning(RuntimeError):
@@ -278,7 +276,6 @@ def run_watchdog(
     mode: str = "persistent",
     log_path: Optional[str] = None,
     start_kind: str = "online",
-    notify_fn: NotifyFn = notify,
 ) -> int:
     """Supervise ``child_argv`` (the PM long-running process). Returns the
     final child exit code once the child exits for a reason other than a
@@ -288,9 +285,8 @@ def run_watchdog(
     resolved_log_path = str(Path(log_path).resolve()) if log_path else str(
         (Path(repo_root) / "runtime" / "scheduler" / "scheduler.log").resolve()
     )
-    # Correlation marker used by the live verifier. Keep it secret-free and
-    # emit it immediately before the Slack request so an HTTP 200 receipt can
-    # be attributed to this watchdog run rather than an older log entry.
+    # Keep the watchdog observable in its local log. Slack delivery belongs to
+    # AO provider adapters, not to the PM supervisor.
     logger.info(
         "[AI Project Manager] Watchdog %s: Scheduled Task=%s; mode=%s; PID=%s; log=%s",
         start_kind,
@@ -298,11 +294,6 @@ def run_watchdog(
         mode,
         os.getpid(),
         resolved_log_path,
-    )
-    notify_fn(
-        f"[AI Project Manager] Watchdog {start_kind}: "
-        f"Scheduled Task={scheduled_task_name}; režim={mode}; PID={os.getpid()}; "
-        f"log={resolved_log_path}"
     )
 
     state_file = Path(state_path or (Path(repo_root) / DEFAULT_STATE_PATH))
@@ -344,16 +335,14 @@ def run_watchdog(
                 state.last_known_good_commit = pre_launch_commit
                 state.save(state_file)
             if result.returncode == 0:
-                notify_fn(
-                    f"[AI Project Manager] Watchdog offline/done: "
-                    f"Scheduled Task={scheduled_task_name}; režim={mode}; "
-                    f"PID={os.getpid()}; log={resolved_log_path}"
+                logger.info(
+                    "watchdog offline/done: Scheduled Task=%s mode=%s PID=%s log=%s",
+                    scheduled_task_name, mode, os.getpid(), resolved_log_path,
                 )
             else:
-                notify_fn(
-                    f"[AI Project Manager] Watchdog spadl: child exit code "
-                    f"{result.returncode}; Scheduled Task={scheduled_task_name}; "
-                    f"log={resolved_log_path}"
+                logger.error(
+                    "watchdog failed: child exit code=%s Scheduled Task=%s log=%s",
+                    result.returncode, scheduled_task_name, resolved_log_path,
                 )
             return result.returncode
 
@@ -367,10 +356,9 @@ def run_watchdog(
                 "exceeded max consecutive self-update restarts (%d); staying down to avoid a crash loop",
                 max_consecutive_restarts,
             )
-            notify_fn(
-                f"[AI Project Manager] Watchdog spadl: překročen limit "
-                f"{max_consecutive_restarts} restartů; Scheduled Task={scheduled_task_name}; "
-                f"log={resolved_log_path}"
+            logger.error(
+                "watchdog failed: restart limit=%s Scheduled Task=%s log=%s",
+                max_consecutive_restarts, scheduled_task_name, resolved_log_path,
             )
             return RESTART_REQUIRED_EXIT_CODE
 
@@ -420,10 +408,9 @@ def run_watchdog(
                 # passing smoke test below proves the restart chain healthy
                 # enough to reset the guard.
                 if max_cycles is not None and cycles >= max_cycles:
-                    notify_fn(
-                        f"[AI Project Manager] Watchdog spadl: smoke test exit code "
-                        f"{smoke.returncode}; Scheduled Task={scheduled_task_name}; "
-                        f"log={resolved_log_path}"
+                    logger.error(
+                        "watchdog failed: smoke test exit code=%s Scheduled Task=%s log=%s",
+                        smoke.returncode, scheduled_task_name, resolved_log_path,
                     )
                     return smoke.returncode
                 continue
@@ -442,10 +429,9 @@ def run_watchdog(
             consecutive_restarts = 0
 
         if max_cycles is not None and cycles >= max_cycles:
-            notify_fn(
-                f"[AI Project Manager] Watchdog offline/done: "
-                f"Scheduled Task={scheduled_task_name}; režim={mode}; "
-                f"PID={os.getpid()}; log={resolved_log_path}"
+            logger.info(
+                "watchdog offline/done: Scheduled Task=%s mode=%s PID=%s log=%s",
+                scheduled_task_name, mode, os.getpid(), resolved_log_path,
             )
             return last_result_code
         # loop again: relaunch the (now-current) long-running child, which
@@ -524,21 +510,14 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         return 1
     except KeyboardInterrupt:
         log_path = args.log_path or str(Path(repo_root) / "runtime" / "scheduler" / "scheduler.log")
-        notify(
-            f"[AI Project Manager] Watchdog offline/done: čisté ukončení; "
-            f"Scheduled Task={args.scheduled_task_name}; režim={args.mode}; "
-            f"PID={os.getpid()}; log={Path(log_path).resolve()}"
+        logger.info(
+            "watchdog offline/done: clean shutdown; Scheduled Task=%s mode=%s PID=%s log=%s",
+            args.scheduled_task_name, args.mode, os.getpid(), Path(log_path).resolve(),
         )
         logger.info("watchdog stopped by operator")
         return 0
     except Exception as exc:
-        # Keep the Slack cause intentionally short and secret-safe; the full
-        # exception and traceback remain in the referenced transcript.
         log_path = args.log_path or str(Path(repo_root) / "runtime" / "scheduler" / "scheduler.log")
-        notify(
-            f"[AI Project Manager] Watchdog spadl: {type(exc).__name__}; "
-            f"Scheduled Task={args.scheduled_task_name}; log={Path(log_path).resolve()}"
-        )
         logger.exception("watchdog terminated unexpectedly")
         return 1
 

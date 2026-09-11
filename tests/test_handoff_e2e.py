@@ -114,9 +114,9 @@ def test_project_manager_hands_off_to_orchestrator_and_syncs_result_back(tmp_pat
     args = _args_to_dict(calls[0])
     assert args["project"] == str(tmp_path / "dashboard-checkout")
     assert args["goal"] == "Implement the live status widget"
-    # PM's own provider name is "claude"; the real ai-orchestrator CLI
-    # expects its agent identifier, "claude-code" (item 5).
-    assert args["agent"] == "claude-code"
+    # PM never selects a concrete provider; AO receives the central broker
+    # dispatch target and performs provider selection itself.
+    assert args["agent"] == "provider-broker"
     assert args["run-id"]
 
     id_to_name, _ = build_list_maps(client)

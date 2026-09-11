@@ -1,4 +1,4 @@
-"""Scheduler/router: picks the next project to work on.
+"""V2 scheduler/router: picks the next project to work on.
 
 Selects the highest-priority (0-5, 5 = most urgent), unblocked project
 that has at least one available provider. This is pure, local, in-memory
@@ -44,38 +44,61 @@ WAITING_WORKFLOW_STATUSES = {
     ProjectStatus.ERROR,
 }
 
-# ``auto`` is a PM configuration alias, not an ai-orchestrator provider.  It
-# must be expanded before provider availability is checked; otherwise PM can
-# select the literal alias and later pass it to AO as ``--provider-order auto``.
-# Keep the order aligned with the PM-owned failover policy.  Both the canonical
-# PM Claude name and AO's legacy name are accepted because persisted provider
-# state can contain either spelling.
-AUTO_PROVIDER_ORDER = ("groq", "antigravity", "claude", "claude-code", "codex")
-
-
-def expand_provider_aliases(
-    provider_names: list[str], provider_registry: ProviderRegistry
-) -> list[str]:
-    """Expand PM-only provider aliases into registered provider identities."""
-    expanded: list[str] = []
-    registered = set(provider_registry.registered_names())
-    for provider_name in provider_names:
-        if provider_name.casefold() != "auto":
-            if provider_name not in expanded:
-                expanded.append(provider_name)
-            continue
-        for candidate in AUTO_PROVIDER_ORDER:
-            # Prefer PM's canonical ``claude`` identity over the AO alias when
-            # both happen to be present in durable provider state.
-            if candidate in registered and candidate not in expanded:
-                if candidate == "claude-code" and "claude" in registered:
-                    continue
-                expanded.append(candidate)
-    return expanded
-
-
 def _is_human_hold(project: ProjectRecord) -> bool:
     return bool(project.human_action_step or project.human_notified_reason)
+
+
+def _workflow_status_label(status: ProjectStatus) -> str:
+    return {
+        ProjectStatus.TESTING: "Testování",
+        ProjectStatus.PAUSED: "Čeká na AI",
+        ProjectStatus.BLOCKED: "Blokováno",
+        ProjectStatus.ERROR: "Chyba",
+    }.get(status, status.value)
+
+
+def _waiting_project_detail(project: ProjectRecord) -> str:
+    detail = f"{project.name} [{_workflow_status_label(project.status)}"
+    if project.status == ProjectStatus.PAUSED:
+        detail += f"; Trello retry_after={project.retry_after or 'neuvedený'}"
+    elif _is_human_hold(project):
+        detail += "; vyžaduje zásah člověka"
+    return detail + "]"
+
+
+def explain_no_implementation_dispatch(projects: list[ProjectRecord]) -> str:
+    """Explain why normal implementation dispatch returned no project.
+
+    Provider selection is owned by ai-orchestrator. This explanation therefore
+    reports only PM/Trello workflow gates and must not claim that PM proved a
+    provider unavailable.
+    """
+    waiting = [project for project in projects if project.status in WAITING_WORKFLOW_STATUSES]
+    if waiting:
+        corrective = any(
+            project.returned_from_testing
+            and project.status in {ProjectStatus.READY, ProjectStatus.IN_PROGRESS}
+            and not project.is_blocked
+            for project in projects
+        )
+        hard_wait = any(
+            project.status in {ProjectStatus.TESTING, ProjectStatus.ERROR}
+            or (project.status in {ProjectStatus.PAUSED, ProjectStatus.BLOCKED} and not _is_human_hold(project))
+            for project in waiting
+        )
+        if not corrective or hard_wait:
+            details = "; ".join(_waiting_project_detail(project) for project in waiting)
+            return f"workflow wait blocks implementation dispatch: {details}"
+
+    active = [project for project in projects if project.status == ProjectStatus.IN_PROGRESS]
+    candidates = [
+        project
+        for project in (active or projects)
+        if is_schedulable(project) and _dependencies_satisfied(project, projects)
+    ]
+    if not candidates:
+        return "no project in a schedulable Trello workflow state"
+    return "no implementation dispatch decision"
 
 
 @dataclass
@@ -149,10 +172,6 @@ def pick_next_project(
     acceptable provider names (falls back to ``default_providers``, or
     to every provider registered so far).
     """
-    fallback_providers = expand_provider_aliases(
-        default_providers or provider_registry.registered_names(), provider_registry
-    )
-
     waiting = [project for project in projects if project.status in WAITING_WORKFLOW_STATUSES]
     if waiting:
         corrective = any(
@@ -171,7 +190,9 @@ def pick_next_project(
         if not corrective or hard_wait:
             return None
 
-    candidates = [p for p in projects if is_schedulable(p) and _dependencies_satisfied(p, projects)]
+    # V2: restrict execution candidates, never the dependency evidence snapshot.
+    active = [p for p in projects if p.status == ProjectStatus.IN_PROGRESS]
+    candidates = [p for p in (active or projects) if is_schedulable(p) and _dependencies_satisfied(p, projects)]
     # Continue the work already visible in ``Pracuje se`` before admitting a
     # new card from ``Připraveno``.  Priority is a tie-break *within* a
     # workflow phase, not a reason to preempt an active checkpoint.  Testing
@@ -193,13 +214,7 @@ def pick_next_project(
     )
 
     for project in candidates:
-        allowed_providers = expand_provider_aliases(
-            (providers_for_project or {}).get(project.name, fallback_providers),
-            provider_registry,
-        )
-        for provider_name in allowed_providers:
-            if provider_registry.is_available(provider_name):
-                return SchedulingDecision(project=project, provider=provider_name)
+        return SchedulingDecision(project=project, provider="provider-broker")
 
     return None
 
@@ -241,27 +256,27 @@ def pick_next_audit_project(
     ai-orchestrator's audit-only mode (see
     orchestrator_handoff.build_audit_task).
     """
-    fallback_providers = expand_provider_aliases(
-        default_providers or provider_registry.registered_names(), provider_registry
-    )
-
     candidates = [p for p in projects if is_auditable(p)]
     candidates.sort(key=lambda p: p.priority, reverse=True)
 
     for project in candidates:
-        allowed_providers = expand_provider_aliases(
-            (providers_for_project or {}).get(project.name, fallback_providers),
-            provider_registry,
-        )
-        capability_key = audit_capability_key(project)
-        for provider_name in allowed_providers:
-            if (
-                provider_registry.is_available(provider_name)
-                and not provider_registry.is_capability_limited(provider_name, capability_key)
-            ):
-                return SchedulingDecision(project=project, provider=provider_name)
+        return SchedulingDecision(project=project, provider="provider-broker")
 
     return None
+
+
+def explain_no_audit_dispatch(projects: list[ProjectRecord]) -> str:
+    """Explain why no Testování card can enter the AO audit path."""
+    if not any(project.status == ProjectStatus.TESTING for project in projects):
+        return "no project in Testování awaiting ai-orchestrator audit"
+    blocked = [
+        _waiting_project_detail(project)
+        for project in projects
+        if project.status == ProjectStatus.TESTING and not is_auditable(project)
+    ]
+    if blocked:
+        return "Testování has no unblocked audit candidate: " + "; ".join(blocked)
+    return "no audit dispatch decision"
 
 
 def audit_capability_key(project: ProjectRecord) -> Optional[str]:

@@ -62,9 +62,8 @@ Kdykoliv se dále v textu objeví rozpor mezi (1) a čímkoliv jiným, vítězí
 | `tests/*.py` | Regresní pokrytí | Aktuální, rozšiřuje se souběžně s kódem | Autoritativní pro ověření chování |
 | `runtime/specs/*.md` (gitignored, generované) | Poslední odeslané zadání pro `ai-orchestrator` na kartu — momentka v čase dispatche | Živě generované, ale **odvozená a může zaostávat za živým Trellem** (viz sekce 0a) | Nízká/kontextová — nikdy nepoužívat místo živého Trella |
 | `runtime/scheduled-start.log`, `runtime/scheduler/scheduler-*.log` | Skutečný provozní log naplánovaného scheduleru (2026-08-26 až 2026-08-28) | Živý | Vysoká — přímý důkaz chování za běhu, včetně jednoho zachyceného self-update restartu s obnovou checkpointu (17:13–17:14, 27. 8., viz sekce 4) |
-| `NEXT_DOD.md`, `AUTOMATION_DOD.md`, `HANDOFF_FIX_DOD.md` (tracked, root) | Historické zadávací DoD z počáteční fáze projektu (22.–23. 8.) | Zastaralé — checklisty beze zaškrtnutí, ale popsaná funkčnost už v kódu existuje | Historická, ne provozní |
-| `LIVE_HANDOFF_DOD.md` (tracked, root) | DoD pro opravu live handoffu (22. 8.) | Téměř kompletní ([x] u 11/12 bodů), poslední bod je procesní („spustit celou sadu testů", přenechává se orchestrátorovi) | Historická |
-| `specs/station-agent.md`, `specs/p5-station-agent.md`, `specs/p5-station-agent.json` (tracked) | Staré, ručně/jednorázově uložené vzory zadání pro Station Agent | Zastaralé — nahrazeny novějším `runtime/specs/p5-station-agent.md` | Nízká, jen jako historický vzor formátu |
+| `NEXT_DOD.md`, `AUTOMATION_DOD.md`, `HANDOFF_FIX_DOD.md`, `LIVE_HANDOFF_DOD.md` | Historické osiřelé checklisty | 2026-09-09 odstraněny z PM checkoutu po potvrzení; aktuální stav určují Git, testy a Trello | Historie v tomto auditu |
+| `specs/station-agent.md`, `specs/p5-station-agent.md`, `specs/p5-station-agent.json` | Duplicitní jednorázové vzory zadání pro Station Agent | 2026-09-09 odstraněny z PM checkoutu po potvrzení; aktuální PM spec je generovaný `runtime/specs/p5-station-agent.md` | Historie v tomto auditu |
 | `D:\orchestrator\ai-orchestrator\PROJECT_HANDOVER_2026-08-25.md` | Ruční předávací checkpoint napříč AI Project Manager / ai-orchestrator / Station Agent | 25. 8. 2026, historický, ale potvrzuje stejný obraz jako živé Trello (P1 audity chystané po obnově limitů) | Historický kontext, potvrzující |
 | `D:\orchestrator\ai-orchestrator\CODEX_DOD.md` | Samostatný DoD pro Codex CLI adaptér (17 bodů), checklist beze zaškrtnutí | **Stale** — checklist se od vzniku nezaškrtává, ale kód (`orchestrator/agents/codex.py`) detekuje neúplný CLI výstup jako řízenou chybu a `tests/test_codex_agent.py` má regresní testy pro starý i současný JSONL schema výstup; nezávislý plný běh 2026-08-28: 238 passed, 2 skipped | Kód a testy jsou autoritativnější než tento nezaškrtnutý checklist — viz sekce 4.3a |
 | `D:\orchestrator\station-agent\*.md` (`PROJECT_NOTES.md`, `NEXT_DOD.md`, `dod-station-agent-v1.md`) | Provozní poznámky a DoD Station Agentu | `NEXT_DOD.md` (iterační opravy) téměř celé `[x]`; `dod-station-agent-v1.md` (celé v1 GUI/funkční rozsah) téměř celé `[ ]` | Mimo přímý rozsah této karty (týká se P0 Station Agent karet, ne P5 karet auditovaných zde) — ponecháno jako kontext |
@@ -116,10 +115,10 @@ netýká.
 
 ## 3. Duplicity a rozpory — sloučeno / opraveno
 
-- **Duplicitní Station Agent specs**: beze změny oproti předchozí verzi — `specs/station-agent.md`,
-  `specs/p5-station-agent.md`, `specs/p5-station-agent.json` zůstávají kandidátem k archivaci ve
-  prospěch `runtime/specs/p5-station-agent.md`.
-- **4 samostatné root DoD soubory**: beze změny — navazující fáze téhož vývoje, sloučeno v sekci 1.
+- **Duplicitní Station Agent specs**: 2026-09-09 odstraněny z PM checkoutu;
+  aktuální pracovní spec vzniká pouze v `runtime/specs/p5-station-agent.md`.
+- **Historické root DoD soubory**: 2026-09-09 odstraněny z PM checkoutu;
+  jejich klasifikace a důvod odstranění zůstávají zachované v tomto auditu.
 - **OPRAVENO — „rozpor kód vs. karta u P1 — Audit a stabilizace AI Project Manager" již neplatí.**
   Minulá verze tohoto dokumentu tvrdila, že karta na Trellu „zaostává za skutečným stavem kódu",
   protože odvozený `runtime/specs/p1-audit-a-stabilizace-ai-project-manager.md` měl
@@ -260,13 +259,12 @@ posunou — tento dokument pouze navrhuje.
 
 ---
 
-## 5. Stale / generated / authoritative dokumenty a kandidáti k archivaci
+## 5. Stale / generated / authoritative dokumenty po úklidu
 
 | Dokument | Typ | Doporučení |
 |---|---|---|
-| `NEXT_DOD.md`, `AUTOMATION_DOD.md`, `HANDOFF_FIX_DOD.md` | stale (hotovo, nedohledáno zpět) | Kandidát k archivaci (např. do `docs/history/`) |
-| `LIVE_HANDOFF_DOD.md` | téměř hotové (11/12) | Kandidát k archivaci po doplnění posledního bodu orchestrátorem |
-| `specs/station-agent.md`, `specs/p5-station-agent.md`, `specs/p5-station-agent.json` | stale, nahrazeno | Kandidát k archivaci — `runtime/specs/p5-station-agent.md` je aktuálnější zdroj |
+| `NEXT_DOD.md`, `AUTOMATION_DOD.md`, `HANDOFF_FIX_DOD.md`, `LIVE_HANDOFF_DOD.md` | stale, odstraněno 2026-09-09 | Nejsou součástí v2; tento audit je jejich historická evidence |
+| `specs/station-agent.md`, `specs/p5-station-agent.md`, `specs/p5-station-agent.json` | stale, odstraněno 2026-09-09 | Aktuální PM spec je pouze `runtime/specs/p5-station-agent.md` |
 | `runtime/specs/*.md` | generated, ale kontextově užitečná | **Ponechat**, ale nikdy nepoužívat místo živého Trella (viz sekce 0a — to byla chyba minulé verze tohoto dokumentu) |
 | `runtime/scheduled-start.log`, `runtime/scheduler/scheduler-*.log` | generated, provozní důkaz | **Ponechat** — přímý důkaz chování za běhu (použito v sekci 4.3) |
 | `README.md` | authoritative | Udržovat dál jako hlavní zdroj pravdy o provozu |
@@ -451,7 +449,7 @@ Slacku. Tento záznam je provozní důkaz a nepředstavuje auditní verdikt
 
 ### 7.6 Obnova priorit po historickém chybném re-rankingu (1. 9. 2026)
 
-### 8.6 Aktuální kontrakt: model vybírá provider, Inbox Hermes nikdy
+### 8.6 Historický kontrakt (již nepoužívaný)
 
 - PM předává pouze providera, typ úkolu a bezpečný prompt; do planneru,
   implementačního ani auditního argv se nepřidává `--model` z PM katalogu.
@@ -474,12 +472,12 @@ priority nepřiděluje ani nemění; pouze respektuje hodnotu získanou při int
 
 ---
 
-## 8. Mapování: rozhodování PM/PO o provideru a modelu LLM podle typu úkolu (oprava PM [Inbox 6a96e12f])
+## 8. Historické mapování provideru a modelu LLM (nahrazeno kontraktem V2)
 
-Historická mapa níže zachycuje předchozí návrh. Aktuální kontrakt je v části
-8.6: PM vybírá providera a typ úkolu, konkrétní model volí provider, Inbox
-intake Hermes nikdy nepoužije a free provider nesmí tiše přejít na placený
-model.
+Mapa níže zachycuje předchozí návrh a není provozní instrukcí. Aktuální
+kontrakt je v části 10: PM řídí pouze workflow a Trello, Inbox Intake vytváří
+tasky, a AI Orchestrator po převzetí tasku jako jediný pracovní běh žádá broker
+o nabídku a volá brokerem vybraného providera.
 
 ### 8.1 Tři typy úkolu, které PM providerovi/LLM zadává
 
@@ -610,7 +608,7 @@ priority nepřiděluje ani nemění; pouze respektuje hodnotu získanou při int
 
 ---
 
-## 9. Analýza routingu: Inbox planning → PM → ai-orchestrator → provider/model
+## 9. Historická analýza routingu (nahrazena aktuálním V2 kontraktem)
 (Inbox požadavek „AI Project Manager / ai-orchestrator — analýza routingu",
 2026-09-05; navazuje na mapování v sekci 8, doplňuje ho o aktuální řádkové
 odkazy a o místa, která sekce 8 dosud nepojmenovala. Toto je čistě analytická/
@@ -645,7 +643,8 @@ dokumentační karta — žádné chování mimo tento zápis nebylo měněno.)
 6. **Návrat z ai-orchestrátoru**: pokud outbox obsahuje `active_model`/
    `model`/`usage.total.model`, PM ho pouze **zapíše do reportovacích
    textů** (Trello `next_step`/Slack), nikdy zpětně neovlivní už odeslaný
-   dispatch (`runner.py:103-152`, `slack_notify.py:124-231`).
+   dispatch (`runner.py:103-152`); the retired V1 PM Slack helper is no longer
+   part of the active checkout.
 
 ### 9.2 Přesná místa, kde se deklarovaná volba providera/modelu ztrácí nebo
 nahrazuje hodnotou „provider default" / „model nezjištěn"
@@ -656,7 +655,7 @@ nahrazuje hodnotou „provider default" / „model nezjištěn"
 | 2 | `orchestrator_runner.py:1193` a `:1437` | `selected_model = None` je nastaveno v `run_fn`/`audit_run_fn`, ale nikdy dál použito — je to mrtvý zbytek z dřívějšího návrhu (sekce 8.3-8.5), kdy se model ještě vybíral přes `model_for_task`. Jediné aktivní chování dnes je, že se `--model` do `full_command` vůbec nepřidává. |
 | 3 | `providers.py:145-168` (`model_for_task`) | Vlastní docstring přiznává: „Production dispatch does not call this helper; it is retained for diagnostics...". Jediný produkční volající je `_inbox_model_hint` (bod 1) — pro hint text, ne pro argv. |
 | 4 | `runner.py:103-105` (`_display_model`) | `return model or "provider default (nezjištěn)"` — kdykoli ai-orchestrátor ve výsledku nevrátí potvrzený `active_model`/`model`, human-facing text v Trellu/Slacku dostane doslova řetězec „provider default (nezjištěn)". |
-| 5 | `slack_notify.py:190-193` (`provider_route_detail`) | `model_by_provider.get(name, 'nezjištěn')` — pro každého providera v `provider_sequence`, pro kterého žádná `usage.events` položka ani `active_model` neobsahuje jeho model, se ve „model path" zobrazí doslova `nezjištěn`. |
+| 5 | Retired V1 PM Slack helper | Historical finding only; the helper and its webhook delivery path are removed from the active V2 PM checkout. Provider/model evidence is owned by the AO receipt. |
 | 6 | `daemon.py:178-193` (`_run_recovery_pass`, návrat po vypršení `retry_after`) | Při obnově karty z čekání na providera se `project.extra_data["provider_selection"]` explicitně přepíše na `selected_model=None, model=None, actual_provider=None, actual_model=None, source="provider_default"` — jakákoli dříve zaznamenaná model/„actual" hodnota se tímto krokem zahodí, protože nový běh z checkpointu je nový výběr, ne pokračování stejného potvrzeného modelu. |
 | 7 | `card_contract.py:203-213` (`KNOWN_FIELDS`) + `models.py:140-203` (`ProjectRecord`) | Structural: **Trello karta jako jediný zdroj pravdy nemá pole pro model vůbec** — jen `provider`. I kdyby nějaká vrstva model chvilkově znala (`extra_data["provider_selection"]["model"]`), přežije to jen v neverzovaném `extra_data`, ne jako kanonické pole s vlastní validací/migrací jako `provider`. |
 | 8 | `ai_project_manager/inbox.py:34-45` (`INBOX_PLANNING_FORBIDDEN_PROVIDERS`, `inbox_planner_providers`) | Nepoužívaný duplikát politiky „žádný Hermes/Gemini v Inbox planningu" — `orchestrator_runner.py` tuto funkci nikdy nevolá (žádný `from .inbox import` v `orchestrator_runner.py`). Efektivní chování je dnes shodné s `INBOX_PLANNER_PROVIDERS` (bod 1 sekce 9.1), ale je to nezávislá kopie, ne sdílený zdroj — riziko budoucího rozjetí, ne ztráta dnes. Již zaznamenáno v sekci 8.2; potvrzeno stále platným v této iteraci. |
@@ -673,10 +672,28 @@ záměr, je bod 2 (mrtvé `selected_model = None` proměnné) a bod 8 (nepouží
 duplicitní modul `inbox.py`) — obě jsou neškodný mrtvý kód, ne funkční chyba,
 a jejich úklid je mimo rozsah této analytické karty (viz bod 10 v sekci 7.4).
 
-### 9.4 Co zůstává mimo rozsah této karty
+### 9.4 Co zůstává mimo rozsah této historické karty
 
 Tato karta je čistě analytická — žádný ze zdrojových souborů uvedených výše
 nebyl touto iterací upraven. Případný úklid mrtvého kódu (`selected_model`
 proměnné, duplicitní `inbox.py` funkce) nebo rozšíření Card Contractu o
 kanonické pole pro potvrzený model patří do samostatné, výslovně schválené
 karty — ne do této, jejímž jediným DoD je doložit, kde se volba ztrácí.
+
+## 10. Aktuální V2 hranice PM → AO → broker → provider
+
+- **AI Project Manager:** rozhoduje pouze kódem řízené workflow, prioritě,
+  zámcích, DoD a zápisu/readbacku Trella. Broker ani providery nevolá a
+  nevybírá konkrétního providera ani model.
+- **Inbox Intake v AO:** z Inbox vstupu pomocí AI vytvoří a validuje tasky;
+  přes `BrokerBackedAgent` nejprve požádá broker o nabídku a až potom předá
+  task vybranému providerovi.
+- **Orchestrátor v AO:** převezme task od PM, přes stejnou fasádu požádá
+  broker a následně zavolá vybraného providera pro implementaci, opravu nebo
+  audit. Broker pracovní úkol neprovádí.
+- **Broker:** vybírá podle svých poznámek a stavů, vrací provider, přesný
+  model a `lang`; sám žádný pracovní `run()` nespouští.
+
+PM tedy předává task pouze AI Orchestratoru. V2 produkční handoff používá vždy
+`--agent provider-broker`; žádná starší PM větev s mapováním konkrétního agenta
+nebo s parametrem `use_provider_failover` není součástí aktuálního kódu.

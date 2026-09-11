@@ -53,10 +53,6 @@ logger = logging.getLogger("ai_project_manager")
 
 BLOCK_START = "<!-- PM-DATA"
 BLOCK_END = "-->"
-BLOCK_RE = re.compile(
-    re.escape(BLOCK_START) + r"\s*(.*?)\s*" + re.escape(BLOCK_END), re.DOTALL
-)
-
 # Any field can hold arbitrary agent-generated text (last_output, a
 # checkpoint value, ...), and that text can very plausibly contain the
 # literal substring "-->" (a diff, HTML/markdown, plain "before --> after"
@@ -68,6 +64,18 @@ BLOCK_RE = re.compile(
 # is not something real content is expected to contain, so splitting
 # "-->" with one is a safe, fully reversible escape.
 _ZWSP = "\u200b"
+
+# Trello's rich-text editor may prefix both the literal and the zero-width
+# escaped closing marker with a backslash.  Accept that presentation detail
+# on reads; the JSON payload remains unchanged and writes still use the
+# canonical zero-width escape.
+BLOCK_RE = re.compile(
+    re.escape(BLOCK_START)
+    + r"\s*(.*?)\s*(?:\\?-->|\\?--"
+    + re.escape(_ZWSP)
+    + r">(?=\s*$))",
+    re.DOTALL,
+)
 
 
 def _escape_block_terminator(text: str) -> str:
@@ -297,8 +305,8 @@ def project_key_from_labels(labels: list[dict]) -> Optional[str]:
     }
     if len(identities) > 1:
         # Preserve fail-closed loading: returning no usable identity lets the
-        # pre-dispatch validator persist an actionable Trello reason and Slack
-        # notice. Raising here would abort the whole board read before the
+        # pre-dispatch validator persist an actionable Trello reason and
+        # operator-visible status. Raising here would abort the whole board read before the
         # offending card could be updated.
         return None
     return next(iter(identities), None)
@@ -898,7 +906,7 @@ def _human_required_visible_notes(project: ProjectRecord) -> str:
     human (see daemon._run_recovery_pass). Written into the visible part of
     the description - never only inside the hidden PM-DATA JSON block - so
     a human scanning the board sees the same reason and concrete next step
-    that was sent to Slack, without needing to inspect PM-DATA at all.
+    without needing to inspect PM-DATA or external notifications.
     """
     step = project.human_action_step or "Zkontrolujte kartu a rozhodněte další krok."
     return (
@@ -1144,7 +1152,7 @@ def card_updates_from_project(project: ProjectRecord, list_name_to_id: dict[str,
     # intentionally transient: persisting it would duplicate board metadata
     # inside PM-DATA and can push an already large contract over Trello's limit.
     data.pop("live_trello_readback", None)
-    # Provider history and rendered Slack messages are operational telemetry,
+    # Provider history and rendered notification messages are operational telemetry,
     # not current card state.  Keep the current provider selection and the
     # required top-level provider_statuses receipt, but never copy old history
     # or notification payloads into every future Trello description.

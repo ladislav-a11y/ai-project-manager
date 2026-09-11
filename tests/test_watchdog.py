@@ -68,50 +68,6 @@ def test_normal_exit_stops_watchdog_without_restart(tmp_path):
     assert launches[0] == (["child"], str(tmp_path))
 
 
-def test_watchdog_lifecycle_notifies_online_and_clean_done_once(tmp_path):
-    messages = []
-
-    exit_code = run_watchdog(
-        ["child"],
-        repo_root=str(tmp_path),
-        launch=lambda argv, cwd=None: _result(0),
-        run_git=_fake_git(),
-        state_path=str(tmp_path / "state.json"),
-        scheduled_task_name="AI-PM-start-2026-08-27-1650",
-        mode="persistent",
-        log_path=str(tmp_path / "scheduler.log"),
-        notify_fn=messages.append,
-    )
-
-    assert exit_code == 0
-    assert len(messages) == 2
-    assert "Watchdog online" in messages[0]
-    assert "AI-PM-start-2026-08-27-1650" in messages[0]
-    assert "režim=persistent" in messages[0]
-    assert "PID=" in messages[0]
-    assert str(tmp_path / "scheduler.log") in messages[0]
-    assert "offline/done" in messages[1]
-
-
-def test_watchdog_lifecycle_reports_child_crash_cause_and_log(tmp_path):
-    messages = []
-
-    exit_code = run_watchdog(
-        ["child"],
-        repo_root=str(tmp_path),
-        launch=lambda argv, cwd=None: _result(23),
-        run_git=_fake_git(),
-        state_path=str(tmp_path / "state.json"),
-        log_path=str(tmp_path / "scheduler.log"),
-        notify_fn=messages.append,
-    )
-
-    assert exit_code == 23
-    assert len(messages) == 2
-    assert "child exit code 23" in messages[1]
-    assert str(tmp_path / "scheduler.log") in messages[1]
-
-
 def test_restart_required_relaunches_and_records_success(tmp_path):
     launches = []
 
@@ -475,25 +431,6 @@ def test_main_returns_failure_without_launching_child_when_watchdog_is_already_r
 
     assert exit_code == 1
     run.assert_not_called()
-
-
-def test_main_reports_clean_operator_shutdown(tmp_path):
-    with patch("ai_project_manager.watchdog.run_watchdog", side_effect=KeyboardInterrupt):
-        with patch("ai_project_manager.watchdog.notify") as notify:
-            exit_code = main(
-                [
-                    "--repo-root", str(tmp_path),
-                    "--no-smoke-test",
-                    "--scheduled-task-name", "AI-PM-test",
-                    "--log-path", str(tmp_path / "scheduler.log"),
-                ]
-            )
-
-    assert exit_code == 0
-    message = notify.call_args.args[0]
-    assert "offline/done" in message
-    assert "AI-PM-test" in message
-    assert str(tmp_path / "scheduler.log") in message
 
 
 def test_repository_relative_python_is_stable_across_rollback_cwd(tmp_path):

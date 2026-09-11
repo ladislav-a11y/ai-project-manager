@@ -1,6 +1,5 @@
 from datetime import timedelta
 
-from ai_project_manager import slack_notify
 from ai_project_manager.guard import OrchestratorGuard
 from ai_project_manager.lock import ProjectLockManager
 from ai_project_manager.models import DoDItem, ProjectRecord, ProjectStatus
@@ -19,23 +18,6 @@ def make_client_with_project(project: ProjectRecord) -> InMemoryTrelloClient:
     created = sync_project_to_trello(client, project)
     project.trello_card_id = created["id"]
     return client
-
-
-def test_run_once_does_nothing_and_never_calls_run_fn_when_no_work():
-    project = ProjectRecord(name="Demo", priority=3, status=ProjectStatus.READY)
-    client = make_client_with_project(project)
-    registry = ProviderRegistry()  # no providers registered/available
-
-    calls = []
-
-    def run_fn(project, provider):
-        calls.append((project.name, provider))
-        return {}
-
-    outcome = run_once(client, [project], registry, run_fn, default_providers=["claude"])
-
-    assert outcome.ran is False
-    assert calls == []
 
 
 def test_run_once_executes_and_syncs_full_state_back_to_trello():
@@ -57,7 +39,7 @@ def test_run_once_executes_and_syncs_full_state_back_to_trello():
     outcome = run_once(client, [project], registry, run_fn, default_providers=["claude"])
 
     assert outcome.ran is True
-    assert outcome.provider == "claude"
+    assert outcome.provider == "provider-broker"
 
     id_to_name, _ = build_list_maps(client)
     reloaded = project_from_card(client.get_card(project.trello_card_id), id_to_name)
@@ -67,7 +49,7 @@ def test_run_once_executes_and_syncs_full_state_back_to_trello():
     assert reloaded.stop_reason == "provider session limit hit"
     assert reloaded.retry_after == "2026-01-01T00:30:00+00:00"
     assert reloaded.status == ProjectStatus.PAUSED
-    assert reloaded.provider == "claude"
+    assert reloaded.provider == "provider-broker"
 
 
 def test_run_once_applies_limited_status_from_successful_failover_receipt():
@@ -171,7 +153,7 @@ def test_run_once_runs_next_project_when_highest_priority_is_locked():
 
     assert outcome.ran is True
     assert outcome.project_name == "Available"
-    assert calls == [("Available", "claude")]
+    assert calls == [("Available", "provider-broker")]
 
 
 def test_run_once_may_refresh_lock_owned_by_same_holder():
@@ -475,109 +457,6 @@ def test_run_once_closes_card_once_every_dod_item_is_verified():
     assert all(item.checked for item in reloaded.dod)
 
 
-def test_run_once_never_contacts_slack_when_not_explicitly_enabled(monkeypatch):
-    """Regression guard for false Slack notifications from test/verification
-    runs (2026-08-26 incident): even with a webhook URL present in the
-    environment - as a developer shell or verification script might inherit
-    it - run_once() must not reach the network unless AI_PM_SLACK_ENABLED is
-    explicitly set, matching production's opt-in wiring in
-    scripts/run-ai-project-manager.ps1."""
-    monkeypatch.delenv("AI_PM_SLACK_ENABLED", raising=False)
-    monkeypatch.setenv("SLACK_WEBHOOK_URL", "https://hooks.slack.invalid/should-not-be-used")
-    calls = []
-    monkeypatch.setattr(slack_notify.requests, "post", lambda *a, **k: calls.append((a, k)))
-
-    project = ProjectRecord(name="Demo", priority=3, status=ProjectStatus.READY)
-    client = make_client_with_project(project)
-    registry = ProviderRegistry()
-    registry.mark_available("claude")
-
-    outcome = run_once(
-        client, [project], registry, lambda _p, _pr: {"status": "done"}, default_providers=["claude"]
-    )
-
-    assert outcome.ran is True
-    assert calls == []
-
-
-def test_run_once_notifies_slack_start_and_done_when_explicitly_enabled(monkeypatch):
-    """Mirrors the real production opt-in: scripts/run-ai-project-manager.ps1
-    sets both SLACK_WEBHOOK_URL and AI_PM_SLACK_ENABLED='1' before a real
-    --once run. With that same wiring, a completed run must still announce
-    both the start and the completion, so the isolation fix for test/
-    verification runs does not silently break production notifications."""
-    monkeypatch.setenv("SLACK_WEBHOOK_URL", "https://hooks.slack.invalid/prod")
-    monkeypatch.setenv("AI_PM_SLACK_ENABLED", "1")
-    calls = []
-
-    class FakeResponse:
-        status_code = 200
-
-    def fake_post(*args, **kwargs):
-        calls.append(kwargs.get("json", {}).get("text", ""))
-        return FakeResponse()
-
-    monkeypatch.setattr(slack_notify.requests, "post", fake_post)
-
-    project = ProjectRecord(name="Demo", priority=3, status=ProjectStatus.READY)
-    client = make_client_with_project(project)
-    registry = ProviderRegistry()
-    registry.mark_available("claude")
-    registry.configure_models("claude", ["claude-opus-4-1", "claude-sonnet-4"])
-
-    outcome = run_once(
-        client, [project], registry, lambda _p, _pr: {"status": "done"}, default_providers=["claude"]
-    )
-
-    assert outcome.ran is True
-    assert len(calls) == 2
-    assert "PM zahajuje práci" in calls[0] and "Demo" in calls[0]
-    assert "proč: provider je první dostupný" in calls[0]
-    assert "nakonfigurovaný model claude-opus-4-1" in calls[0]
-    assert "Průběžný stav: PM ukončil tick" in calls[1] and "audit" in calls[1].lower()
-    assert "total=n/a" in calls[1]
-
-
-def test_run_once_slack_explains_actual_model_after_provider_failover(monkeypatch):
-    monkeypatch.setenv("SLACK_WEBHOOK_URL", "https://hooks.slack.invalid/prod")
-    monkeypatch.setenv("AI_PM_SLACK_ENABLED", "1")
-    calls = []
-
-    class FakeResponse:
-        status_code = 200
-
-    def fake_post(*args, **kwargs):
-        calls.append(kwargs.get("json", {}).get("text", ""))
-        return FakeResponse()
-
-    monkeypatch.setattr(slack_notify.requests, "post", fake_post)
-
-    project = ProjectRecord(name="Demo", priority=3, status=ProjectStatus.READY)
-    client = make_client_with_project(project)
-    registry = ProviderRegistry()
-    registry.mark_available("antigravity")
-
-    outcome = run_once(
-        client,
-        [project],
-        registry,
-        lambda _project, _provider: {
-            "status": "done",
-            "active_provider": "codex",
-            "active_model": "gpt-5.6-luna",
-            "provider_sequence": ["antigravity", "codex"],
-        },
-        default_providers=["antigravity", "codex"],
-    )
-
-    assert outcome.ran is True
-    assert len(calls) == 2
-    assert "codex | model: gpt-5.6-luna" in calls[1]
-    assert "provider codex byl použit po failoveru z antigravity" in calls[1]
-    assert "model gpt-5.6-luna je pro implementaci skutečně použitý model providera" in calls[1]
-    assert project.extra_data["provider_selection"]["provider_reason"] in calls[1]
-
-
 def test_run_once_does_not_report_unconfirmed_configured_model():
     project = ProjectRecord(name="Demo", priority=3, status=ProjectStatus.READY)
     client = make_client_with_project(project)
@@ -595,7 +474,7 @@ def test_run_once_does_not_report_unconfirmed_configured_model():
 
     assert outcome.ran is True
     assert project.extra_data["provider_selection"]["model"] is None
-    assert "must-not-be-forwarded" in project.extra_data["provider_selection"]["provider_reason"]
+    assert "AO vybere model podle vlastní konfigurace" in project.extra_data["provider_selection"]["provider_reason"]
 
 
 def test_run_once_audit_is_the_only_path_to_hotovo():
@@ -671,8 +550,8 @@ def test_run_once_audit_applies_limited_status_from_successful_failover_receipt(
     assert registry.get_status("codex").state == ProviderState.AVAILABLE
 
 
-def test_run_once_audit_selects_quality_model_from_provider_catalog():
-    """Audit uses the last model in the provider's ordered catalog."""
+def test_run_once_audit_does_not_select_model_from_pm_catalog():
+    """Audit leaves model selection to AO even when PM has legacy catalog data."""
     project = ProjectRecord(
         name="Demo",
         priority=3,
@@ -698,10 +577,10 @@ def test_run_once_audit_selects_quality_model_from_provider_catalog():
 
     assert outcome.ran is True
     assert project.extra_data["provider_selection"]["model"] is None
-    assert "nakonfigurovaný model claude-opus-4-1" in project.extra_data["provider_selection"]["provider_reason"]
+    assert "AO vybere model podle vlastní konfigurace" in project.extra_data["provider_selection"]["provider_reason"]
 
 
-def test_implementation_receipt_preserves_catalog_for_following_audit_dispatch():
+def test_implementation_receipt_does_not_drive_following_audit_model():
     project = ProjectRecord(
         name="Demo",
         priority=3,
@@ -752,7 +631,7 @@ def test_implementation_receipt_preserves_catalog_for_following_audit_dispatch()
     )
 
     assert audit.ran is True
-    assert dispatched == [("claude-opus-4-1", "claude")]
+    assert dispatched == [(None, "provider-broker")]
 
 
 def test_run_once_audit_rejected_returns_concrete_feedback_to_pracuje_se():
@@ -817,7 +696,9 @@ def test_run_once_audit_records_provider_capability_limit_for_plan_without_verdi
     )
 
     assert outcome.ran is True
-    assert registry.is_capability_limited(
+    # Provider capability/availability is broker-owned in v2; PM records the
+    # audit outcome but must not mutate its own provider registry.
+    assert not registry.is_capability_limited(
         "antigravity", "audit:station agent:propagation a scoring"
     )
 
@@ -1142,8 +1023,10 @@ def test_run_once_audit_marks_provider_error_and_preserves_testing_on_missing_ve
     assert outcome.ran is True
     assert project.status == ProjectStatus.TESTING
     assert "installation_id" in project.stop_reason
-    assert registry.get_status("antigravity").state == "ERROR"
-    assert registry.get_status("antigravity").retry_after is not None
+    # Provider error state and retry timing are published by the provider to
+    # provider-broker, not inferred or persisted by PM.
+    assert registry.get_status("antigravity").state == "AVAILABLE"
+    assert registry.get_status("antigravity").retry_after is None
 
 
 def test_run_once_audit_returns_incomplete_testing_card_to_work_without_ai_call():

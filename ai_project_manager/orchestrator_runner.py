@@ -62,13 +62,18 @@ from typing import Callable, Optional
 from .dod_validator import (
     RunCommand,
     default_run_command,
+    get_git_branch,
+    get_git_diff_check,
     get_git_head,
+    get_git_remote_branch_head,
     get_git_status,
     validate_project_dod,
 )
 from .models import ProjectRecord
 from .inbox_preparation import (
     PreparedTask,
+    VERIFICATION_EVIDENCE_TYPES,
+    VerificationPlan,
     enforce_indivisible_inbox_source_contract,
     inbox_source_text,
     is_explicit_indivisible_inbox_source,
@@ -84,8 +89,6 @@ from .orchestrator_handoff import (
 )
 from .providers import (
     ProviderRegistry,
-    TASK_AUDIT,
-    TASK_IMPLEMENTATION,
     TASK_INBOX_PLANNING,
     detect_limit,
 )
@@ -93,8 +96,22 @@ from .scheduler import audit_capability_key
 
 logger = logging.getLogger("ai_project_manager")
 
-# command (argv, already including --project/--goal/--spec/--agent/
-# --provider-models or --model when a model is configured/selected, plus
+# AI Project Manager v2: one source task becomes compact provider-ready text.
+# These bounds are part of the PM -> AO Inbox planning contract and prevent a
+# planner from copying a whole card/protocol into every future worker prompt.
+INBOX_PLANNER_TEXT_LIMITS = {
+    "scope": 240,
+    "task": 900,
+    "next_step": 360,
+    "priority_reason": 320,
+    "split_reason": 320,
+    "verification.reason": 320,
+    "source_refs": 120,
+}
+
+_PROCESS_CLEANUP_TIMEOUT_SECONDS = 5.0
+
+# command (argv, already including --project/--goal/--spec/--agent/ plus
 # --run-id) -> a
 # subprocess.CompletedProcess-like object with
 # .returncode, .stdout, .stderr. Injectable so tests never spawn a real
@@ -111,33 +128,6 @@ _PROVIDER_FAILURE_BACKOFF = timedelta(minutes=30)
 _DEFAULT_SPEC_DIR = "specs"
 _RUNTIME_CONTRACT_PATH = Path(__file__).resolve().parents[2] / "AI_PROJECT_RUNTIME.md"
 _DEFAULT_OUTBOX_DIR = "outbox"
-
-# Project Manager's own provider registry/locking/Trello state always
-# uses its own stable provider name (e.g. "claude") - never anything
-# translated. Only the argv/spec handed to the real ai-orchestrator CLI
-# needs its agent identifier, which is not always the same string; this
-# is the single place that translation happens.
-DEFAULT_PROVIDER_AGENT_MAP = {"claude": "claude-code"}
-
-# PM retired Gemini after its account/project restriction was confirmed. This
-# is passed only to AO failover invocations from PM.
-PM_FAILOVER_PROVIDER_ORDER = ("groq", "antigravity", "claude-code", "codex")
-
-
-def _pm_provider_name(
-    agent_name: Optional[str],
-    provider_registry: ProviderRegistry,
-    provider_agent_map: Optional[dict] = None,
-) -> Optional[str]:
-    """Map an AO agent name back to the canonical PM registry identity."""
-    if not agent_name:
-        return None
-    matches = [
-        name for name in provider_registry.registered_names()
-        if map_provider_to_agent(name, provider_agent_map) == agent_name
-    ]
-    return matches[0] if matches else agent_name
-
 
 def _retry_deadline_from_receipt(
     receipt: dict,
@@ -167,98 +157,6 @@ def _retry_deadline_from_receipt(
     except (TypeError, ValueError, OverflowError):
         pass
     return now + fallback
-
-
-def _tick_provider_order(
-    provider: str,
-    provider_registry: ProviderRegistry,
-    project: Optional[ProjectRecord] = None,
-    provider_agent_map: Optional[dict] = None,
-) -> list[str]:
-    """Start AO with only providers currently allowed by PM.
-
-    A provider that is LIMITED/ERROR is a global cooldown.  It must not be
-    reintroduced into the AO failover chain for a later workflow step before
-    its persisted ``retry_after`` deadline.  The PM name ``claude`` is
-    translated to AO's ``claude-code`` agent while availability remains keyed
-    by the PM registry name.
-    """
-    if provider.casefold() == "auto":
-        # ``auto`` is a PM-only alias.  AO accepts ``--agent auto`` to enable
-        # failover, but every item in ``--provider-order`` must be a real AO
-        # agent name.  Resolve the first available real provider here so the
-        # command cannot fail with ``unknown provider: auto``.
-        selected_agent = next(
-            (
-                candidate
-                for candidate in PM_FAILOVER_PROVIDER_ORDER
-                if _agent_is_available(candidate, provider_registry, provider_agent_map)
-            ),
-            None,
-        )
-        if selected_agent is None:
-            return []
-    else:
-        selected_agent = map_provider_to_agent(provider, provider_agent_map)
-    order = [selected_agent, *[name for name in PM_FAILOVER_PROVIDER_ORDER if name != selected_agent]]
-    order = [
-        name for name in order
-        if _agent_is_available(name, provider_registry, provider_agent_map)
-    ]
-    if project is not None:
-        capability_key = audit_capability_key(project)
-        order = [name for name in order if not provider_registry.is_capability_limited(name, capability_key)]
-    return order
-
-
-def _agent_is_available(
-    agent_name: str,
-    provider_registry: ProviderRegistry,
-    provider_agent_map: Optional[dict] = None,
-) -> bool:
-    """Check AO agent availability using PM provider identities."""
-    mapped_names = [
-        name for name in provider_registry.registered_names()
-        if map_provider_to_agent(name, provider_agent_map) == agent_name
-    ]
-    if mapped_names:
-        # The first configured PM identity is canonical when a legacy alias
-        # and the AO agent name are both present in the registry.
-        return provider_registry.is_available(mapped_names[0])
-    return provider_registry.is_available(agent_name)
-
-
-def map_provider_to_agent(provider: str, provider_agent_map: Optional[dict] = None) -> str:
-    """Translate a Project Manager provider name into the agent
-    identifier ai-orchestrator's ``--agent`` expects. Unknown providers
-    pass through unchanged."""
-    mapping = provider_agent_map if provider_agent_map is not None else DEFAULT_PROVIDER_AGENT_MAP
-    return mapping.get(provider, provider)
-
-
-def _provider_model_overrides(
-    provider_registry: ProviderRegistry,
-    task_type: str,
-    *,
-    provider_agent_map: Optional[dict] = None,
-    provider_names: Optional[list[str] | tuple[str, ...]] = None,
-) -> dict[str, str]:
-    """Build AO's provider-specific model map for one workflow phase.
-
-    The PM registry stores an ordered catalog per PM provider: the first
-    entry is used for planning/implementation and the last for audit. AO
-    receives exact provider-keyed overrides, so failover never reuses a
-    model slug belonging to another provider.
-    """
-    names = provider_names or provider_registry.registered_names()
-    overrides: dict[str, str] = {}
-    for provider in names:
-        model = provider_registry.model_for_task(provider, task_type)
-        if not model:
-            continue
-        agent_name = map_provider_to_agent(provider, provider_agent_map)
-        overrides.setdefault(agent_name, model)
-    return overrides
 
 
 def _default_run_id() -> str:
@@ -291,13 +189,8 @@ def _default_subprocess_run(
     timeout: Optional[float] = None,
     **kwargs,
 ) -> "subprocess.CompletedProcess":
-    return subprocess.run(
-        command,
-        capture_output=True,
-        text=True,
-        check=False,
-        timeout=timeout,
-    )
+    """Run any external AO command with timeout-safe child-tree cleanup."""
+    return _bounded_subprocess_run(command, timeout=timeout, **kwargs)
 
 
 def _bounded_subprocess_run(
@@ -305,7 +198,7 @@ def _bounded_subprocess_run(
     timeout: Optional[float] = None,
     **kwargs,
 ) -> "subprocess.CompletedProcess":
-    """Run the Inbox planner without waiting on orphaned provider pipes."""
+    """Run an external AO command without waiting on orphaned child pipes."""
     kwargs.setdefault("capture_output", True)
     kwargs.setdefault("text", True)
     kwargs.setdefault("check", False)
@@ -333,7 +226,22 @@ def _bounded_subprocess_run(
         stdout, stderr = process.communicate(input=input_data, timeout=timeout)
     except subprocess.TimeoutExpired:
         _terminate_process_tree(process)
-        stdout, stderr = process.communicate()
+        try:
+            process.communicate(timeout=_PROCESS_CLEANUP_TIMEOUT_SECONDS)
+        except subprocess.TimeoutExpired:
+            # A descendant can keep stdout/stderr open even after the parent
+            # was terminated. Never wait without a bound at this boundary.
+            try:
+                process.kill()
+            except OSError:
+                pass
+            for stream_name in ("stdin", "stdout", "stderr"):
+                stream = getattr(process, stream_name, None)
+                if stream is not None:
+                    try:
+                        stream.close()
+                    except OSError:
+                        pass
         raise
     result = subprocess.CompletedProcess(command, process.returncode, stdout, stderr)
     if check and result.returncode:
@@ -347,9 +255,74 @@ def _bounded_subprocess_run(
 
 
 def _plan_command(command: list) -> list:
-    """Turn the production autonomous command into the planner command."""
-    base = [part for part in command if part not in {"autonomous", "--no-commit"}]
+    """Build the v2 Inbox command from the configured AO executable.
+
+    Inbox intake has one routing owner: ai-orchestrator's provider-broker.
+    Strip routing options that may still be present in an older PM command
+    instead of forwarding them and creating a second provider/model selector.
+    The broker/provider layers are not touched here; PM only starts the
+    read-only ``plan-inbox`` request.
+    """
+    value_options = {
+        "--agent",
+        "--model",
+        "--provider-models",
+        "--provider-order",
+        "--provider-timeout-seconds",
+    }
+    base: list[str] = []
+    skip_value = False
+    for raw_part in command:
+        part = str(raw_part)
+        if skip_value:
+            skip_value = False
+            continue
+        if part in {"autonomous", "--no-commit"}:
+            continue
+        if part in value_options:
+            skip_value = True
+            continue
+        if any(part.startswith(option + "=") for option in value_options):
+            continue
+        base.append(raw_part)
     return base + ["plan-inbox"]
+
+
+def _refresh_provider_notes_command(command: list) -> list:
+    """Build the AO v2 command used for the single pre-intake refresh.
+
+    PM owns only this handoff.  The configured command normally contains the
+    autonomous mode used for project work; remove that mode and append the
+    dedicated AO broker command so no project task or provider is run here.
+    """
+    base: list[str] = []
+    skip_value = False
+    value_options = {
+        "--agent",
+        "--goal",
+        "--model",
+        "--project",
+        "--run-id",
+        "--spec",
+        "--test-command",
+        "--provider-models",
+        "--provider-order",
+        "--provider-timeout-seconds",
+    }
+    for raw_part in command:
+        part = str(raw_part)
+        if skip_value:
+            skip_value = False
+            continue
+        if part in {"autonomous", "run", "--no-commit", "--commit"}:
+            continue
+        if part in value_options:
+            skip_value = True
+            continue
+        if any(part.startswith(option + "=") for option in value_options):
+            continue
+        base.append(raw_part)
+    return base + ["refresh-provider-notes"]
 
 
 def _json_object(text: str) -> Optional[dict]:
@@ -380,6 +353,7 @@ def _planner_tasks(payload: dict, *, indivisible: bool) -> Optional[list[Prepare
     if enforce_indivisible_inbox_source_contract(tasks, indivisible=indivisible) is not None:
         return None
     result: list[PreparedTask] = []
+    seen_source_refs: set[str] = set()
     for item in tasks:
         if not isinstance(item, dict):
             return None
@@ -391,10 +365,22 @@ def _planner_tasks(payload: dict, *, indivisible: bool) -> Optional[list[Prepare
         project_key = item.get("project_key")
         work_type = item.get("work_type")
         split_reason = item.get("split_reason")
+        verification = item.get("verification")
+        source_refs = item.get("source_refs", ())
         depends_on = item.get("depends_on", [])
         if not all(
             isinstance(value, str) and value.strip()
             for value in (scope, task, next_step, priority_reason)
+        ):
+            return None
+        if any(
+            len(value.strip()) > INBOX_PLANNER_TEXT_LIMITS[field]
+            for field, value in (
+                ("scope", scope),
+                ("task", task),
+                ("next_step", next_step),
+                ("priority_reason", priority_reason),
+            )
         ):
             return None
         if not isinstance(depends_on, list):
@@ -404,6 +390,61 @@ def _planner_tasks(payload: dict, *, indivisible: bool) -> Optional[list[Prepare
                 not isinstance(optional_text, str) or not optional_text.strip()
             ):
                 return None
+        if (
+            split_reason is not None
+            and len(split_reason.strip()) > INBOX_PLANNER_TEXT_LIMITS["split_reason"]
+        ):
+            return None
+        verification_plan = None
+        if verification is not None:
+            if not isinstance(verification, dict):
+                return None
+            required = verification.get("required")
+            acceptable = verification.get("acceptable")
+            reason = verification.get("reason")
+            if (
+                not isinstance(required, list)
+                or not required
+                or not isinstance(acceptable, list)
+                or not isinstance(reason, str)
+                or not reason.strip()
+            ):
+                return None
+            if len(reason.strip()) > INBOX_PLANNER_TEXT_LIMITS["verification.reason"]:
+                return None
+            evidence = tuple(required + acceptable)
+            if (
+                any(
+                    not isinstance(item, str)
+                    or item not in VERIFICATION_EVIDENCE_TYPES
+                    for item in evidence
+                )
+                or len(set(required)) != len(required)
+                or len(set(acceptable)) != len(acceptable)
+                or set(required) & set(acceptable)
+            ):
+                return None
+            verification_plan = VerificationPlan(
+                required=tuple(required),
+                acceptable=tuple(acceptable),
+                reason=reason.strip(),
+            )
+        if not isinstance(source_refs, (list, tuple)):
+            return None
+        if any(
+            not isinstance(source_ref, str) or not source_ref.strip()
+            for source_ref in source_refs
+        ) or len(set(source_refs)) != len(source_refs):
+            return None
+        if any(
+            len(source_ref.strip()) > INBOX_PLANNER_TEXT_LIMITS["source_refs"]
+            for source_ref in source_refs
+        ):
+            return None
+        normalized_source_refs = tuple(source_ref.strip() for source_ref in source_refs)
+        if seen_source_refs.intersection(normalized_source_refs):
+            return None
+        seen_source_refs.update(normalized_source_refs)
         if isinstance(priority, bool) or not isinstance(priority, (int, float)):
             return None
         if not math.isfinite(float(priority)) or not 0 <= float(priority) < 6:
@@ -420,6 +461,8 @@ def _planner_tasks(payload: dict, *, indivisible: bool) -> Optional[list[Prepare
                 project_key=str(project_key).strip() if project_key is not None else None,
                 work_type=str(work_type).strip() if work_type is not None else None,
                 split_reason=str(split_reason).strip() if split_reason is not None else None,
+                verification=verification_plan,
+                source_refs=normalized_source_refs,
             )
         )
     if len({task.priority for task in result}) != len(result):
@@ -431,50 +474,114 @@ def _planner_tasks(payload: dict, *, indivisible: bool) -> Optional[list[Prepare
     return result
 
 
-INBOX_PLANNER_PROVIDERS = ("groq", "antigravity", "claude", "codex")
+def _planner_payload_diagnostic(payload: object, *, indivisible: bool) -> str:
+    """Describe the first observable planner-contract defect.
 
-
-def _apply_central_provider_statuses(
-    provider_registry: ProviderRegistry,
-    provider_statuses: object,
-    *,
-    fallback_reason: str,
-    provider_agent_map: Optional[dict] = None,
-) -> None:
-    """Project one AO failover receipt into PM's persistent health cache."""
-    if not isinstance(provider_statuses, dict):
-        return
-    now = datetime.now(timezone.utc)
-    for agent_name, receipt in provider_statuses.items():
-        if not isinstance(agent_name, str) or not isinstance(receipt, dict):
-            continue
-        pm_name = _pm_provider_name(agent_name, provider_registry, provider_agent_map)
-        if pm_name is None:
-            continue
-        state = receipt.get("state")
-        reason = str(receipt.get("reason") or fallback_reason)
-        if state == "LIMITED":
-            provider_registry.mark_limited(
-                pm_name,
-                retry_after=_retry_deadline_from_receipt(
-                    receipt, now=now, fallback=_DEFAULT_LIMIT_BACKOFF
-                ),
-                reason=reason,
+    The validator remains fail-closed. This companion reports only structural
+    facts so the PM log can explain why an Inbox card stayed in place without
+    dumping the potentially large provider response.
+    """
+    if not isinstance(payload, dict):
+        return "výstup planneru není JSON objekt"
+    tasks = payload.get("tasks")
+    if not isinstance(tasks, list):
+        return (
+            "pole tasks chybí nebo nemá typ array "
+            f"(payload_keys={sorted(str(key) for key in payload)})"
+        )
+    if not tasks:
+        return "pole tasks je prázdné"
+    required = (
+        "project_key", "scope", "task", "next_step", "priority",
+        "priority_reason", "work_type", "split_reason", "source_refs",
+        "verification", "depends_on",
+    )
+    for index, item in enumerate(tasks):
+        if not isinstance(item, dict):
+            return f"tasks[{index}] nemá typ object (typ={type(item).__name__})"
+        missing = [field for field in required if field not in item]
+        if missing:
+            return f"tasks[{index}] postrádá povinná pole: {', '.join(missing)}"
+        text_fields = (
+            "scope", "task", "next_step", "priority_reason", "work_type", "split_reason"
+        )
+        bad_text = [
+            field for field in text_fields
+            if not isinstance(item.get(field), str) or not item.get(field, "").strip()
+        ]
+        if bad_text:
+            return f"tasks[{index}] má prázdné nebo neřetězcové pole: {', '.join(bad_text)}"
+        oversized = [
+            f"{field}={len(item[field])}>{limit}"
+            for field, limit in INBOX_PLANNER_TEXT_LIMITS.items()
+            if field in item
+            and field != "source_refs"
+            and isinstance(item.get(field), str)
+            and len(item[field].strip()) > limit
+        ]
+        source_refs = item.get("source_refs")
+        if isinstance(source_refs, list) and any(
+            isinstance(ref, str) and len(ref.strip()) > INBOX_PLANNER_TEXT_LIMITS["source_refs"]
+            for ref in source_refs
+        ):
+            oversized.append(
+                "source_refs="
+                + str(max(len(ref.strip()) for ref in source_refs if isinstance(ref, str)))
+                + ">"
+                + str(INBOX_PLANNER_TEXT_LIMITS["source_refs"])
             )
-        elif state == "AVAILABLE":
-            provider_registry.mark_available(pm_name)
-        elif state in {
-            "UNAVAILABLE",
-            "ERROR",
-            "PROTOCOL_ERROR",
-            "BUDGET_EXCEEDED",
-            "TOKEN_BUDGET_EXCEEDED",
-        }:
-            provider_registry.mark_error(
-                pm_name,
-                reason,
-                retry_after=_PROVIDER_FAILURE_BACKOFF,
+        if oversized:
+            return f"tasks[{index}] obsahuje příliš dlouhý text: {', '.join(oversized)}"
+        project_key = item.get("project_key")
+        if project_key is not None and (
+            not isinstance(project_key, str) or not project_key.strip()
+        ):
+            return f"tasks[{index}].project_key musí být neprázdný string nebo null"
+        if not isinstance(item.get("depends_on"), list):
+            return f"tasks[{index}].depends_on nemá typ array"
+        source_refs = item.get("source_refs")
+        if not isinstance(source_refs, list) or not source_refs:
+            return f"tasks[{index}].source_refs musí být neprázdné pole"
+        if any(not isinstance(ref, str) or not ref.strip() for ref in source_refs):
+            return f"tasks[{index}].source_refs obsahuje prázdný nebo neřetězcový odkaz"
+        verification = item.get("verification")
+        if not isinstance(verification, dict):
+            return f"tasks[{index}].verification musí být objekt"
+        for field in ("required", "acceptable", "reason"):
+            if field not in verification:
+                return f"tasks[{index}].verification postrádá pole {field}"
+        if not isinstance(verification.get("required"), list) or not verification["required"]:
+            return f"tasks[{index}].verification.required musí být neprázdné pole"
+        if not isinstance(verification.get("acceptable"), list):
+            return f"tasks[{index}].verification.acceptable musí být pole"
+        if not isinstance(verification.get("reason"), str) or not verification["reason"].strip():
+            return f"tasks[{index}].verification.reason musí být neprázdný string"
+        if len(verification["reason"].strip()) > INBOX_PLANNER_TEXT_LIMITS["verification.reason"]:
+            return (
+                f"tasks[{index}].verification.reason je příliš dlouhé: "
+                f"{len(verification['reason'].strip())}>{INBOX_PLANNER_TEXT_LIMITS['verification.reason']}"
             )
+    priorities = [item.get("priority") for item in tasks]
+    if len(set(priorities)) != len(priorities):
+        return "priority hodnoty nejsou v rámci plánu unikátní"
+    try:
+        task_execution_order(
+            [
+                PreparedTask(
+                    title=str(item["scope"]), task=str(item["task"]),
+                    next_step=str(item["next_step"]), scope=str(item["scope"]),
+                    priority=float(item["priority"]), priority_reason=str(item["priority_reason"]),
+                    depends_on=tuple(item["depends_on"]), source_refs=tuple(item["source_refs"]),
+                )
+                for item in tasks
+            ]
+        )
+    except (TypeError, ValueError) as exc:
+        return f"závislosti plánu jsou neplatné: {exc}"
+    contract_violation = enforce_indivisible_inbox_source_contract(tasks, indivisible=indivisible)
+    if contract_violation:
+        return contract_violation
+    return "plán odmítnut validátorem; základní strukturální diagnostika nenašla detail"
 
 
 def build_inbox_planner_fn(
@@ -483,6 +590,7 @@ def build_inbox_planner_fn(
     *,
     subprocess_run: Optional[Callable[..., "subprocess.CompletedProcess"]] = None,
     timeout_seconds: float = 180,
+    provider_timeout_seconds: Optional[float] = None,
     selection_notifier: Optional[Callable[[dict], None]] = None,
     project_paths: Optional[dict] = None,
 ):
@@ -491,9 +599,6 @@ def build_inbox_planner_fn(
     The planner is a separate read-only ai-orchestrator command. It returns a
     validated task plan and never receives a real project checkout.
     """
-    # Keep this allowlist local to the planner so a general provider-order
-    # change can never leak an unsupported provider into intake.
-    allowed = INBOX_PLANNER_PROVIDERS
     planner_command = _plan_command(command)
     if subprocess_run is None:
         subprocess_run = functools.partial(_bounded_subprocess_run, timeout=timeout_seconds)
@@ -530,37 +635,19 @@ def build_inbox_planner_fn(
                 if str(project_key).strip()
             ],
         }
-        available = tuple(
-            candidate for candidate in allowed
-            if provider_registry.is_available(candidate)
-        )
-        if not available:
-            return None
-        provider_order = [map_provider_to_agent(provider) for provider in available]
-        provider_models = _provider_model_overrides(
-            provider_registry,
-            TASK_INBOX_PLANNING,
-            provider_names=available,
-        )
-        selected_model = provider_models.get(provider_order[0])
         provider_reason = (
-            "ai-orchestrator centrálně zvolí první dostupný provider z pořadí "
-            + ", ".join(provider_order)
-            + "; PM pouze předává povolené pořadí a nepouští vlastní failover smyčku"
+            "PM předává požadavek AO; jediný provider-broker v AO ověří všechny providery "
+            "a vybere právě jednoho"
         )
         model_reason = (
-            "PM předává provider-specific model map pro intake"
-            + (
-                f"; první kandidát {selected_model!r}"
-                if selected_model
-                else "; bez explicitního override používá provider svůj default"
-            )
+            "AO vybere model podle vlastní konfigurace a skutečně použitý model "
+            "potvrdí v receiptu"
         )
         selection = {
             "source_card_id": request["card"]["id"],
             "source_card_name": request["card"]["name"],
-            "provider": "auto",
-            "model": selected_model or "provider-specific AO defaults",
+            "provider": "provider-broker",
+            "model": "AO model bude potvrzen po běhu",
             "provider_reason": provider_reason,
             "model_reason": model_reason,
             "task_type": TASK_INBOX_PLANNING,
@@ -570,14 +657,11 @@ def build_inbox_planner_fn(
                 selection_notifier(selection)
             except Exception:  # noqa: BLE001 - observability must not block intake
                 logger.exception("Inbox planner selection notification failed")
-        full_command = planner_command + [
-            "--agent", "auto",
-            "--provider-order", ",".join(provider_order),
-        ]
-        if provider_models:
+        full_command = planner_command + ["--agent", "provider-broker"]
+        if provider_timeout_seconds is not None:
             full_command += [
-                "--provider-models",
-                json.dumps(provider_models, ensure_ascii=False, separators=(",", ":")),
+                "--provider-timeout-seconds",
+                str(provider_timeout_seconds),
             ]
         try:
             completed = subprocess_run(
@@ -586,22 +670,38 @@ def build_inbox_planner_fn(
             )
         except Exception as exc:  # noqa: BLE001 - central planner is fail-closed
             reason = f"Inbox planner selhal: {type(exc).__name__}"
-            for provider in available:
-                provider_registry.mark_error(provider, reason, _PROVIDER_FAILURE_BACKOFF)
             logger.warning("Centrální Inbox planner nedokončil volání: %s", type(exc).__name__)
             return None
         envelope = _json_object((completed.stdout or "") + "\n" + (completed.stderr or ""))
         if not envelope:
             reason = "Inbox planner nevrátil JSON envelope"
-            for provider in available:
-                provider_registry.mark_error(provider, reason, _PROVIDER_FAILURE_BACKOFF)
+            logger.warning(
+                "Inbox planner rejected card id=%s: %s",
+                request["card"]["id"],
+                reason,
+            )
             return None
-        _apply_central_provider_statuses(
-            provider_registry,
-            envelope.get("provider_statuses"),
-            fallback_reason=str(envelope.get("error") or "Inbox planner selhal"),
-        )
         if not envelope.get("success"):
+            reason = (
+                "provider envelope byl neúspěšný: "
+                f"error={str(envelope.get('error') or 'none')[:500]}, "
+                f"limited={envelope.get('limited')}, unavailable={envelope.get('unavailable')}, "
+                f"timed_out={envelope.get('timed_out')}"
+            )
+            logger.warning(
+                "Inbox planner rejected card id=%s: provider envelope was unsuccessful "
+                "provider=%s model=%s error=%s limited=%s unavailable=%s timed_out=%s "
+                "selection_reason=%s provider_statuses=%s",
+                request["card"]["id"],
+                envelope.get("provider") or envelope.get("active_provider") or "unknown",
+                envelope.get("model") or "unknown",
+                str(envelope.get("error") or "none")[:500],
+                envelope.get("limited"),
+                envelope.get("unavailable"),
+                envelope.get("timed_out"),
+                str(envelope.get("selection_reason") or "none")[:500],
+                envelope.get("provider_statuses") or {},
+            )
             return None
         plan_payload = _json_object(str(envelope.get("output") or ""))
         tasks = _planner_tasks(plan_payload or {}, indivisible=indivisible)
@@ -611,21 +711,20 @@ def build_inbox_planner_fn(
                 indivisible=indivisible,
             )
             reason = contract_violation or "AI Inbox planner vrátil neplatný task plán"
-            active_provider = _pm_provider_name(
-                envelope.get("provider") or envelope.get("active_provider"),
-                provider_registry,
+            diagnostic = _planner_payload_diagnostic(plan_payload, indivisible=indivisible)
+            logger.warning(
+                "Inbox planner rejected card id=%s: %s; detail=%s; output_chars=%s; "
+                "output_json=%s",
+                request["card"]["id"],
+                reason,
+                diagnostic,
+                len(str(envelope.get("output") or "")),
+                plan_payload is not None,
             )
-            if active_provider:
-                provider_registry.mark_error(
-                    active_provider,
-                    reason,
-                    _PROVIDER_FAILURE_BACKOFF,
-                )
             return None
-        actual_provider = _pm_provider_name(
-            envelope.get("provider") or envelope.get("active_provider"),
-            provider_registry,
-        ) or str(envelope.get("provider") or envelope.get("active_provider") or "auto")
+        actual_provider = str(
+            envelope.get("provider") or envelope.get("active_provider") or "provider-broker"
+        )
         actual_model = envelope.get("model")
         if not isinstance(actual_model, str) or not actual_model.strip():
             actual_model = None
@@ -649,7 +748,7 @@ def build_inbox_planner_fn(
             "provider_sequence": (
                 envelope.get("provider_sequence")
                 if isinstance(envelope.get("provider_sequence"), list)
-                else provider_order
+                else []
             ),
             "usage": (
                 envelope.get("usage")
@@ -660,6 +759,44 @@ def build_inbox_planner_fn(
         }
 
     return plan
+
+
+def build_provider_refresh_fn(
+    command: list,
+    *,
+    subprocess_run: Optional[Callable[..., "subprocess.CompletedProcess"]] = None,
+    timeout_seconds: float = 180,
+):
+    """Build PM's one-shot handoff to AO's broker refresh command.
+
+    The returned callable performs no provider work itself.  It starts AO,
+    which constructs the broker and asks it for ``refresh_provider_notes``.
+    """
+    refresh_command = _refresh_provider_notes_command(command)
+    if subprocess_run is None:
+        subprocess_run = functools.partial(_bounded_subprocess_run, timeout=timeout_seconds)
+
+    def refresh() -> bool:
+        try:
+            completed = subprocess_run(refresh_command)
+        except Exception as exc:  # noqa: BLE001 - refresh failure is fail-closed at intake
+            logger.warning(
+                "AO provider refresh handoff failed: %s",
+                type(exc).__name__,
+            )
+            return False
+        payload = _json_object((completed.stdout or "") + "\n" + (completed.stderr or ""))
+        if completed.returncode != 0 or not payload or payload.get("success") is not True:
+            logger.warning(
+                "AO provider refresh rejected: returncode=%s error=%s",
+                completed.returncode,
+                str((payload or {}).get("error") or "missing JSON success envelope")[:500],
+            )
+            return False
+        logger.info("AO provider refresh completed before Inbox intake")
+        return True
+
+    return refresh
 
 
 class OrchestratorProcessError(RuntimeError):
@@ -996,50 +1133,14 @@ def _mark_limited_result(
     provider_sequence: Optional[list] = None,
     usage: Optional[dict] = None,
     provider_statuses: Optional[dict] = None,
-    provider_agent_map: Optional[dict] = None,
 ) -> dict:
-    # On a failover wait the selected provider is not necessarily the one
-    # that produced the terminal limit. Preserve AO's receipt so PM does not
-    # write the original selection back as the actual provider.
     receipt_statuses = provider_statuses if isinstance(provider_statuses, dict) else {}
     now = datetime.now(timezone.utc)
-    limited_names: list[str] = []
-    for agent_name, receipt in receipt_statuses.items():
-        if not isinstance(agent_name, str) or not isinstance(receipt, dict):
-            continue
-        if receipt.get("state") != "LIMITED":
-            continue
-        pm_name = _pm_provider_name(agent_name, provider_registry, provider_agent_map)
-        if pm_name is None:
-            continue
-        provider_registry.mark_limited(
-            pm_name,
-            retry_after=_retry_deadline_from_receipt(
-                receipt, now=now, fallback=_DEFAULT_LIMIT_BACKOFF
-            ),
-            checkpoint=checkpoint if checkpoint is not None else project.checkpoint,
-            reason=str(receipt.get("reason") or reason),
-        )
-        limited_names.append(pm_name)
-
-    limited_provider = _pm_provider_name(active_provider, provider_registry, provider_agent_map) or provider
-    if limited_provider not in limited_names:
-        # Backward-compatible path for AO receipts without the new snapshot.
-        provider_registry.mark_limited(
-            limited_provider,
-            retry_after=retry_after,
-            checkpoint=checkpoint if checkpoint is not None else project.checkpoint,
-            reason=reason,
-        )
-    status = provider_registry.get_status(limited_provider)
-    # For an implementation run, a provider/session limit is a recoverable
-    # workflow wait: persist the checkpoint and retry time in PAUSED so Trello
-    # visibly moves to "Čeká na AI". The audit caller deliberately ignores
-    # this status field and keeps its card in Testování until a verdict exists.
+    retry_at = now + retry_after
     result: dict = {
         "status": "paused",
         "stop_reason": f"provider session limit hit: {reason}",
-        "retry_after": status.retry_after.isoformat(),
+        "retry_after": retry_at.isoformat(),
     }
     if checkpoint is not None:
         result["checkpoint"] = checkpoint
@@ -1060,9 +1161,14 @@ def _status_paths(status_output: str) -> list[str]:
     """Extract repository-relative paths from raw ``git status --porcelain``."""
     paths = []
     for line in (status_output or "").splitlines():
-        if len(line) < 4:
+        if len(line) < 3:
             continue
-        path = line[3:].strip()
+        # ``get_git_status`` returns a stripped string, so an unstaged-only
+        # entry may have lost the porcelain format's first status-column
+        # space (`` M file`` becomes ``M file``).  Accept both forms while
+        # preserving the normal two-column form used by raw subprocess output.
+        path_start = 3 if len(line) >= 3 and line[2] == " " else 2
+        path = line[path_start:].strip()
         if " -> " in path:
             path = path.rsplit(" -> ", 1)[1]
         if path:
@@ -1123,6 +1229,84 @@ def _finalization_needs_refresh(project: ProjectRecord, project_path: str, run_g
         return False
     current_head = get_git_head(project_path, run_git=run_git)
     return bool(current_head and current_head != recorded_head)
+
+
+def _reconcile_existing_controller_commit(
+    project: ProjectRecord,
+    project_path: str,
+    run_git: RunCommand,
+    allowed_push_remotes: Optional[dict],
+) -> Optional[dict]:
+    """Recover a controller proof lost by a lifecycle-only card move.
+
+    A previous controller finalization may already have committed the
+    implementation before a Trello move or stale card write preserved the
+    completed implementation DoD but dropped the ``finalization`` checkpoint.
+    Calling the finalizer again then correctly finds only baseline dirty paths
+    and returns ``no current-task changes``.  Reconcile only the narrow,
+    verifiable case: a controller-finalization commit is at HEAD, the exact
+    allowed origin branch points to that HEAD, and every remaining dirty path
+    is one of the paths captured before the implementation run.  This does
+    not create, stage, push, or infer a new commit.
+    """
+    context = (project.checkpoint or {}).get("controller_finalization_context")
+    if not isinstance(context, dict) or not isinstance(context.get("preexisting_paths"), list):
+        return None
+
+    preexisting_paths = {
+        str(path).replace("\\", "/").strip()
+        for path in context["preexisting_paths"]
+        if isinstance(path, str) and path.strip()
+    }
+    current_head = get_git_head(project_path, run_git=run_git)
+    branch = get_git_branch(project_path, run_git=run_git)
+    allowed_remote = _identity_setting(allowed_push_remotes, project.project_key)
+    if not current_head or not branch or not allowed_remote:
+        return None
+
+    status_ok, status = get_git_status(project_path, run_git=run_git)
+    if not status_ok:
+        return None
+    dirty_paths = set(_status_paths(status))
+    if not dirty_paths.issubset(preexisting_paths):
+        return None
+
+    diff_ok, _ = get_git_diff_check(project_path, run_git=run_git)
+    if not diff_ok:
+        return None
+
+    subject = run_git(
+        ("git", "-C", project_path, "show", "-s", "--format=%s%n%b", current_head)
+    )
+    if subject.returncode != 0 or "controller finalization" not in subject.stdout.casefold():
+        return None
+
+    remote = run_git(("git", "-C", project_path, "remote", "get-url", "origin"))
+    if remote.returncode != 0 or remote.stdout.strip() != allowed_remote:
+        return None
+    remote_ok, remote_output = get_git_remote_branch_head(
+        project_path, branch, run_git=run_git
+    )
+    remote_head = remote_output.split()[0] if remote_ok and remote_output.strip() else None
+    if remote_head != current_head:
+        return None
+
+    return {
+        "status": "completed",
+        "done": True,
+        "committed": True,
+        "reconciled_existing_commit": True,
+        "clean": True,
+        "tests_passed": True,
+        "pushed": True,
+        "commit_hash": current_head,
+        "remote_commit": remote_head,
+        "remote": allowed_remote,
+        "branch": branch,
+        "preexisting_paths": sorted(dirty_paths),
+        "task_paths": [],
+        "scope_policy": "existing controller commit reconciled; preexisting paths preserved",
+    }
 
 
 def _controller_finalization_is_verified(
@@ -1331,6 +1515,20 @@ def build_finalize_fn(
                 path for path in context["preexisting_paths"]
                 if isinstance(path, str) and path.strip()
             ]
+        reconciled = _reconcile_existing_controller_commit(
+            project, project_path, git_cmd, allowed_push_remotes
+        )
+        if reconciled is not None:
+            checkpoint = dict(project.checkpoint or {})
+            checkpoint["finalization"] = reconciled
+            return {
+                "status": "done",
+                "checkpoint": checkpoint,
+                "already_verified": True,
+                "last_output": json.dumps(reconciled, ensure_ascii=False, separators=(",", ":")),
+                "stop_reason": "existing controller commit reconciled without a second commit",
+                "finalization": reconciled,
+            }
         goal = (
             f"Controller finalization: commit and push the verified, "
             f"already-implemented work for {project.name}."
@@ -1356,12 +1554,10 @@ def build_run_fn(
     read_outbox: ReadOutboxFn = _read_outbox_result,
     definition_of_done: Optional[list] = None,
     run_id_fn: Callable[[], str] = _default_run_id,
-    provider_agent_map: Optional[dict] = None,
     run_git: Optional[RunCommand] = None,
     finalize_command: Optional[list] = None,
     finalize_paths: Optional[dict] = None,
     allowed_push_remotes: Optional[dict] = None,
-    use_provider_failover: bool = False,
 ):
     """Build a ``run_fn(project, provider) -> dict`` that dispatches to the
     real ai-orchestrator ``--project``/``--goal``/``--spec``/``--agent``/
@@ -1391,23 +1587,10 @@ def build_run_fn(
         subprocess_run = functools.partial(_default_subprocess_run, timeout=timeout_seconds)
 
     def run_fn(project: ProjectRecord, provider: str) -> dict:
-        # The PM scheduler selects the first currently available provider for
-        # visibility and priority. Production dispatch must still let
-        # ai-orchestrator try the complete ordered chain in the same tick.
-        # Tests and explicit callers retain the old single-agent behavior
-        # unless they opt in.
-        agent_name = "auto" if use_provider_failover else map_provider_to_agent(provider, provider_agent_map)
-        # The PM selects a provider, not a model. Each provider owns its
-        # model policy and may choose an appropriate model from the task
-        # prompt. Never pass a stale PM-side --model override.
-        provider_model_overrides = _provider_model_overrides(
-            provider_registry,
-            TASK_IMPLEMENTATION,
-            provider_agent_map=provider_agent_map,
-        )
-        selected_model = provider_model_overrides.get(
-            map_provider_to_agent(provider, provider_agent_map)
-        )
+        # ``provider`` is workflow bookkeeping only. PM never resolves a
+        # provider or model: every production task goes through AO's central
+        # broker dispatch.
+        agent_name = "provider-broker"
         task = build_orchestrator_task(project, definition_of_done=definition_of_done, provider=agent_name)
 
         try:
@@ -1478,22 +1661,6 @@ def build_run_fn(
             "--spec", str(spec_path),
             "--agent", agent_name,
         ]
-        if use_provider_failover:
-            full_command += [
-                "--provider-order",
-                ",".join(_tick_provider_order(provider, provider_registry, project, provider_agent_map)),
-            ]
-            if provider_model_overrides:
-                full_command += [
-                    "--provider-models",
-                    json.dumps(
-                        provider_model_overrides,
-                        ensure_ascii=False,
-                        separators=(",", ":"),
-                    ),
-                ]
-        elif selected_model:
-            full_command += ["--model", selected_model]
         full_command += [
             "--run-id", run_id,
             "--implementation-only",
@@ -1567,7 +1734,6 @@ def build_run_fn(
                 provider_sequence=payload.get("provider_sequence"),
                 usage=payload.get("usage"),
                 provider_statuses=payload.get("provider_statuses"),
-                provider_agent_map=provider_agent_map,
             ))
 
         result: dict = {}
@@ -1649,9 +1815,7 @@ def build_audit_run_fn(
     timeout_seconds: Optional[float] = None,
     read_outbox: ReadOutboxFn = _read_outbox_result,
     run_id_fn: Callable[[], str] = _default_run_id,
-    provider_agent_map: Optional[dict] = None,
     run_git: Optional[RunCommand] = None,
-    use_provider_failover: bool = False,
 ):
     """Build an ``audit_run_fn(project, provider) -> dict`` that dispatches
     a Testování card to ai-orchestrator's audit-only mode and reads back
@@ -1680,15 +1844,9 @@ def build_audit_run_fn(
         subprocess_run = functools.partial(_default_subprocess_run, timeout=timeout_seconds)
 
     def audit_run_fn(project: ProjectRecord, provider: str) -> dict:
-        agent_name = "auto" if use_provider_failover else map_provider_to_agent(provider, provider_agent_map)
-        provider_model_overrides = _provider_model_overrides(
-            provider_registry,
-            TASK_AUDIT,
-            provider_agent_map=provider_agent_map,
-        )
-        selected_model = provider_model_overrides.get(
-            map_provider_to_agent(provider, provider_agent_map)
-        )
+        # Audit dispatch follows the same invariant: PM only starts AO and
+        # never selects or invokes a concrete provider.
+        agent_name = "provider-broker"
         task = build_audit_task(project, provider=agent_name)
 
         try:
@@ -1720,22 +1878,6 @@ def build_audit_run_fn(
             "--spec", str(spec_path),
             "--agent", agent_name,
         ]
-        if use_provider_failover:
-            full_command += [
-                "--provider-order",
-                ",".join(_tick_provider_order(provider, provider_registry, project, provider_agent_map)),
-            ]
-            if provider_model_overrides:
-                full_command += [
-                    "--provider-models",
-                    json.dumps(
-                        provider_model_overrides,
-                        ensure_ascii=False,
-                        separators=(",", ":"),
-                    ),
-                ]
-        elif selected_model:
-            full_command += ["--model", selected_model]
         full_command += [
             "--run-id", run_id,
             # Testování is an audit gate, not another implementation loop.
@@ -1802,7 +1944,6 @@ def build_audit_run_fn(
                 provider_sequence=payload.get("provider_sequence"),
                 usage=payload.get("usage"),
                 provider_statuses=payload.get("provider_statuses"),
-                provider_agent_map=provider_agent_map,
             )
 
         # ``orchestrator.py autonomous`` has no external verdict field. Its
@@ -1866,7 +2007,10 @@ def build_audit_run_fn(
                     "usage": payload.get("usage"),
                     **{
                         key: payload[key]
-                        for key in ("active_provider", "active_model", "model", "provider_sequence")
+                        for key in (
+                            "active_provider", "active_model", "model",
+                            "provider_sequence", "provider_statuses",
+                        )
                         if key in payload
                     },
                 }
@@ -1881,7 +2025,10 @@ def build_audit_run_fn(
                     "usage": payload.get("usage"),
                     **{
                         key: payload[key]
-                        for key in ("active_provider", "active_model", "model", "provider_sequence")
+                        for key in (
+                            "active_provider", "active_model", "model",
+                            "provider_sequence", "provider_statuses",
+                        )
                         if key in payload
                     },
                 }
@@ -1904,7 +2051,10 @@ def build_audit_run_fn(
                 "usage": payload.get("usage"),
                 **{
                     key: payload[key]
-                    for key in ("active_provider", "active_model", "model", "provider_sequence")
+                    for key in (
+                        "active_provider", "active_model", "model",
+                        "provider_sequence", "provider_statuses",
+                    )
                     if key in payload
                 },
             }
@@ -1925,7 +2075,10 @@ def build_audit_run_fn(
                 "usage": payload.get("usage"),
                 **{
                     key: payload[key]
-                    for key in ("active_provider", "active_model", "model", "provider_sequence")
+                    for key in (
+                        "active_provider", "active_model", "model",
+                        "provider_sequence", "provider_statuses",
+                    )
                     if key in payload
                 },
             }
@@ -1957,7 +2110,10 @@ def build_audit_run_fn(
             result["rejected_indices"] = report.rejected_indices
         if "checkpoint" in payload:
             result["checkpoint"] = payload["checkpoint"]
-        for key in ("active_provider", "active_model", "model", "provider_sequence", "usage"):
+        for key in (
+            "active_provider", "active_model", "model", "provider_sequence",
+            "provider_statuses", "usage",
+        ):
             if key in payload:
                 result[key] = payload[key]
         return result

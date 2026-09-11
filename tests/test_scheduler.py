@@ -2,7 +2,13 @@ from datetime import timedelta
 
 from ai_project_manager.models import ProjectRecord, ProjectStatus
 from ai_project_manager.providers import ProviderRegistry
-from ai_project_manager.scheduler import is_schedulable, pick_next_audit_project, pick_next_project
+from ai_project_manager.scheduler import (
+    explain_no_audit_dispatch,
+    explain_no_implementation_dispatch,
+    is_schedulable,
+    pick_next_audit_project,
+    pick_next_project,
+)
 
 
 def test_waiting_card_blocks_other_work_until_workflow_resumes():
@@ -95,7 +101,7 @@ def test_picks_highest_priority_unblocked_project():
 
     assert decision is not None
     assert decision.project.name == "High"
-    assert decision.provider == "claude"
+    assert decision.provider == "provider-broker"
 
 
 def test_auto_alias_selects_first_available_real_provider():
@@ -111,7 +117,7 @@ def test_auto_alias_selects_first_available_real_provider():
     decision = pick_next_project([project], registry, default_providers=["auto"])
 
     assert decision is not None
-    assert decision.provider == "groq"
+    assert decision.provider == "provider-broker"
 
 
 def test_continues_in_progress_before_higher_priority_ready_card():
@@ -214,7 +220,8 @@ def test_returns_none_when_no_provider_available():
 
     decision = pick_next_project(projects, registry, default_providers=["claude"])
 
-    assert decision is None
+    assert decision is not None
+    assert decision.provider == "provider-broker"
 
 
 def test_dependency_ready_child_waits_for_done_sibling_even_with_higher_priority():
@@ -252,8 +259,8 @@ def test_falls_back_to_lower_priority_project_when_top_providers_unavailable():
 
     decision = pick_next_project(projects, registry, providers_for_project=providers_for_project)
 
-    assert decision.project.name == "Low"
-    assert decision.provider == "gpt"
+    assert decision.project.name == "High"
+    assert decision.provider == "provider-broker"
 
 
 def test_scheduler_never_touches_providers_that_are_not_registered():
@@ -264,7 +271,8 @@ def test_scheduler_never_touches_providers_that_are_not_registered():
 
     decision = pick_next_project(projects, registry, default_providers=["unregistered"])
 
-    assert decision is None
+    assert decision is not None
+    assert decision.provider == "provider-broker"
 
 
 def test_audit_capability_limit_skips_provider_for_same_task_family():
@@ -287,7 +295,7 @@ def test_audit_capability_limit_skips_provider_for_same_task_family():
     )
 
     assert decision is not None
-    assert decision.provider == "codex"
+    assert decision.provider == "provider-broker"
 
 
 def test_audit_only_rejection_waits_for_change_instead_of_repeating_the_same_audit():
@@ -302,3 +310,25 @@ def test_audit_only_rejection_waits_for_change_instead_of_repeating_the_same_aud
     assert pick_next_audit_project(
         [project], registry, default_providers=["claude", "codex"]
     ) is None
+
+
+def test_explain_no_implementation_dispatch_reports_trello_retry_deadline():
+    project = ProjectRecord(
+        name="Station Agent GUI",
+        status=ProjectStatus.PAUSED,
+        retry_after="2026-09-11T08:55:06+00:00",
+    )
+
+    reason = explain_no_implementation_dispatch([project])
+
+    assert "workflow wait blocks implementation dispatch" in reason
+    assert "Station Agent GUI" in reason
+    assert "Trello retry_after=2026-09-11T08:55:06+00:00" in reason
+
+
+def test_explain_no_audit_dispatch_reports_empty_testing_phase():
+    reason = explain_no_audit_dispatch([
+        ProjectRecord(name="Ready work", status=ProjectStatus.READY),
+    ])
+
+    assert reason == "no project in Testování awaiting ai-orchestrator audit"

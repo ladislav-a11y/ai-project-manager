@@ -2,7 +2,6 @@
 param(
     [switch]$Once,
     [switch]$MaintainOnly,
-    [switch]$SlackProbe,
     [string]$PythonExe = $env:AI_PM_PYTHON_EXE,
     [string]$OrchestratorRoot,
     [string]$StationAgentRoot,
@@ -41,8 +40,8 @@ $inheritedProviderModels = $env:AI_PM_PROVIDER_MODELS
 if ($PollIntervalSeconds -lt 1) {
     throw 'PollIntervalSeconds must be at least 1.'
 }
-if (($Once -and $MaintainOnly) -or ($Once -and $SlackProbe) -or ($MaintainOnly -and $SlackProbe)) {
-    throw 'Once, MaintainOnly, and SlackProbe are mutually exclusive.'
+if ($Once -and $MaintainOnly) {
+    throw 'Once and MaintainOnly are mutually exclusive.'
 }
 
 if (-not (Test-Path -LiteralPath $secretPath -PathType Leaf)) {
@@ -80,8 +79,6 @@ try {
     $env:TRELLO_KEY = ConvertFrom-ProtectedString $credentials.TrelloKey
     $env:TRELLO_TOKEN = ConvertFrom-ProtectedString $credentials.TrelloToken
     $env:TRELLO_BOARD_ID = ConvertFrom-ProtectedString $credentials.TrelloBoardId
-    $env:SLACK_WEBHOOK_URL = ConvertFrom-ProtectedString $credentials.SlackWebhookUrl
-    $env:AI_PM_SLACK_ENABLED = '1'
 
     # The locally installed Codex CLI does not reliably derive the Windows
     # home directory from the service/launcher environment.  Give it the
@@ -125,9 +122,9 @@ try {
         }
         $env:AI_PM_PROVIDERS = $ProviderOverride.Trim()
     }
-    # Preserve an operator-configured provider -> model catalog so PM can pass
-    # provider-specific overrides to AO. An empty value means that each
-    # provider keeps its configured/default model.
+    # Preserve an operator-configured legacy provider -> model catalog for
+    # backward-compatible state/diagnostics. Production PM dispatch passes
+    # only the provider allowlist; AO owns model selection.
     if ([string]::IsNullOrWhiteSpace($inheritedProviderModels)) {
         $env:AI_PM_PROVIDER_MODELS = '{}'
     }
@@ -241,15 +238,7 @@ try {
     $env:AI_PM_CARD_PROJECT_KEYS = $cardProjectKeys | ConvertTo-Json -Compress
 
     Set-Location -LiteralPath $projectRoot
-    if ($SlackProbe) {
-        # Isolated delivery proof: use the same protected production config,
-        # but do not load Trello configuration in Python, run a PM tick, or
-        # release the scheduler from HOLD. notify() returns a failing process
-        # status unless Slack itself acknowledges the POST with HTTP 200.
-        $arguments = @('-m', 'ai_project_manager', '--slack-probe', '--log-level', 'INFO')
-        & $PythonExe @arguments
-    }
-    elseif ($MaintainOnly) {
+    if ($MaintainOnly) {
         # Card Contract maintenance is a live Trello repair pass only. It
         # never dispatches a project or touches provider state.
         $arguments = @('-m', 'ai_project_manager', '--maintain-only', '--log-level', 'INFO')
@@ -303,9 +292,7 @@ finally {
     $env:TRELLO_KEY = $null
     $env:TRELLO_TOKEN = $null
     $env:TRELLO_BOARD_ID = $null
-    $env:SLACK_WEBHOOK_URL = $null
     $env:CODEX_HOME = $null
-    $env:AI_PM_SLACK_ENABLED = $null
     $env:TRELLO_INBOX_LIST = $null
     $env:AI_PM_ENABLE_INBOX = $null
     $env:AI_PM_PROVIDERS = $null

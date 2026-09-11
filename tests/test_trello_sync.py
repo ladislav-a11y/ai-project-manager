@@ -1624,6 +1624,13 @@ def test_data_block_round_trips_a_literal_html_comment_close_in_field_values():
     assert _parse_data_block(block) == data
 
 
+def test_data_block_reads_trello_backslash_before_escaped_closing_marker():
+    data = {"checkpoint": {"value": "preserve"}, "last_output": "done"}
+    block = _render_data_block(data).replace("\n-->", "\n\\--\u200b>")
+
+    assert _parse_data_block(block) == data
+
+
 def test_sync_project_to_trello_survives_arrow_sequences_in_every_free_text_field():
     client = InMemoryTrelloClient()
     project = ProjectRecord(

@@ -1,4 +1,4 @@
-# Řízený workflow AI Project Manageru
+# Řízený workflow AI Project Manageru v2
 
 Trello je jediný zdroj pravdy. Stav, pořadí, DoD, checkpoint, čekání na
 provider i auditní výsledek se vždy načítají z Trella a po změně se do něj
@@ -12,12 +12,16 @@ odmítnou fail-closed a do Trella se nesmí poslat poškozený popis.
 
 ## Pevné pořadí
 
+Ochrana jediného místa v `Pracuje se` omezuje pouze kandidáty ke spuštění.
+Kontrola závislostí musí nadále vidět celý načtený stav Trella včetně karet
+v `Hotovo`; dokončený předchůdce nesmí zmizet z kontextu scheduleru.
+
 Každý tick načte a podle nastavení provede Inbox intake; intake je samostatná
 fáze a nesmí obejít čekání, audit ani aktivní práci. Pořadí dispatch části je:
 
-1. `Čeká na AI` — nejdříve se zkontrolují provider-limitní čekání. Po termínu
-   nebo při dostupném failoveru se karta okamžitě vrátí do své návratové fáze a
-   obnovená implementace dostane první příležitost k práci z checkpointu.
+1. `Čeká na AI` — nejdříve se zkontroluje workflow čekání. Po termínu se karta
+   vrátí do své návratové fáze a další AO dispatch z checkpointu znovu požádá
+   broker o aktuální nabídku; PM sám providery nekontroluje ani nepřepíná.
 2. `Testování` — dokud existuje karta čekající na audit, zpracuje se audit-only
    přes ai-orchestrator; audit je vždy nezávislý a používá AI. Při potřebě
    dopracování se karta vrací do `Pracuje se` s konkrétním feedbackem.
@@ -45,8 +49,9 @@ fáze a nesmí obejít čekání, audit ani aktivní práci. Pořadí dispatch �
   finalizaci se přechod do `Testování` zapíše, ještě před spuštěním testů a
   auditu. Selhání finalizace (např. neprošlé testy nebo zablokovaný push)
   kartu ponechá v `Pracuje se` s konkrétním důvodem.
-- `Pracuje se → Čeká na AI`: provider-limit; checkpoint a návratová fáze se
-  zachovají.
+- `Pracuje se → Čeká na AI`: AO/providerový receipt oznámí dočasnou
+  nedostupnost; checkpoint a návratová fáze se zachovají a další nabídku řeší
+  broker.
 - `Testování → Hotovo`: pouze explicitní přijatý verdikt ai-orchestrátoru.
 - `Testování → Pracuje se` nebo `Připraveno`: pouze explicitní odmítnutí auditu
   s konkrétní zpětnou vazbou.
@@ -164,6 +169,15 @@ Při retry se již zapsané cíle identifikují jednoznačně podle zdrojového 
 `subtask_index`, nikdy podle podobnosti názvů, takže částečně dokončený split
 nevytvoří duplicity.
 
+Text plánovaného podúkolu je zároveň kanonický pracovní vstup AO/provideru.
+Planner proto vrací pouze kompaktní strojový rozsah: `scope` nejvýše 240
+znaků, `task` nejvýše 900 znaků a `next_step` nejvýše 360 znaků; odůvodnění
+a ověřovací popis mají nejvýše 320 znaků a jednotlivý odkaz ve
+`source_refs` nejvýše 120 znaků. Do těchto polí nepatří celý Inbox popis,
+workflow, Card Contract, protokol ani opakované instrukce pro PM/AO. Pokud
+zdroj obsahuje více samostatných výsledků, intake je rozdělí na více karet a
+zachová mezi nimi explicitní `depends_on`.
+
 Návaznost podúkolů je závazná: PM zachová `depends_on_subtask_indices` a
 `execution_order` a scheduler smí přesunout do `Pracuje se` pouze kartu,
 jejíchž předchůdci jsou dokončeni nebo řádně uzavřeni. Planner může zvolit
@@ -179,30 +193,30 @@ podúkolu a jeho přímé návaznosti. Planner nesmí do jednoho vstupu smíchat
 projektové identity; při nejasnosti musí intake skončit v Inboxu s požadavkem
 na lidské upřesnění.
 
-Inbox planner je samostatná AI-planning fáze a volá ai-orchestrator jediným
-read-only `plan-inbox --agent auto` requestem. PM do něj předá pouze aktuálně
-dostupné pořadí povolených providerů (Hermes je z PM úplně vyřazen, viz sekci
-„Hermes - vyřazen z produkčního PM routingu" níže, ne jen z této fáze). AO
-centrálně provede výběr i failover při limitu, timeoutu, nedostupnosti nebo
-explicitní chybě strukturovaného planning requestu. PM planneru ani
-implementaci/auditu předává `--provider-models` jako mapu konkrétních modelů
-pro jednotlivé providery, pokud je pro ně model nakonfigurovaný nebo potvrzený
-receiptem. Failover nikdy nepřenáší slug jednoho providera na jiného; chybějící
-mapa znamená providerův vlastní nakonfigurovaný/default model a skutečně
-použitý model se bere z AO receipt. Žádný free provider nesmí při nedostupnosti
+Inbox planner je samostatná AI-planning fáze v AO's Inbox Intake. PM ji pouze
+spustí jediným read-only `plan-inbox --agent provider-broker` requestem. PM do
+tohoto requestu nepředává provider pořadí, providera ani model; Inbox Intake v
+AO přes `BrokerBackedAgent` požádá broker, převezme jeho nabídku a v2 `lang`
+instrukce a teprve potom zavolá vybraného providera. Stejnou fasádu používá
+orchestrátorový běh pro implementaci a audit. PM broker ani providery nikdy
+nevolá.
+AO centrálně provede výběr i failover při limitu, timeoutu, nedostupnosti nebo
+explicitní chybě strukturovaného planning requestu. PM planneru,
+implementaci ani auditu nepředává modelový override; AO používá vlastní
+konfiguraci pro jednotlivé providery a skutečně použitý model se bere z AO
+receipt. Staré routing parametry v konfiguraci PM se před Inbox requestem
+odstraní, aby nevznikl druhý výběr mimo broker. Žádný free provider nesmí při nedostupnosti
 svého povoleného free modelu tiše zvolit
 placený LLM.
-Před jediným centrálním requestem PM oznámí routing mode, povolené pořadí a
-důvod; po dokončení uloží skutečný provider, model, celou provider sequence,
-status receipt a usage potvrzené AO. Intake navíc zapisuje do `PM-DATA`
+Před jediným centrálním requestem PM pouze předá úkol AO; po dokončení uloží
+skutečný provider, model, celou provider sequence, status receipt a usage
+potvrzené AO. Intake navíc zapisuje do `PM-DATA`
 `intake_provider_reason`, `intake_model_reason` a `intake_selection_reason`,
-aby byl výběr dohledatelný na každém podúkolu i ve Slacku. Pokud je provider
-omezený, Slack i stavová zpráva uvádí absolutní `retry_at` a odpočet `retry za`;
-PM jej do té doby znovu nepředá do dalšího centrálního requestu.
-Globální stav `LIMITED` nebo `ERROR` s `retry_after` je závazný pro všechny
-workflow fáze: PM takového providera nepředá ani do dalšího AO failover řetězce
-až do termínu revalidace. Do té doby se provider pouze lokálně přeskočí;
-po termínu proběhne právě jedna dostupnostní revalidace.
+aby byl výběr dohledatelný na každém podúkolu i v AO providerovém receiptu.
+Pokud provider oznámí omezení, receipt i stavová zpráva uvádí absolutní
+`retry_at` a odpočet `retry za`; tento stav eviduje AO broker a další nabídku
+řídí on. PM pouze promítne výsledek do workflow/Trella a žádného konkrétního
+providera nepředává do failover řetězce.
 
 ### Bezpečná změna runtime
 
@@ -215,6 +229,14 @@ Při ověřování PM/AO se vždy používá skutečný interpreter cílového r
 první v PATH pro všechny testovací subprocessy. Systémový `python` nebo
 WindowsApps alias se nesmí použít bez ověření jeho skutečné absolutní cesty;
 jinak může selhání prostředí vypadat jako chyba implementace.
+Jednorázový produkční PM tick se spouští pouze příkazem
+`.\.venv\Scripts\python.exe -m ai_project_manager --once`; Inbox intake se
+v něm řídí výhradně načtenou konfigurací, nikdy dodatečným přepínačem
+`--enable-inbox-intake`.
+Pokud PM nemá explicitní `AI_ORCHESTRATOR_CMD`, sestaví v2 AO příkaz z
+`AI_ORCHESTRATOR_ROOT` nebo z registrovaného checkoutu `AI Orchestrator` a
+vždy použije jeho absolutní `.venv\Scripts\python.exe` a `orchestrator.py`;
+obecný alias `ai-orchestrator` z `PATH` se nepoužívá.
 AO musí v outboxu vracet `provider_statuses` pro všechny providery v daném
 failover pořadí. Každý `LIMITED` záznam nese absolutní UTC `retry_at`; PM
 zapíše všechny tyto termíny do persistentního stavu a do PM-DATA/Trella
@@ -287,13 +309,14 @@ Hermesu zůstávají pouze jako evidence minulých rozhodnutí a nejsou provozn�
 instrukcí.
 
 Inbox planning/intake je samostatná AI fáze před worker dispatch. Produkční PM
-musí lidský vstup předat jedním read-only `plan-inbox --agent auto` handoffem
-do ai-orchestratoru s aktuálně dostupným pořadím
-`groq → antigravity → claude → codex` (viz `INBOX_PLANNER_PROVIDERS`); AO v
-tomto jediném requestu vlastní výběr, failover a receipt všech providerů.
+musí lidský vstup předat jedním read-only `plan-inbox --agent provider-broker`
+handoffem do ai-orchestratoru. PM v tomto handoffu neudržuje ani neposílá
+providerové pořadí; AO provider-broker v jediném requestu vlastní výběr,
+failover, načtení `lang` a receipt skutečně použitého providera/modelu.
 AI planner musí vrátit validní atomické úkoly s různými prioritami, jinak
 zdroj zůstane v Inboxu fail-closed. PM uloží skutečný intake provider, model,
-sequence, status a usage do Card Contractu a oznámí je ve Slacku.
+sequence, status a usage do Card Contractu. Případná Slack zpráva je pouze
+AO providerová observabilita, nikoli PM zdroj stavu.
 Deterministické heuristiky jsou pouze testovací/fallback knihovna, nikoli
 produkční vlastník intake rozhodnutí.
 Handoff je úspěšný teprve po ověření postcondition orchestrátorem: exit code,
@@ -301,7 +324,7 @@ provider/model z usage, povolený rozsah změn a skutečný filesystem/Git diff.
 Přesun karty jiným providerem provider z pořadí neodstraňuje: při dalším ticku
 se smí znovu účastnit po úspěšné dostupnostní revalidaci, ale PM nesmí jeho
 stav `ERROR` nebo `LIMITED` slepě přepsat na `AVAILABLE`. V Card Contractu a
-Slacku se rozlišuje `selected_provider` (routing mode `auto` předaný PM) od
+AO receiptu a jeho případné Slack kopii se rozlišuje `selected_provider` od
 `actual_provider` a `actual_model` potvrzených AO receiptem; při interním
 failoveru se musí zobrazit celá `provider_sequence` a všechny statusy.
 Pokud provider pouze popisuje postup, vrátí „success" bez postcondition nebo

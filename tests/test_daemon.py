@@ -7,7 +7,6 @@ from ai_project_manager.daemon import (
     _run_recovery_pass,
     _resume_due_provider_waits,
     load_projects_and_inbox,
-    recheck_due_providers,
     run_loop,
     run_tick,
 )
@@ -357,6 +356,7 @@ def test_run_tick_loads_real_projects_and_processes_inbox_only_when_explicitly_e
         registry,
         run_fn,
         default_providers=["claude"],
+        inbox_list_name="Inbox",
         process_inbox_enabled=True,
     )
 
@@ -394,6 +394,7 @@ def test_run_tick_keeps_new_inbox_task_in_ready_until_next_tick():
         registry,
         run_fn,
         default_providers=["claude"],
+        inbox_list_name="Inbox",
         process_inbox_enabled=True,
     )
 
@@ -439,6 +440,7 @@ def test_run_tick_skips_inbox_intake_when_prepared_new_work_exists():
         registry,
         run_fn,
         default_providers=["claude"],
+        inbox_list_name="Inbox",
         process_inbox_enabled=True,
         inbox_planner=lambda *_: planner_calls.append(True),
     )
@@ -776,18 +778,6 @@ def test_run_tick_only_requeues_resumed_audit_wait_without_same_tick_ai_call():
     assert "čekání na providera skončilo" in reloaded.stop_reason
 
 
-def test_recheck_due_providers_returns_names_that_resumed():
-    clock = FakeClock(datetime(2026, 1, 1, tzinfo=timezone.utc))
-    registry = ProviderRegistry(clock=clock)
-    registry.mark_limited("claude", retry_after=timedelta(minutes=30))
-    clock.advance(timedelta(minutes=31))
-
-    resumed = recheck_due_providers(registry)
-
-    assert resumed == ["claude"]
-    assert registry.get_status("claude").state == ProviderState.AVAILABLE
-
-
 def test_run_tick_never_lets_two_providers_run_the_same_project_concurrently():
     # Simulate a second worker/provider already processing this project
     # (lock held by "other-worker") - even though a different provider is
@@ -1120,6 +1110,123 @@ def test_run_tick_logs_wait_when_provider_is_limited(caplog):
     messages = "\n".join(caplog.messages)
     assert "claude" in messages
     assert "retry_after" in messages.lower()
+
+
+def test_empty_workflow_refreshes_provider_notes_once_before_inbox_planner():
+    client = InMemoryTrelloClient()
+    _, name_to_id = build_list_maps(client)
+    client.create_card(
+        name_to_id["Inbox"],
+        "Nový požadavek",
+        desc="Připravit nový úkol.",
+    )
+    registry = ProviderRegistry()
+    registry.mark_available("claude")
+    events = []
+
+    def refresh():
+        events.append("refresh")
+        return True
+
+    def planner(card, projects):
+        events.append("planner")
+        return None
+
+    outcome = run_tick(
+        client,
+        registry,
+        lambda project, provider: {},
+        default_providers=["claude"],
+        inbox_list_name="Inbox",
+        process_inbox_enabled=True,
+        inbox_planner=planner,
+        provider_refresh=refresh,
+    )
+
+    assert outcome.ran is False
+    assert events == ["refresh", "planner"]
+
+
+def test_empty_workflow_without_inbox_card_does_not_refresh_provider_notes():
+    client = InMemoryTrelloClient()
+    registry = ProviderRegistry()
+    registry.mark_available("claude")
+    refresh_calls = []
+    planner_calls = []
+
+    outcome = run_tick(
+        client,
+        registry,
+        lambda project, provider: {},
+        default_providers=["claude"],
+        inbox_list_name="Inbox",
+        process_inbox_enabled=True,
+        inbox_planner=lambda *_: planner_calls.append(True),
+        provider_refresh=lambda: refresh_calls.append(True) or True,
+    )
+
+    assert outcome.ran is False
+    assert refresh_calls == []
+    assert planner_calls == []
+
+
+def test_failed_provider_refresh_blocks_inbox_planner_and_keeps_card():
+    client = InMemoryTrelloClient()
+    _, name_to_id = build_list_maps(client)
+    source = client.create_card(
+        name_to_id["Inbox"],
+        "Refresh required",
+        desc="Provider notes must be current.",
+    )
+    registry = ProviderRegistry()
+    planner_calls = []
+
+    outcome = run_tick(
+        client,
+        registry,
+        lambda project, provider: pytest.fail("failed refresh must prevent dispatch"),
+        default_providers=["claude"],
+        inbox_list_name="Inbox",
+        process_inbox_enabled=True,
+        inbox_planner=lambda *_: planner_calls.append(True),
+        provider_refresh=lambda: False,
+    )
+
+    assert outcome.ran is False
+    assert planner_calls == []
+    assert client.get_card(source["id"])["closed"] is False
+
+
+def test_active_workflow_does_not_refresh_provider_notes_for_inbox():
+    client = InMemoryTrelloClient()
+    _, name_to_id = build_list_maps(client)
+    project = ProjectRecord(
+        name="Existing work",
+        priority=2,
+        status=ProjectStatus.READY,
+        main_task="Existing governed work",
+    )
+    sync_project_to_trello(client, project)
+    client.create_card(name_to_id["Inbox"], "Nový požadavek", desc="Další práce.")
+    registry = ProviderRegistry()
+    registry.mark_available("claude")
+    refresh_calls = []
+    planner_calls = []
+
+    outcome = run_tick(
+        client,
+        registry,
+        lambda project, provider: {},
+        default_providers=["claude"],
+        inbox_list_name="Inbox",
+        process_inbox_enabled=True,
+        inbox_planner=lambda *_: planner_calls.append(True),
+        provider_refresh=lambda: refresh_calls.append(True) or True,
+    )
+
+    assert outcome.ran is True
+    assert refresh_calls == []
+    assert planner_calls == []
 
 
 def test_bootstrap_project_key_never_infers_identity_from_card_content():

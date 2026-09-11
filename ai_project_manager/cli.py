@@ -22,18 +22,28 @@ from .orchestrator_runner import (
     build_audit_run_fn,
     build_finalize_fn,
     build_inbox_planner_fn,
+    build_provider_refresh_fn,
     build_run_fn,
 )
 from .providers import ProviderRegistry
 from .provider_state import load_provider_state
-from .scheduler import AUTO_PROVIDER_ORDER
 from .self_update import RESTART_REQUIRED_EXIT_CODE
-from .slack_notify import notify, status_message
 from .trello_client import RealTrelloClient
 
 logger = logging.getLogger("ai_project_manager")
 
 _LOG_LEVELS = ("CRITICAL", "ERROR", "WARNING", "INFO", "DEBUG")
+
+
+_INBOX_PROVIDER_ATTEMPTS = 2
+_INBOX_PLANNER_OVERHEAD_SECONDS = 30.0
+
+
+def _inbox_provider_timeout_seconds(timeout_seconds: float) -> float:
+    """Allocate the PM budget across AO's two broker/provider attempts."""
+    outer = max(float(timeout_seconds), 0.1)
+    available = max(0.1, outer - _INBOX_PLANNER_OVERHEAD_SECONDS)
+    return max(0.1, available / _INBOX_PROVIDER_ATTEMPTS)
 
 
 def _log_level(value: str) -> str:
@@ -47,14 +57,6 @@ def _log_level(value: str) -> str:
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="ai-project-manager")
-    parser.add_argument(
-        "--slack-probe",
-        action="store_true",
-        help=(
-            "send one production Slack delivery probe and exit; does not load "
-            "Trello, dispatch work, or start the scheduler"
-        ),
-    )
     parser.add_argument(
         "--once",
         action="store_true",
@@ -106,11 +108,6 @@ def main(
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
     )
 
-    if args.slack_probe:
-        logger.info("starting isolated Slack delivery probe")
-        delivered = notify("AI Project Manager: fresh-shell production Slack probe")
-        return 0 if delivered else 1
-
     try:
         config = load_config()
     except ConfigError as exc:
@@ -137,16 +134,8 @@ def main(
     provider_registry = ProviderRegistry()
     registry_names = []
     for name in config.providers:
-        if name.casefold() == "auto":
-            # ``auto`` is only a routing alias. Register the concrete PM
-            # identities so a restart cannot lose provider availability or
-            # retry state after a tick that used the alias.
-            names = [candidate for candidate in AUTO_PROVIDER_ORDER if candidate != "claude-code"]
-        else:
-            names = [name]
-        for candidate in names:
-            if candidate not in registry_names:
-                registry_names.append(candidate)
+        if name not in registry_names:
+            registry_names.append(name)
     for name in registry_names:
         provider_registry.mark_available(name)
         provider_registry.configure_models(name, config.provider_models.get(name, []))
@@ -166,7 +155,6 @@ def main(
             finalize_command=config.orchestrator.finalize_command,
             finalize_paths=config.orchestrator.finalize_paths,
             allowed_push_remotes=config.orchestrator.allowed_push_remotes,
-            use_provider_failover=True,
         )
 
     if audit_run_fn is None:
@@ -178,7 +166,6 @@ def main(
             spec_dir=config.orchestrator.spec_dir,
             outbox_dir=config.orchestrator.outbox_dir,
             timeout_seconds=config.orchestrator.timeout_seconds,
-            use_provider_failover=True,
         )
 
     if finalize_fn is None:
@@ -191,28 +178,18 @@ def main(
             timeout_seconds=config.orchestrator.timeout_seconds,
         )
 
-    def notify_inbox_selection(selection: dict) -> None:
-        """Expose provider/model selection before the read-only planner call."""
-        notify(status_message(
-            "PM zahajuje Inbox intake",
-            project=selection.get("source_card_name"),
-            provider=(
-                f"{selection.get('provider')} | "
-                f"model: {selection.get('model') or 'n/a'}"
-            ),
-            provider_reason=(
-                f"{selection.get('provider_reason')}; "
-                f"{selection.get('model_reason')}"
-            ),
-            detail=f"source_card_id={selection.get('source_card_id')}; task_type={selection.get('task_type')}",
-        ))
-
     inbox_planner = build_inbox_planner_fn(
         provider_registry,
         command=config.orchestrator.command,
         timeout_seconds=config.orchestrator.inbox_planner_timeout_seconds,
-        selection_notifier=notify_inbox_selection,
+        provider_timeout_seconds=_inbox_provider_timeout_seconds(
+            config.orchestrator.inbox_planner_timeout_seconds
+        ),
         project_paths=config.orchestrator.project_paths,
+    )
+    provider_refresh = build_provider_refresh_fn(
+        config.orchestrator.command,
+        timeout_seconds=config.orchestrator.inbox_planner_timeout_seconds,
     )
 
     logger.info(
@@ -235,6 +212,7 @@ def main(
         default_providers=config.providers,
         inbox_list_name=config.trello.inbox_list_name,
         process_inbox_enabled=config.inbox_enabled or args.enable_inbox_intake,
+        auto_intake_when_workflow_empty=True,
         provider_state_path=config.provider_state_path,
         project_paths=(
             config.orchestrator.project_paths if validate_repository_paths else None
@@ -246,6 +224,7 @@ def main(
         recovery_max_attempts=config.recovery_max_attempts,
         audit_run_fn=audit_run_fn,
         inbox_planner=inbox_planner,
+        provider_refresh=provider_refresh,
         artifact_cleanup_root=config.artifact_cleanup_root,
         artifact_cleanup_retention_seconds=config.artifact_cleanup_retention_seconds,
         finalize_fn=finalize_fn,

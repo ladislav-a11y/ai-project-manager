@@ -100,15 +100,6 @@ def run_one(
     os.environ["TRELLO_TOKEN"] = "verify-token"
     os.environ["TRELLO_BOARD_ID"] = "verify-board"
     os.environ["AI_PM_PROVIDERS"] = "claude"
-    # Root cause of the 2026-08-26 incident: this shell may still carry
-    # AI_PM_SLACK_ENABLED=1 / a real SLACK_WEBHOOK_URL left over from a
-    # previous production run (scripts/run-ai-project-manager.ps1 sets
-    # both). notify() already defaults closed without AI_PM_SLACK_ENABLED,
-    # but this "safe" script must not depend on that env staying unset -
-    # clear both explicitly, the same way AI_ORCHESTRATOR_SPEC_DIR/
-    # OUTBOX_DIR are pinned below against inherited production state.
-    os.environ.pop("AI_PM_SLACK_ENABLED", None)
-    os.environ.pop("SLACK_WEBHOOK_URL", None)
     # Same class of leak as above, for the controller finalizer added
     # later: this machine's live scheduler setup may already export a real
     # AI_ORCHESTRATOR_FINALIZE_CMD. Inheriting it would make main()'s real

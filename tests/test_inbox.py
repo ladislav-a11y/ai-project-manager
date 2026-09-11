@@ -16,6 +16,8 @@ from ai_project_manager.inbox import (
 )
 from ai_project_manager.inbox_preparation import (
     PreparedTask,
+    VerificationPlan,
+    build_dod,
     derive_priority,
     enforce_indivisible_inbox_source_contract,
     is_explicit_indivisible_inbox_source,
@@ -30,6 +32,31 @@ from ai_project_manager.card_contract import dod_contract_issues
 from ai_project_manager.models import ProjectRecord, ProjectStatus
 from ai_project_manager.trello_client import InMemoryTrelloClient
 from ai_project_manager.trello_sync import build_list_maps, fetch_all_projects, sync_project_to_trello
+
+
+def test_verification_plan_creates_specific_audit_evidence_dod():
+    task = PreparedTask(
+        title="mode-frequency",
+        task="Validovat kombinaci režimu a frekvence.",
+        next_step="Prověřit platné i neplatné kombinace.",
+        scope="mode-frequency validation",
+        verification=VerificationPlan(
+            required=("regression", "integration"),
+            acceptable=("unit", "runtime"),
+            reason="Změna ovlivňuje pravidla i aplikační tok.",
+        ),
+        source_refs=("1",),
+    )
+
+    dod = build_dod((task,))
+    audit_text = dod[1].text
+
+    assert "regresní testy" in audit_text
+    assert "integrační testy" in audit_text
+    assert "cílené unit testy" in audit_text
+    assert "live/runtime ověření" in audit_text
+    assert "GUI" not in audit_text
+    assert "Změna ovlivňuje pravidla" in audit_text
 
 
 def test_inbox_planner_never_selects_retired_or_reserved_providers():
@@ -1288,6 +1315,12 @@ def test_planner_project_key_prevents_generated_checkout_for_known_project(tmp_p
                     project_key="AI Project Manager",
                     work_type="implementation",
                     split_reason="první atomický krok",
+                    verification=VerificationPlan(
+                        required=("unit",),
+                        acceptable=("static",),
+                        reason="Jedna změna dokumentace vyžaduje cílenou kontrolu.",
+                    ),
+                    source_refs=("README",),
                 ),
             ),
         }
@@ -1308,6 +1341,12 @@ def test_planner_project_key_prevents_generated_checkout_for_known_project(tmp_p
     metadata = project.extra_data["inbox_preparation"]
     assert metadata["work_type"] == "implementation"
     assert metadata["split_reason"] == "první atomický krok"
+    assert metadata["source_refs"] == ["README"]
+    assert metadata["verification"] == {
+        "required": ["unit"],
+        "acceptable": ["static"],
+        "reason": "Jedna změna dokumentace vyžaduje cílenou kontrolu.",
+    }
     assert metadata["generated_project"] is False
     assert metadata["project_path"] is None
     card = client.get_card(project.trello_card_id)

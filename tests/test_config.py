@@ -1,4 +1,5 @@
 import os
+from pathlib import Path
 
 import pytest
 
@@ -37,7 +38,12 @@ def test_load_config_reads_trello_credentials_from_env_without_hardcoding():
     assert config.trello.key == "trello-key"
     assert config.trello.token == "trello-token"
     assert config.trello.board_id == "board-123"
-    assert config.trello.inbox_list_name == "Inbox"
+    assert config.trello.inbox_list_name == "INBOX / Nápady"
+
+
+def test_load_config_rejects_non_czech_main_inbox_list():
+    with pytest.raises(ConfigError, match="must be exactly"):
+        load_config(base_env(TRELLO_INBOX_LIST="Inbox"))
 
 
 def test_load_config_missing_trello_credential_raises_config_error():
@@ -63,12 +69,27 @@ def test_load_config_rejects_blank_identity_settings(name):
 def test_load_config_defaults_providers_and_orchestrator_command():
     config = load_config(base_env())
 
-    assert config.providers == ["auto"]
-    assert config.orchestrator.command == ["ai-orchestrator"]
+    assert config.providers == ["groq", "antigravity", "claude-code", "codex"]
+    assert config.orchestrator.command[-2:] == ["autonomous", "--no-commit"]
+    assert Path(config.orchestrator.command[0]).name == "python.exe"
+    assert Path(config.orchestrator.command[1]).name == "orchestrator.py"
     assert config.poll_interval_seconds == 300.0
-    assert config.orchestrator.inbox_planner_timeout_seconds == 120.0
+    assert config.orchestrator.inbox_planner_timeout_seconds == 660.0
     assert config.holder == "project-manager"
     assert config.inbox_enabled is False
+
+
+def test_load_config_resolves_ao_from_explicit_root_without_path_alias():
+    ao_root = Path(__file__).resolve().parents[2] / "ai-orchestrator"
+
+    config = load_config(base_env(AI_ORCHESTRATOR_ROOT=str(ao_root)))
+
+    assert config.orchestrator.command == [
+        str(ao_root / ".venv" / "Scripts" / "python.exe"),
+        str(ao_root / "orchestrator.py"),
+        "autonomous",
+        "--no-commit",
+    ]
 
 
 def test_load_config_can_explicitly_enable_inbox_intake():
@@ -89,7 +110,6 @@ def test_load_config_parses_custom_providers_and_orchestrator_command():
         AI_ORCHESTRATOR_CMD="python -m ai_orchestrator run --mode autonomous",
         AI_PM_POLL_INTERVAL_SECONDS="45",
         AI_PM_HOLDER="worker-1",
-        TRELLO_INBOX_LIST="Intake",
     )
 
     config = load_config(env)
@@ -98,7 +118,7 @@ def test_load_config_parses_custom_providers_and_orchestrator_command():
     assert config.orchestrator.command == ["python", "-m", "ai_orchestrator", "run", "--mode", "autonomous"]
     assert config.poll_interval_seconds == 45.0
     assert config.holder == "worker-1"
-    assert config.trello.inbox_list_name == "Intake"
+    assert config.trello.inbox_list_name == "INBOX / Nápady"
 
 
 def test_load_config_parses_inbox_planner_timeout():

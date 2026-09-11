@@ -51,6 +51,25 @@ INBOX_READ_ONLY_AUDIT_EVIDENCE_TEXT = (
     "tento auditní bod vyžadován."
 )
 
+VERIFICATION_EVIDENCE_TYPES = (
+    "static",
+    "unit",
+    "integration",
+    "regression",
+    "runtime",
+    "gui",
+    "config",
+)
+VERIFICATION_EVIDENCE_LABELS = {
+    "static": "statická kontrola",
+    "unit": "cílené unit testy",
+    "integration": "integrační testy",
+    "regression": "regresní testy",
+    "runtime": "live/runtime ověření",
+    "gui": "ověření Windows GUI",
+    "config": "ověření platnosti a načtení konfigurace",
+}
+
 _READ_ONLY_VERIFICATION_MARKERS = (
     "do not modify any files",
     "must not modify files",
@@ -163,6 +182,24 @@ class PreparedTask:
     # decisions; they must not be silently discarded at the AO -> PM boundary.
     work_type: Optional[str] = None
     split_reason: Optional[str] = None
+    verification: Optional["VerificationPlan"] = None
+    source_refs: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
+class VerificationPlan:
+    """Machine-readable audit evidence guidance from the Inbox planner."""
+
+    required: tuple[str, ...]
+    acceptable: tuple[str, ...]
+    reason: str
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "required": list(self.required),
+            "acceptable": list(self.acceptable),
+            "reason": self.reason,
+        }
 
 
 def is_read_only_verification(
@@ -197,6 +234,36 @@ def prepared_task_handoff_text(task: PreparedTask, project_label: str) -> str:
         f"{action} tento samostatný rozsah v projektu {project_label}: "
         f"{task.task} Zachovat chování mimo tento rozsah."
     )
+
+
+def _verification_audit_text(tasks: tuple[PreparedTask, ...]) -> Optional[str]:
+    plans = [task.verification for task in tasks]
+    if not plans or any(plan is None for plan in plans):
+        return None
+    required = tuple(dict.fromkeys(
+        evidence for plan in plans for evidence in plan.required
+    ))
+    acceptable = tuple(dict.fromkeys(
+        evidence for plan in plans for evidence in plan.acceptable
+        if evidence not in required
+    ))
+    if not required:
+        return None
+    required_text = ", ".join(VERIFICATION_EVIDENCE_LABELS[item] for item in required)
+    text = (
+        "Nezávislý audit ai-orchestratoru provede minimálně: "
+        f"{required_text}."
+    )
+    if acceptable:
+        acceptable_text = ", ".join(
+            VERIFICATION_EVIDENCE_LABELS[item] for item in acceptable
+        )
+        text += f" Doplňující nebo náhradní důkaz může být: {acceptable_text}."
+    reasons = tuple(dict.fromkeys(plan.reason for plan in plans if plan.reason))
+    if reasons:
+        text += f" Důvod: {'; '.join(reasons)}."
+    text += " Neproveditelný požadavek musí auditor konkrétně zdůvodnit."
+    return text
 
 
 @dataclass(frozen=True)
@@ -761,12 +828,16 @@ def build_dod(tasks: tuple[PreparedTask, ...]) -> tuple[DoDItem, ...]:
             DoDItem(text=INBOX_AUDIT_VERDICT_TEXT, phase="audit"),
         )
     scopes = ", ".join(task.scope for task in tasks)
+    verification_text = _verification_audit_text(tasks)
     return (
         DoDItem(
             text=f"Implementovat připravené části Inbox požadavku: {scopes}.",
             phase="implementation",
         ),
-        DoDItem(text=INBOX_AUDIT_EVIDENCE_TEXT, phase="audit"),
+        DoDItem(
+            text=verification_text or INBOX_AUDIT_EVIDENCE_TEXT,
+            phase="audit",
+        ),
         DoDItem(text=INBOX_AUDIT_VERDICT_TEXT, phase="audit"),
     )
 

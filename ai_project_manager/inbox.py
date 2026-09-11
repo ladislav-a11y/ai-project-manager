@@ -371,7 +371,11 @@ def _build_inbox_receipt_card(
     return receipt
 
 
-def archive_completed_inbox_sources(client, projects: list[ProjectRecord], inbox_list_name: str = "Inbox") -> list[str]:
+def archive_completed_inbox_sources(
+    client,
+    projects: list[ProjectRecord],
+    inbox_list_name: str = "INBOX / Nápady",
+) -> list[str]:
     """Archive sources whose complete prepared batch is already durable.
 
     This reconciliation is intentionally deterministic and provider-free. It
@@ -421,7 +425,7 @@ def process_inbox(
     client,
     projects: list[ProjectRecord],
     classifier: ClassifierFn = classify_inbox_card,
-    inbox_list_name: str = "Inbox",
+    inbox_list_name: str = "INBOX / Nápady",
     default_priority: int = 2,
     persist_project: Optional[PersistProjectFn] = None,
     project_paths: Optional[MutableMapping[str, str]] = None,
@@ -713,6 +717,12 @@ def process_inbox(
                         "scope": prepared_task.scope,
                         "work_type": prepared_task.work_type,
                         "split_reason": prepared_task.split_reason,
+                        "verification": (
+                            prepared_task.verification.to_dict()
+                            if prepared_task.verification is not None
+                            else None
+                        ),
+                        "source_refs": list(prepared_task.source_refs),
                         "source_priority": preparation.priority,
                         "source_priority_reason": preparation.priority_reason,
                         "task_priority": prepared_task.priority,
@@ -763,6 +773,12 @@ def process_inbox(
                             "scope": prepared_task.scope,
                             "work_type": prepared_task.work_type,
                             "split_reason": prepared_task.split_reason,
+                            "verification": (
+                                prepared_task.verification.to_dict()
+                                if prepared_task.verification is not None
+                                else None
+                            ),
+                            "source_refs": list(prepared_task.source_refs),
                             "source_priority": preparation.priority,
                             "source_priority_reason": preparation.priority_reason,
                             "task_priority": prepared_task.priority,

@@ -40,7 +40,7 @@ $watchdogStartPattern = '[AI Project Manager] Watchdog online:'
 $startReceipt = Select-String -LiteralPath $log.FullName -SimpleMatch $watchdogStartPattern |
     Select-Object -Last 1
 if (-not $startReceipt) {
-    throw "The live log has no Slack receipt for the current watchdog start: $($log.FullName)"
+    throw "The live log has no current watchdog start marker: $($log.FullName)"
 }
 $runStartLine = $startReceipt.LineNumber
 $initialTickCount = @(Select-String -LiteralPath $log.FullName -SimpleMatch $tickPattern).Count
@@ -66,11 +66,6 @@ else {
     $tickCount = $initialTickCount
 }
 
-$currentRunLines = Get-Content -LiteralPath $log.FullName | Select-Object -Skip ($runStartLine - 1)
-$slackDelivered = @($currentRunLines | Select-String -SimpleMatch 'Slack notification delivered (HTTP 200)').Count -gt 0
-$slackFailed = @($currentRunLines | Select-String -Pattern 'Slack notification (failed|error)').Count -gt 0
-$slackState = if ($slackDelivered) { 'delivered-http-200' } elseif ($slackFailed) { 'failed' } else { 'unverified' }
-
 [pscustomobject]@{
     TaskName = $TaskName
     TaskState = [string]$task.State
@@ -79,7 +74,6 @@ $slackState = if ($slackDelivered) { 'delivered-http-200' } elseif ($slackFailed
     NextRunTime = $info.NextRunTime
     WatchdogPid = $watchdog.ProcessId
     LogPath = $log.FullName
-    SlackState = $slackState
     CompletedTickCount = $tickCount
     SubsequentAutomaticTick = [bool]($WaitForNextTick -and $tickCount -gt $initialTickCount)
 } | Format-List
