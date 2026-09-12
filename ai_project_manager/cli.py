@@ -29,6 +29,7 @@ from .providers import ProviderRegistry
 from .provider_state import load_provider_state
 from .self_update import RESTART_REQUIRED_EXIT_CODE
 from .trello_client import RealTrelloClient
+from .trello_sync import sync_project_to_trello
 
 logger = logging.getLogger("ai_project_manager")
 
@@ -155,6 +156,11 @@ def main(
             finalize_command=config.orchestrator.finalize_command,
             finalize_paths=config.orchestrator.finalize_paths,
             allowed_push_remotes=config.orchestrator.allowed_push_remotes,
+            # A freshly captured controller-finalization baseline must
+            # survive a process restart mid-dispatch, not just live in
+            # memory until run_fn returns (see build_run_fn's docstring
+            # for the incident this fixes: cw dekoder v1, P3.05).
+            persist_checkpoint_fn=lambda project: sync_project_to_trello(client, project),
         )
 
     if audit_run_fn is None:

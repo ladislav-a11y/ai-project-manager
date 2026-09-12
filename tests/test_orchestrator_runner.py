@@ -349,6 +349,101 @@ def test_run_fn_persists_preexisting_paths_for_controller_finalization(tmp_path)
     }
 
 
+def test_run_fn_persists_baseline_via_callback_before_dispatching(tmp_path):
+    """A freshly captured baseline must survive a process restart
+    mid-dispatch, not just live in memory until run_fn returns normally -
+    persist_checkpoint_fn is called with it before the actual (risky,
+    possibly interrupted) dispatch subprocess starts (see incident: cw
+    dekoder v1, P3.05 - adaptivni detekce klicovani)."""
+    registry = ProviderRegistry()
+    registry.mark_available("claude")
+    events = []
+
+    def fake_git(command):
+        if "status" in command:
+            return completed(" M user-owned.txt\n")
+        return completed("head123\n")
+
+    def fake_subprocess_run(command):
+        events.append("dispatch")
+        run_id = command[command.index("--run-id") + 1]
+        write_outbox_result(
+            tmp_path / "outbox",
+            "Demo",
+            {"status": "in_progress", "checkpoint": {"completed_dod_indices": []}},
+            run_id=run_id,
+        )
+        return completed()
+
+    def persist_checkpoint_fn(project):
+        events.append("persist")
+        # The callback must see the baseline already attached, not an
+        # empty/unrelated checkpoint.
+        assert project.checkpoint["controller_finalization_context"] == {
+            "preexisting_paths": ["user-owned.txt"]
+        }
+
+    project = ProjectRecord(
+        name="Demo",
+        orchestrator_ready_task="Implement the task",
+        dod=[DoDItem(text="implement the task")],
+    )
+    run_fn, _, _ = make_run_fn(
+        tmp_path,
+        registry,
+        subprocess_run=fake_subprocess_run,
+        run_git=fake_git,
+        persist_checkpoint_fn=persist_checkpoint_fn,
+    )
+
+    run_fn(project, "provider-broker")
+
+    assert events == ["persist", "dispatch"]
+
+
+def test_run_fn_dispatch_survives_a_persist_checkpoint_fn_failure(tmp_path):
+    """A Trello hiccup while saving the baseline must never block dispatch."""
+    registry = ProviderRegistry()
+    registry.mark_available("claude")
+
+    def fake_git(command):
+        if "status" in command:
+            return completed(" M user-owned.txt\n")
+        return completed("head123\n")
+
+    def fake_subprocess_run(command):
+        run_id = command[command.index("--run-id") + 1]
+        write_outbox_result(
+            tmp_path / "outbox",
+            "Demo",
+            {"status": "in_progress", "checkpoint": {"completed_dod_indices": []}},
+            run_id=run_id,
+        )
+        return completed()
+
+    def failing_persist(project):
+        raise RuntimeError("Trello unavailable")
+
+    project = ProjectRecord(
+        name="Demo",
+        orchestrator_ready_task="Implement the task",
+        dod=[DoDItem(text="implement the task")],
+    )
+    run_fn, _, _ = make_run_fn(
+        tmp_path,
+        registry,
+        subprocess_run=fake_subprocess_run,
+        run_git=fake_git,
+        persist_checkpoint_fn=failing_persist,
+    )
+
+    result = run_fn(project, "provider-broker")
+
+    assert result["checkpoint"]["controller_finalization_context"] == {
+        "preexisting_paths": ["user-owned.txt"]
+    }
+
+
 def test_run_fn_reuses_persisted_baseline_instead_of_the_current_dirty_tree(tmp_path):
     """A provider-limit pause (or any interruption) can leave this task's own
     real, uncommitted work sitting in the working tree. Recomputing

@@ -1578,6 +1578,7 @@ def build_run_fn(
     finalize_command: Optional[list] = None,
     finalize_paths: Optional[dict] = None,
     allowed_push_remotes: Optional[dict] = None,
+    persist_checkpoint_fn: Optional[Callable[[ProjectRecord], None]] = None,
 ):
     """Build a ``run_fn(project, provider) -> dict`` that dispatches to the
     real ai-orchestrator ``--project``/``--goal``/``--spec``/``--agent``/
@@ -1599,6 +1600,20 @@ def build_run_fn(
     It is only applied to the real default subprocess call; a caller
     supplying its own ``subprocess_run`` (tests, or a different dispatch
     mechanism entirely) is responsible for its own timeout handling.
+
+    ``persist_checkpoint_fn`` (when given) is called with ``project``
+    immediately after a *freshly computed* controller-finalization baseline
+    is captured, before the actual (risky, possibly long-running or
+    interrupted) dispatch subprocess is started. Without this, the freshly
+    captured baseline lives only in memory until this whole call returns
+    normally; a process restart mid-dispatch (a watchdog restart, a crash)
+    loses it entirely, and the next dispatch then recomputes a "fresh"
+    baseline from a tree that is already dirty with this same task's own
+    unrecorded prior work - permanently misclassifying it as unrelated
+    pre-existing content (see incident: cw dekoder v1, P3.05 - adaptivni
+    detekce klicovani). A callback failure is logged and never blocks
+    dispatch; the baseline still gets attached to this run's own result
+    checkpoint at the end either way.
     """
     abs_spec_dir = str(Path(spec_dir).resolve())
     abs_outbox_dir = str(Path(outbox_dir).resolve())
@@ -1652,6 +1667,20 @@ def build_run_fn(
                         f"{initial_status.stderr.strip() or initial_status.stdout.strip()}"
                     )
                 preexisting_paths = _status_paths(initial_status.stdout)
+            # Persist this freshly captured baseline now, before the actual
+            # dispatch subprocess starts - not after this function returns.
+            # A process restart mid-dispatch must never lose it (see the
+            # persist_checkpoint_fn docstring above for the incident this
+            # fixes).
+            if persist_checkpoint_fn is not None:
+                project.checkpoint = _controller_scope_checkpoint(project.checkpoint, preexisting_paths)
+                try:
+                    persist_checkpoint_fn(project)
+                except Exception:  # noqa: BLE001 - a Trello hiccup must never block dispatch
+                    logger.exception(
+                        "persist_checkpoint_fn failed while saving the controller-finalization "
+                        "baseline for project=%r", project.name,
+                    )
 
         def with_scope_context(result: dict) -> dict:
             result = dict(result or {})
