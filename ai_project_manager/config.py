@@ -378,8 +378,13 @@ def load_config(env: Optional[Mapping[str, str]] = None) -> Config:
             if "AI_ORCHESTRATOR_WORKSPACE_ROOT" in env
             else None
         ),
-        git_user_name=_non_empty(env, "AI_PM_GIT_USER_NAME", "") or None,
-        git_user_email=_non_empty(env, "AI_PM_GIT_USER_EMAIL", "") or None,
+        # Deliberately not _non_empty(): that helper raises ConfigError when
+        # the setting is absent, which is right for a required identity
+        # value but wrong here - this setting is optional, and every caller
+        # that never configures it (the overwhelming majority of tests, and
+        # any deployment not opting in) must keep loading successfully.
+        git_user_name=(env.get("AI_PM_GIT_USER_NAME") or "").strip() or None,
+        git_user_email=(env.get("AI_PM_GIT_USER_EMAIL") or "").strip() or None,
         # Resolved to absolute here (not left as a bare relative string)
         # so the outbox result is always read from a fixed, unambiguous
         # directory - never one that silently resolves relative to
