@@ -624,6 +624,30 @@ def _declared_working_directory(card: Mapping) -> tuple[Optional[str], Optional[
     return path, None
 
 
+def _is_within_workspace_root(path: str, workspace_root: Optional[str]) -> bool:
+    """True when ``path`` is (or is inside) ``workspace_root``.
+
+    Mirrors ai-orchestrator's own ``Config._ensure_within_workspace`` so a
+    declared working directory outside AO's sandbox is rejected here, at
+    intake, instead of only being discovered after an implementation cycle
+    has already run against it (see incident: card P3.01, cw dekoder v1 -
+    D:\\cw_dekoder was accepted here but AO's ``_ensure_within_workspace``
+    then refused every dispatch). ``workspace_root`` unset means PM was not
+    told AO's sandbox boundary; this then permits everything, unchanged from
+    before this check existed - it can only ever narrow acceptance, never
+    widen it beyond what already worked without ``AI_ORCHESTRATOR_WORKSPACE_ROOT``
+    configured.
+    """
+    if not workspace_root:
+        return True
+    try:
+        root = Path(workspace_root).expanduser().resolve()
+        resolved = Path(path).expanduser().resolve()
+    except OSError:
+        return False
+    return resolved == root or root in resolved.parents
+
+
 def _is_existing_empty_directory(path: str) -> bool:
     """True only for a directory that already exists and has no entries.
 
@@ -867,6 +891,7 @@ def prepare_inbox_card(
     default_priority: int = 2,
     priority_override: Optional[tuple[int, str]] = None,
     projects_root: Optional[str] = None,
+    workspace_root: Optional[str] = None,
     allow_new_project: bool = False,
     planned_tasks: Optional[tuple[PreparedTask, ...]] = None,
 ) -> InboxPreparation:
@@ -943,6 +968,11 @@ def prepare_inbox_card(
         declared_path, declared_reason = _declared_working_directory(card)
         if declared_reason:
             human_reason = declared_reason
+        elif declared_path and not _is_within_workspace_root(declared_path, workspace_root):
+            human_reason = (
+                "Deklarovaný pracovní adresář je mimo povolený pracovní prostor "
+                f"AO ({workspace_root!r}); zvol cestu uvnitř něj: {declared_path!r}."
+            )
         elif declared_path and _is_existing_empty_directory(declared_path):
             # A human-prepared, already-existing, empty directory is safe to
             # adopt verbatim: unlike the generated slug checkout below, this

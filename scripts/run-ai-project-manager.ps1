@@ -224,6 +224,11 @@ try {
         'cw dekoder v1 [Inbox 6a9b98c8]' = 'D:\orchestrator\cw_dekoder'
     }
     $env:AI_PM_PROJECT_PATHS = $projectPaths | ConvertTo-Json -Compress
+    # Must match ai-orchestrator's own config.yaml workspace_root (default:
+    # its parent directory, i.e. this same $workspaceRoot) so PM can reject
+    # a declared Inbox working directory outside AO's sandbox at intake
+    # instead of only discovering the rejection later, at AO dispatch time.
+    $env:AI_ORCHESTRATOR_WORKSPACE_ROOT = $workspaceRoot
 
     # One-time migration for real production cards created before the
     # project_key label existed: the board's pre-existing cards carry
@@ -327,6 +332,7 @@ finally {
     }
     $env:AI_PM_PROJECT_PATHS = $null
     $env:AI_PM_PROJECTS_ROOT = $null
+    $env:AI_ORCHESTRATOR_WORKSPACE_ROOT = $null
     $env:AI_PM_CARD_PROJECT_KEYS = $null
     $credentials = $null
     Stop-Transcript | Out-Null

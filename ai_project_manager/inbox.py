@@ -432,6 +432,7 @@ def process_inbox(
     project_paths: Optional[MutableMapping[str, str]] = None,
     card_project_keys: Optional[Mapping[str, str]] = None,
     projects_root: Optional[str] = None,
+    workspace_root: Optional[str] = None,
     planner: Optional[InboxPlannerFn] = None,
 ) -> list[ProjectRecord]:
     """Prepare at most one new Inbox source batch per tick.
@@ -666,6 +667,7 @@ def process_inbox(
                 default_priority=default_priority,
                 priority_override=batch_priorities.get(str(card.get("id") or "")),
                 projects_root=projects_root,
+                workspace_root=workspace_root,
                 allow_new_project=result.is_new_project,
                 planned_tasks=planned_tasks,
             )

@@ -220,6 +220,9 @@ def main(
         projects_root=(
             config.orchestrator.projects_root if validate_repository_paths else None
         ),
+        workspace_root=(
+            config.orchestrator.workspace_root if validate_repository_paths else None
+        ),
         card_project_keys=config.card_project_keys,
         recovery_max_attempts=config.recovery_max_attempts,
         audit_run_fn=audit_run_fn,

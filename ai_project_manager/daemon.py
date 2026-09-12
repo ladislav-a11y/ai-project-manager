@@ -419,6 +419,7 @@ def load_projects_and_inbox(
     process_inbox_enabled: bool = False,
     auto_intake_when_workflow_empty: bool = False,
     projects_root: Optional[str] = None,
+    workspace_root: Optional[str] = None,
     planner: Optional[InboxPlannerFn] = None,
     provider_refresh: Optional[Callable[[], bool]] = None,
 ) -> list:
@@ -532,6 +533,7 @@ def load_projects_and_inbox(
         project_paths=project_paths,
         card_project_keys=card_project_keys,
         projects_root=projects_root,
+        workspace_root=workspace_root,
         planner=planner,
     )
     if changed:
@@ -631,6 +633,7 @@ def run_tick(
     project_paths: Optional[dict] = None,
     card_project_keys: Optional[dict] = None,
     projects_root: Optional[str] = None,
+    workspace_root: Optional[str] = None,
     recovery_max_attempts: int = DEFAULT_MAX_ATTEMPTS,
     recovery_backoff: Callable[[int], timedelta] = default_backoff,
     audit_run_fn: Optional[AuditRunFn] = None,
@@ -671,6 +674,7 @@ def run_tick(
             project_paths=project_paths,
             card_project_keys=card_project_keys,
             projects_root=projects_root,
+            workspace_root=workspace_root,
             planner=inbox_planner,
             provider_refresh=provider_refresh,
         )
@@ -954,6 +958,7 @@ def run_loop(
     project_paths: Optional[dict] = None,
     card_project_keys: Optional[dict] = None,
     projects_root: Optional[str] = None,
+    workspace_root: Optional[str] = None,
     recovery_max_attempts: int = DEFAULT_MAX_ATTEMPTS,
     recovery_backoff: Callable[[int], timedelta] = default_backoff,
     audit_run_fn: Optional[AuditRunFn] = None,
@@ -1046,6 +1051,7 @@ def run_loop(
                     project_paths=project_paths,
                     card_project_keys=card_project_keys,
                     projects_root=projects_root,
+                    workspace_root=workspace_root,
                     inbox_planner=inbox_planner,
                     provider_refresh=provider_refresh,
                     recovery_max_attempts=recovery_max_attempts,

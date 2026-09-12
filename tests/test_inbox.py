@@ -1076,6 +1076,68 @@ def test_new_inbox_idea_with_declared_working_directory_adopts_existing_empty_di
     assert not (tmp_path / "projects").exists()
 
 
+def test_new_inbox_idea_with_declared_directory_outside_workspace_root_fails_closed(tmp_path):
+    client = make_inbox_client()
+    _, name_to_id = build_list_maps(client)
+    outside_root = tmp_path / "outside"
+    outside_root.mkdir()
+    declared_dir = outside_root / "cw_dekoder"
+    declared_dir.mkdir()
+    workspace_root = tmp_path / "workspace"
+    workspace_root.mkdir()
+    client.create_card(
+        name_to_id["INBOX / Nápady"],
+        "Budoucí projekt — CW dekodér",
+        desc=f"Navrhni kostru CW dekodéru.\nPracovní adresář: {declared_dir}",
+    )
+    project_paths = {}
+
+    changed = process_inbox(
+        client,
+        [],
+        persist_project=lambda project: sync_project_to_trello(client, project),
+        project_paths=project_paths,
+        projects_root=str(tmp_path / "projects"),
+        workspace_root=str(workspace_root),
+    )
+
+    # AO's own sandbox (config.yaml workspace_root) would refuse this path
+    # at dispatch time anyway - PM must fail closed here, at intake, instead
+    # of burning an implementation cycle to discover the same rejection (see
+    # incident: card P3.01, cw dekoder v1 - D:\cw_dekoder was accepted here
+    # and only rejected later by AO's _ensure_within_workspace).
+    assert changed == []
+    assert list(declared_dir.iterdir()) == []
+
+
+def test_new_inbox_idea_with_declared_directory_inside_workspace_root_is_accepted(tmp_path):
+    client = make_inbox_client()
+    _, name_to_id = build_list_maps(client)
+    workspace_root = tmp_path / "workspace"
+    declared_dir = workspace_root / "cw_dekoder"
+    declared_dir.mkdir(parents=True)
+    client.create_card(
+        name_to_id["INBOX / Nápady"],
+        "Budoucí projekt — CW dekodér",
+        desc=f"Navrhni kostru CW dekodéru.\nPracovní adresář: {declared_dir}",
+    )
+    project_paths = {}
+
+    changed = process_inbox(
+        client,
+        [],
+        persist_project=lambda project: sync_project_to_trello(client, project),
+        project_paths=project_paths,
+        projects_root=str(tmp_path / "projects"),
+        workspace_root=str(workspace_root),
+    )
+
+    assert len(changed) >= 1
+    for project in changed:
+        metadata = project.extra_data["inbox_preparation"]
+        assert Path(metadata["project_path"]).resolve() == declared_dir.resolve()
+
+
 def test_new_inbox_idea_with_declared_non_empty_directory_fails_closed(tmp_path):
     client = make_inbox_client()
     _, name_to_id = build_list_maps(client)

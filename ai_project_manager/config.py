@@ -93,6 +93,13 @@ class OrchestratorConfig:
     inbox_planner_timeout_seconds: float = 660.0
     project_paths: dict = field(default_factory=dict)
     projects_root: Optional[str] = None
+    # Mirrors ai-orchestrator's own config.yaml ``workspace_root`` (the
+    # sandbox _ensure_within_workspace enforces). PM has no access to AO's
+    # config file, so this must be told to it explicitly - otherwise a new
+    # Inbox project can adopt a declared working directory that AO will
+    # later refuse at dispatch time, wasting a full implementation cycle to
+    # discover what PM could have rejected immediately at intake.
+    workspace_root: Optional[str] = None
     spec_dir: str = "specs"
     outbox_dir: str = "outbox"
 
@@ -260,6 +267,9 @@ def load_config(env: Optional[Mapping[str, str]] = None) -> Config:
       AI_PM_INBOX_PLANNER_TIMEOUT_SECONDS         (optional, default 660)
       AI_PM_PROJECT_PATHS                          (optional JSON object: project name -> local path)
       AI_PM_PROJECTS_ROOT                          (optional shared base dir for project checkouts)
+      AI_ORCHESTRATOR_WORKSPACE_ROOT                (optional; must match AO's config.yaml
+                                                     workspace_root so PM can fail closed at
+                                                     intake instead of at AO dispatch time)
       AI_ORCHESTRATOR_SPEC_DIR                     (default "specs")
       AI_ORCHESTRATOR_OUTBOX_DIR                   (default "outbox")
       AI_PM_PROVIDERS                              (default "groq,antigravity,claude-code,codex";
@@ -351,6 +361,11 @@ def load_config(env: Optional[Mapping[str, str]] = None) -> Config:
         projects_root=(
             _absolute_path_setting(env, "AI_PM_PROJECTS_ROOT", "")
             if "AI_PM_PROJECTS_ROOT" in env
+            else None
+        ),
+        workspace_root=(
+            _absolute_path_setting(env, "AI_ORCHESTRATOR_WORKSPACE_ROOT", "")
+            if "AI_ORCHESTRATOR_WORKSPACE_ROOT" in env
             else None
         ),
         # Resolved to absolute here (not left as a bare relative string)
