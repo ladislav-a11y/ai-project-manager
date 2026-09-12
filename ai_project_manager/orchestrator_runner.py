@@ -1315,6 +1315,18 @@ def _controller_finalization_is_verified(
     previous_head: Optional[str] = None,
 ) -> bool:
     """Accept a controller proof for a commit already present at audit time."""
+    # finalize_repository() only ever reaches "completed" with pushed=False
+    # when push was never requested for this project identity (no
+    # AI_ORCHESTRATOR_ALLOWED_PUSH_REMOTES entry) - any actual push failure
+    # returns status="blocked" instead, never "completed". So pushed=False
+    # unambiguously means "local-only completion was the intended proof",
+    # not a degraded/unverified push - a clean local commit is a complete,
+    # valid result on its own (see incident: card P3.01, cw dekoder v1 - a
+    # freshly generated Inbox checkout never gets an allowlisted remote).
+    pushed = finalization.get("pushed") if isinstance(finalization, dict) else None
+    push_proof_ok = (
+        pushed is True and finalization.get("remote_commit") == current_head
+    ) or pushed is False
     proof_is_current = (
         isinstance(finalization, dict)
         and finalization.get("status") == "completed"
@@ -1322,10 +1334,9 @@ def _controller_finalization_is_verified(
         and isinstance(finalization.get("committed"), bool)
         and finalization.get("clean") is True
         and finalization.get("tests_passed") is True
-        and finalization.get("pushed") is True
+        and push_proof_ok
         and bool(current_head)
         and finalization.get("commit_hash") == current_head
-        and finalization.get("remote_commit") == current_head
     )
     if not proof_is_current:
         return False
@@ -1404,14 +1415,23 @@ def _controller_finalize(
         "--project", project_path,
         "--run-id", run_id,
         "--goal", goal,
-        "--push",
     ]
     for path in paths:
         full_command.extend(["--path", path])
     for path in preexisting_paths or []:
         full_command.extend(["--preexisting-path", path])
     if allowed_remote:
-        full_command.extend(["--allowed-remote", allowed_remote])
+        # Only ask AO's finalizer to push when this project identity has an
+        # explicit allowlisted remote. Without this, a project with no
+        # configured remote (every freshly generated Inbox checkout, which
+        # never gets one automatically) could never finalize at all - AO's
+        # finalize_repository() unconditionally blocks on "origin remote is
+        # missing" once --push is passed, even though a clean local commit
+        # is a perfectly valid, complete result on its own (see incident:
+        # card P3.01, cw dekoder v1). Local-only completion remains fully
+        # verified: finalize_repository still requires a clean tree and a
+        # real commit either way, --push only adds the push+verify step.
+        full_command.extend(["--push", "--allowed-remote", allowed_remote])
     previous_head = get_git_head(project_path, run_git=run_git)
     if not previous_head:
         return {

@@ -260,6 +260,57 @@ def test_build_finalize_fn_commits_a_fully_implemented_card(tmp_path):
     assert registry_calls[0][registry_calls[0].index("--path") + 1] == "tracked.py"
 
 
+def test_build_finalize_fn_completes_locally_without_a_configured_remote(tmp_path):
+    """A generated Inbox checkout never gets an allowlisted remote (see
+    incident: card P3.01, cw dekoder v1). --push must not be forced onto AO's
+    finalizer in that case - it unconditionally blocks on "origin remote is
+    missing" the moment --push is passed, even though a clean local commit
+    is a perfectly valid, complete result on its own."""
+    registry_calls = []
+
+    def fake_subprocess_run(command):
+        registry_calls.append(command)
+        return completed(json.dumps({
+            "status": "completed", "done": True, "committed": True,
+            "clean": True, "tests_passed": True, "pushed": False,
+            "commit_hash": "abc123", "remote_commit": None,
+        }))
+
+    heads = iter(("before123", "before123", "abc123"))
+
+    def fake_git(command):
+        if command[-1] == "HEAD":
+            return completed(next(heads) + "\n")
+        if "--abbrev-ref" in command:
+            return completed("main\n")
+        if "remote" in command:
+            return completed("", returncode=1)
+        return completed("main\n")
+
+    project = ProjectRecord(
+        name="Demo",
+        dod=[DoDItem(text="implementation complete", checked=True)],
+        checkpoint={"completed_dod_indices": [0]},
+    )
+    finalize_fn = build_finalize_fn(
+        ["controller-finalize"],
+        project_paths={"Demo": str(tmp_path / "demo-checkout")},
+        finalize_paths={"Demo": ["tracked.py"]},
+        allowed_push_remotes=None,
+        subprocess_run=fake_subprocess_run,
+        run_git=fake_git,
+        run_id_fn=lambda: "fixed-run-id",
+    )
+
+    result = finalize_fn(project)
+
+    assert result["status"] == "done"
+    assert result["checkpoint"]["finalization"]["commit_hash"] == "abc123"
+    assert len(registry_calls) == 1
+    assert "--push" not in registry_calls[0]
+    assert "--allowed-remote" not in registry_calls[0]
+
+
 def test_run_fn_persists_preexisting_paths_for_controller_finalization(tmp_path):
     registry = ProviderRegistry()
     registry.mark_available("claude")
@@ -442,6 +493,12 @@ def test_controller_finalization_rejects_incomplete_proof(missing_or_false):
     }
     if missing_or_false == "remote_commit":
         finalization.pop(missing_or_false)
+    elif missing_or_false == "pushed":
+        # False is now a legitimate "local-only completion, no remote was
+        # configured for this project" proof (see incident: card P3.01, cw
+        # dekoder v1) - only an outright malformed/missing value is still a
+        # rejected, incomplete proof.
+        finalization[missing_or_false] = None
     else:
         finalization[missing_or_false] = False
 
