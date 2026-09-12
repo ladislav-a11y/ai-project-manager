@@ -52,7 +52,10 @@ def get_git_head(repo_path: Optional[str], run_git: RunCommand = default_run_com
 
 
 def ensure_git_repo_initialized(
-    repo_path: Optional[str], run_git: RunCommand = default_run_command
+    repo_path: Optional[str],
+    run_git: RunCommand = default_run_command,
+    git_user_name: Optional[str] = None,
+    git_user_email: Optional[str] = None,
 ) -> bool:
     """Make sure a freshly created project checkout has a resolvable HEAD.
 
@@ -63,6 +66,16 @@ def ensure_git_repo_initialized(
     since no later retry ever creates the missing repository either. Calling
     this once, right after the directory is created, keeps that failure from
     ever happening for a checkout PM itself materialized.
+
+    ``git_user_name``/``git_user_email`` (when given) are also persisted as
+    this repository's own local ``user.name``/``user.email`` config, not just
+    used for this one init commit - AO's own later finalization commits call
+    plain ``git commit`` with no ``-c`` override, so without a persisted
+    identity every one of them would fail with "Author identity unknown" the
+    very first time real work needs to be committed (see incident: card
+    P3.01, cw dekoder v1). Without an explicit identity, a generic
+    ai-project-manager identity is used for this commit only and nothing is
+    persisted - existing behavior for a caller that has not opted in.
 
     A no-op (returns True) when ``.git`` already exists. Never touches a
     repository that already has history.
@@ -82,13 +95,18 @@ def ensure_git_repo_initialized(
         if init_res.returncode != 0:
             logger.warning("ensure_git_repo_initialized: 'git init' failed for %s: %s", repo_path, init_res.stderr.strip())
             return False
+        if git_user_name and git_user_email:
+            run_git(("git", "-C", str(repo_path), "config", "user.name", git_user_name))
+            run_git(("git", "-C", str(repo_path), "config", "user.email", git_user_email))
         run_git(("git", "-C", str(repo_path), "add", "-A"))
-        commit_res = run_git((
-            "git", "-C", str(repo_path),
-            "-c", "user.name=ai-project-manager",
-            "-c", "user.email=ai-project-manager@localhost",
-            "commit", "--allow-empty", "-m", "chore: initialize generated project checkout",
-        ))
+        commit_command = ["git", "-C", str(repo_path)]
+        if not (git_user_name and git_user_email):
+            commit_command += [
+                "-c", "user.name=ai-project-manager",
+                "-c", "user.email=ai-project-manager@localhost",
+            ]
+        commit_command += ["commit", "--allow-empty", "-m", "chore: initialize generated project checkout"]
+        commit_res = run_git(tuple(commit_command))
         if commit_res.returncode != 0:
             logger.warning("ensure_git_repo_initialized: initial commit failed for %s: %s", repo_path, commit_res.stderr.strip())
             return False

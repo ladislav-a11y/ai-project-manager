@@ -223,6 +223,8 @@ def main(
         workspace_root=(
             config.orchestrator.workspace_root if validate_repository_paths else None
         ),
+        git_user_name=config.orchestrator.git_user_name,
+        git_user_email=config.orchestrator.git_user_email,
         card_project_keys=config.card_project_keys,
         recovery_max_attempts=config.recovery_max_attempts,
         audit_run_fn=audit_run_fn,

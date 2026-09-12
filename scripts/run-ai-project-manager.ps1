@@ -229,6 +229,14 @@ try {
     # a declared Inbox working directory outside AO's sandbox at intake
     # instead of only discovering the rejection later, at AO dispatch time.
     $env:AI_ORCHESTRATOR_WORKSPACE_ROOT = $workspaceRoot
+    # Persisted as a generated checkout's own local git identity right after
+    # git init, so AO's later finalization commit (plain "git commit", no -c
+    # override) does not fail with "Author identity unknown" (see incident:
+    # card P3.01, cw dekoder v1). Matches the identity already configured by
+    # hand in every pre-existing checkout (AI Project Manager, Station
+    # Agent, AI Orchestrator).
+    $env:AI_PM_GIT_USER_NAME = 'Ladislav Kocandrle'
+    $env:AI_PM_GIT_USER_EMAIL = 'ladislav@kocandrle.com'
 
     # One-time migration for real production cards created before the
     # project_key label existed: the board's pre-existing cards carry
@@ -333,6 +341,8 @@ finally {
     $env:AI_PM_PROJECT_PATHS = $null
     $env:AI_PM_PROJECTS_ROOT = $null
     $env:AI_ORCHESTRATOR_WORKSPACE_ROOT = $null
+    $env:AI_PM_GIT_USER_NAME = $null
+    $env:AI_PM_GIT_USER_EMAIL = $null
     $env:AI_PM_CARD_PROJECT_KEYS = $null
     $credentials = $null
     Stop-Transcript | Out-Null

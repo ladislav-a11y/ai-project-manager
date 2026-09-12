@@ -420,6 +420,8 @@ def load_projects_and_inbox(
     auto_intake_when_workflow_empty: bool = False,
     projects_root: Optional[str] = None,
     workspace_root: Optional[str] = None,
+    git_user_name: Optional[str] = None,
+    git_user_email: Optional[str] = None,
     planner: Optional[InboxPlannerFn] = None,
     provider_refresh: Optional[Callable[[], bool]] = None,
 ) -> list:
@@ -534,6 +536,8 @@ def load_projects_and_inbox(
         card_project_keys=card_project_keys,
         projects_root=projects_root,
         workspace_root=workspace_root,
+        git_user_name=git_user_name,
+        git_user_email=git_user_email,
         planner=planner,
     )
     if changed:
@@ -634,6 +638,8 @@ def run_tick(
     card_project_keys: Optional[dict] = None,
     projects_root: Optional[str] = None,
     workspace_root: Optional[str] = None,
+    git_user_name: Optional[str] = None,
+    git_user_email: Optional[str] = None,
     recovery_max_attempts: int = DEFAULT_MAX_ATTEMPTS,
     recovery_backoff: Callable[[int], timedelta] = default_backoff,
     audit_run_fn: Optional[AuditRunFn] = None,
@@ -675,6 +681,8 @@ def run_tick(
             card_project_keys=card_project_keys,
             projects_root=projects_root,
             workspace_root=workspace_root,
+            git_user_name=git_user_name,
+            git_user_email=git_user_email,
             planner=inbox_planner,
             provider_refresh=provider_refresh,
         )
@@ -959,6 +967,8 @@ def run_loop(
     card_project_keys: Optional[dict] = None,
     projects_root: Optional[str] = None,
     workspace_root: Optional[str] = None,
+    git_user_name: Optional[str] = None,
+    git_user_email: Optional[str] = None,
     recovery_max_attempts: int = DEFAULT_MAX_ATTEMPTS,
     recovery_backoff: Callable[[int], timedelta] = default_backoff,
     audit_run_fn: Optional[AuditRunFn] = None,
@@ -1052,6 +1062,8 @@ def run_loop(
                     card_project_keys=card_project_keys,
                     projects_root=projects_root,
                     workspace_root=workspace_root,
+                    git_user_name=git_user_name,
+                    git_user_email=git_user_email,
                     inbox_planner=inbox_planner,
                     provider_refresh=provider_refresh,
                     recovery_max_attempts=recovery_max_attempts,

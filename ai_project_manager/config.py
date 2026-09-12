@@ -100,6 +100,13 @@ class OrchestratorConfig:
     # later refuse at dispatch time, wasting a full implementation cycle to
     # discover what PM could have rejected immediately at intake.
     workspace_root: Optional[str] = None
+    # Persisted as a generated checkout's own local git identity right after
+    # ``git init`` (see dod_validator.ensure_git_repo_initialized) - without
+    # this, AO's later finalization commits (plain ``git commit``, no ``-c``
+    # override) fail with "Author identity unknown" the first time real work
+    # needs to be committed there (see incident: card P3.01, cw dekoder v1).
+    git_user_name: Optional[str] = None
+    git_user_email: Optional[str] = None
     spec_dir: str = "specs"
     outbox_dir: str = "outbox"
 
@@ -270,6 +277,9 @@ def load_config(env: Optional[Mapping[str, str]] = None) -> Config:
       AI_ORCHESTRATOR_WORKSPACE_ROOT                (optional; must match AO's config.yaml
                                                      workspace_root so PM can fail closed at
                                                      intake instead of at AO dispatch time)
+      AI_PM_GIT_USER_NAME, AI_PM_GIT_USER_EMAIL     (optional; persisted as a generated
+                                                     checkout's local git identity so AO's
+                                                     later finalization commits succeed)
       AI_ORCHESTRATOR_SPEC_DIR                     (default "specs")
       AI_ORCHESTRATOR_OUTBOX_DIR                   (default "outbox")
       AI_PM_PROVIDERS                              (default "groq,antigravity,claude-code,codex";
@@ -368,6 +378,8 @@ def load_config(env: Optional[Mapping[str, str]] = None) -> Config:
             if "AI_ORCHESTRATOR_WORKSPACE_ROOT" in env
             else None
         ),
+        git_user_name=_non_empty(env, "AI_PM_GIT_USER_NAME", "") or None,
+        git_user_email=_non_empty(env, "AI_PM_GIT_USER_EMAIL", "") or None,
         # Resolved to absolute here (not left as a bare relative string)
         # so the outbox result is always read from a fixed, unambiguous
         # directory - never one that silently resolves relative to

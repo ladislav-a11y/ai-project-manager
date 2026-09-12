@@ -1,4 +1,5 @@
 import json
+import subprocess
 
 import pytest
 from pathlib import Path
@@ -1043,6 +1044,43 @@ def test_unlabelled_new_inbox_idea_is_prepared_as_isolated_prioritized_project(t
         # forever once the implementation DoD is complete (see incident:
         # card P3.01, cw dekoder v1 - generated checkout never got git init).
         assert (Path(metadata["project_path"]) / ".git").is_dir()
+
+
+def test_generated_project_git_identity_is_persisted_for_later_finalization_commits(tmp_path):
+    """Without a persisted repo-local identity, AO's later finalization
+    commit (plain ``git commit``, no ``-c`` override) fails with "Author
+    identity unknown" the first time real work needs to be committed there
+    (see incident: card P3.01, cw dekoder v1)."""
+    client = make_inbox_client()
+    _, name_to_id = build_list_maps(client)
+    client.create_card(
+        name_to_id["INBOX / Nápady"], "New isolated catalog idea", desc="Build a catalog export"
+    )
+    project_paths = {}
+
+    changed = process_inbox(
+        client,
+        [],
+        persist_project=lambda project: sync_project_to_trello(client, project),
+        project_paths=project_paths,
+        projects_root=str(tmp_path / "projects"),
+        git_user_name="Test User",
+        git_user_email="test@example.com",
+    )
+
+    assert len(changed) >= 1
+    for project in changed:
+        project_path = project.extra_data["inbox_preparation"]["project_path"]
+        name = subprocess.run(
+            ["git", "-C", project_path, "config", "--get", "user.name"],
+            capture_output=True, text=True,
+        )
+        email = subprocess.run(
+            ["git", "-C", project_path, "config", "--get", "user.email"],
+            capture_output=True, text=True,
+        )
+        assert name.stdout.strip() == "Test User"
+        assert email.stdout.strip() == "test@example.com"
 
 
 def test_new_inbox_idea_with_declared_working_directory_adopts_existing_empty_dir(tmp_path):

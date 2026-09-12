@@ -433,6 +433,8 @@ def process_inbox(
     card_project_keys: Optional[Mapping[str, str]] = None,
     projects_root: Optional[str] = None,
     workspace_root: Optional[str] = None,
+    git_user_name: Optional[str] = None,
+    git_user_email: Optional[str] = None,
     planner: Optional[InboxPlannerFn] = None,
 ) -> list[ProjectRecord]:
     """Prepare at most one new Inbox source batch per tick.
@@ -694,7 +696,11 @@ def process_inbox(
                 # and the controller finalizer's HEAD check fails forever,
                 # not just transiently - see dod_validator.
                 # ensure_git_repo_initialized for the incident this fixes.
-                if not ensure_git_repo_initialized(preparation.project_path):
+                if not ensure_git_repo_initialized(
+                    preparation.project_path,
+                    git_user_name=git_user_name,
+                    git_user_email=git_user_email,
+                ):
                     logger.warning(
                         "Nepodařilo se inicializovat git repozitář pro nový projekt id=%s path=%s",
                         card.get("id"), preparation.project_path,
