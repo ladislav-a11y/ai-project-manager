@@ -16,6 +16,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Mapping, MutableMapping, Optional
 
+from .dod_validator import ensure_git_repo_initialized
 from .models import DoDItem, ProjectRecord, ProjectStatus
 from .inbox_preparation import (
     PreparedTask,
@@ -687,6 +688,15 @@ def process_inbox(
                         continue
                     project_paths[preparation.project_key] = preparation.project_path
                 Path(preparation.project_path).mkdir(parents=True, exist_ok=True)
+                # Without this, a checkout materialized here has no ``.git``
+                # and the controller finalizer's HEAD check fails forever,
+                # not just transiently - see dod_validator.
+                # ensure_git_repo_initialized for the incident this fixes.
+                if not ensure_git_repo_initialized(preparation.project_path):
+                    logger.warning(
+                        "Nepodařilo se inicializovat git repozitář pro nový projekt id=%s path=%s",
+                        card.get("id"), preparation.project_path,
+                    )
             # Persist every split child as an independent Připraveno card.
             # The source content is immutable; archive it only after every
             # target is durable. A failed split remains retryable by source/index.

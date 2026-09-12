@@ -210,6 +210,14 @@ try {
         # This Inbox project has a durable generated checkout. Keep the
         # mapping explicit so a split child cannot be guessed from its title.
         'Bazar Scout + multi-inzerce [Inbox 6a89edf4]' = Join-Path $workspaceRoot 'bazar-scout-multi-inzerce-inbox-6a89edf4'
+        # The source Inbox card named an explicit working directory
+        # (D:\cw_dekoder) in free text, but the intake ran before
+        # inbox_preparation.py learned to honor a declared "Pracovni
+        # adresar:" line, so it auto-generated its own checkout instead
+        # (D:\orchestrator\cw-dekoder-v1-inbox-6a9b98c8). That work has been
+        # moved into D:\cw_dekoder (with git init) and this mapping repoints
+        # every remaining subtask (2/11-11/11) of the same Inbox idea there.
+        'cw dekoder v1 [Inbox 6a9b98c8]' = 'D:\cw_dekoder'
     }
     $env:AI_PM_PROJECT_PATHS = $projectPaths | ConvertTo-Json -Compress
 

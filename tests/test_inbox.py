@@ -1038,6 +1038,67 @@ def test_unlabelled_new_inbox_idea_is_prepared_as_isolated_prioritized_project(t
         assert Path(metadata["project_path"]).is_dir()
         assert project.project_key in project_paths
         assert project_paths[project.project_key] == metadata["project_path"]
+        # A checkout materialized here must already have a resolvable git
+        # HEAD - otherwise the controller finalizer's HEAD check fails
+        # forever once the implementation DoD is complete (see incident:
+        # card P3.01, cw dekoder v1 - generated checkout never got git init).
+        assert (Path(metadata["project_path"]) / ".git").is_dir()
+
+
+def test_new_inbox_idea_with_declared_working_directory_adopts_existing_empty_dir(tmp_path):
+    client = make_inbox_client()
+    _, name_to_id = build_list_maps(client)
+    declared_dir = tmp_path / "cw_dekoder"
+    declared_dir.mkdir()
+    source = client.create_card(
+        name_to_id["INBOX / Nápady"],
+        "Budoucí projekt — CW dekodér",
+        desc=f"Navrhni kostru CW dekodéru.\nPracovní adresář: {declared_dir}",
+    )
+    project_paths = {}
+
+    changed = process_inbox(
+        client,
+        [],
+        persist_project=lambda project: sync_project_to_trello(client, project),
+        project_paths=project_paths,
+        projects_root=str(tmp_path / "projects"),
+    )
+
+    assert len(changed) >= 1
+    for project in changed:
+        metadata = project.extra_data["inbox_preparation"]
+        assert metadata["generated_project"] is True
+        assert Path(metadata["project_path"]).resolve() == declared_dir.resolve()
+        assert (declared_dir / ".git").is_dir()
+    # PM never invents a project directory from free text - it only ever
+    # adopts one a human already created and left empty for this purpose.
+    assert not (tmp_path / "projects").exists()
+
+
+def test_new_inbox_idea_with_declared_non_empty_directory_fails_closed(tmp_path):
+    client = make_inbox_client()
+    _, name_to_id = build_list_maps(client)
+    declared_dir = tmp_path / "not_empty"
+    declared_dir.mkdir()
+    (declared_dir / "existing_file.txt").write_text("do not touch")
+    client.create_card(
+        name_to_id["INBOX / Nápady"],
+        "Budoucí projekt — CW dekodér",
+        desc=f"Navrhni kostru CW dekodéru.\nPracovní adresář: {declared_dir}",
+    )
+    project_paths = {}
+
+    changed = process_inbox(
+        client,
+        [],
+        persist_project=lambda project: sync_project_to_trello(client, project),
+        project_paths=project_paths,
+        projects_root=str(tmp_path / "projects"),
+    )
+
+    assert changed == []
+    assert list(declared_dir.iterdir()) == [declared_dir / "existing_file.txt"]
 
 
 def test_generated_inbox_project_mapping_is_rehydrated_after_restart(tmp_path):

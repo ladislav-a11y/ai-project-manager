@@ -624,6 +624,23 @@ def _declared_working_directory(card: Mapping) -> tuple[Optional[str], Optional[
     return path, None
 
 
+def _is_existing_empty_directory(path: str) -> bool:
+    """True only for a directory that already exists and has no entries.
+
+    This is the entire safety boundary for adopting a free-text ``Pracovní
+    adresář:`` declaration on a genuinely new Inbox project: PM never
+    creates the directory itself here, so an Inbox card can only ever point
+    at a location a human already prepared for exactly this purpose, never
+    at an arbitrary or populated path (a system directory, an existing
+    project, a user's documents, ...).
+    """
+    try:
+        candidate = Path(path).expanduser()
+        return candidate.is_dir() and not any(candidate.iterdir())
+    except OSError:
+        return False
+
+
 def _normalized_project_path(path: str) -> str:
     """Normalize a path for exact allowlist comparison on the host OS."""
     value = str(path or "").strip()
@@ -921,12 +938,32 @@ def prepare_inbox_card(
             )
             for label in card.get("labels", []) or []
         )
-        and projects_root
     ):
-        project_key = _generated_project_identity(source_name, str(card.get("id") or ""))
-        project_path = _generated_project_path(project_key, projects_root)
-        human_reason = None
-        generated_project = True
+        candidate_key = _generated_project_identity(source_name, str(card.get("id") or ""))
+        declared_path, declared_reason = _declared_working_directory(card)
+        if declared_reason:
+            human_reason = declared_reason
+        elif declared_path and _is_existing_empty_directory(declared_path):
+            # A human-prepared, already-existing, empty directory is safe to
+            # adopt verbatim: unlike the generated slug checkout below, this
+            # path is never created by PM itself, so free-form Inbox text can
+            # never be used to point an agent at an unexpected, populated, or
+            # system location - it can only ever select a directory a human
+            # already set aside for exactly this purpose.
+            project_key = candidate_key
+            project_path = declared_path
+            human_reason = None
+            generated_project = True
+        elif declared_path:
+            human_reason = (
+                "Deklarovaný pracovní adresář musí už existovat a být prázdný "
+                f"(bezpečnostní pravidlo proti vytváření cest z volného textu): {declared_path!r}."
+            )
+        elif projects_root:
+            project_key = candidate_key
+            project_path = _generated_project_path(candidate_key, projects_root)
+            human_reason = None
+            generated_project = True
     priority, priority_reason = priority_override or derive_priority(card, text, default_priority)
     raw_tasks = planned_tasks or split_tasks(source_name, text, project_key)
     if planned_tasks is not None:

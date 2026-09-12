@@ -51,6 +51,53 @@ def get_git_head(repo_path: Optional[str], run_git: RunCommand = default_run_com
     return None
 
 
+def ensure_git_repo_initialized(
+    repo_path: Optional[str], run_git: RunCommand = default_run_command
+) -> bool:
+    """Make sure a freshly created project checkout has a resolvable HEAD.
+
+    A generated Inbox checkout starts as a plain directory with no ``.git``.
+    Nothing else in the pipeline runs ``git init`` for it, so without this the
+    controller finalizer's ``get_git_head`` fails forever with "cannot verify
+    repository HEAD" on every retry - not a transient error, a permanent one,
+    since no later retry ever creates the missing repository either. Calling
+    this once, right after the directory is created, keeps that failure from
+    ever happening for a checkout PM itself materialized.
+
+    A no-op (returns True) when ``.git`` already exists. Never touches a
+    repository that already has history.
+    """
+    if not repo_path:
+        return False
+    # ``.git`` presence, not a resolvable HEAD, is the right no-op guard: a
+    # generated checkout nested under some unrelated ancestor repository
+    # would otherwise resolve HEAD via git's normal upward repo-discovery
+    # (``git -C <dir>`` still walks up looking for ``.git``) and this would
+    # wrongly report already-initialized without ever creating the target
+    # directory's own repository.
+    if (Path(repo_path) / ".git").exists():
+        return True
+    try:
+        init_res = run_git(("git", "-C", str(repo_path), "init"))
+        if init_res.returncode != 0:
+            logger.warning("ensure_git_repo_initialized: 'git init' failed for %s: %s", repo_path, init_res.stderr.strip())
+            return False
+        run_git(("git", "-C", str(repo_path), "add", "-A"))
+        commit_res = run_git((
+            "git", "-C", str(repo_path),
+            "-c", "user.name=ai-project-manager",
+            "-c", "user.email=ai-project-manager@localhost",
+            "commit", "--allow-empty", "-m", "chore: initialize generated project checkout",
+        ))
+        if commit_res.returncode != 0:
+            logger.warning("ensure_git_repo_initialized: initial commit failed for %s: %s", repo_path, commit_res.stderr.strip())
+            return False
+    except Exception as exc:
+        logger.debug("ensure_git_repo_initialized failed on %s: %s", repo_path, exc)
+        return False
+    return bool(get_git_head(repo_path, run_git=run_git))
+
+
 def get_git_status(repo_path: Optional[str], run_git: RunCommand = default_run_command) -> tuple[bool, str]:
     if not repo_path:
         return False, "repo path not specified"
