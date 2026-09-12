@@ -77,6 +77,19 @@ def _set_trello_env(monkeypatch):
     # directories, failing on "cannot verify repository HEAD before
     # execution" instead of the behavior each test actually verifies.
     monkeypatch.delenv("AI_ORCHESTRATOR_FINALIZE_CMD", raising=False)
+    # main() now unconditionally refreshes provider notes once at the start
+    # of every tick (see daemon.run_tick), even when run_fn is injected and
+    # the real build_run_fn()/build_finalize_fn() are never constructed.
+    # That refresh call is still built from config.orchestrator.command, so
+    # this machine's own live scheduler AI_ORCHESTRATOR_CMD (a real,
+    # working ai-orchestrator install) would make every such test actually
+    # shell out to the live provider CLIs for real - correct, but tens of
+    # seconds slower per test for no reason a throwaway Trello fixture
+    # cares about. A fast, harmless placeholder keeps the refresh call
+    # itself real (still exercised) without paying live-CLI latency; a test
+    # that specifically cares about the wired command sets its own value
+    # after calling this fixture, which overrides this default.
+    monkeypatch.setenv("AI_ORCHESTRATOR_CMD", f'"{sys.executable}" -c "pass"')
 
 
 def test_main_once_runs_a_full_tick_through_the_real_entrypoint_wiring(monkeypatch):

@@ -64,6 +64,30 @@ def test_run_tick_delegates_ready_work_to_provider_broker():
     assert calls == [("Demo", "provider-broker")]
 
 
+def test_run_tick_refreshes_providers_every_tick_even_with_no_schedulable_work():
+    """A provider that failed earlier (LIMITED with no due retry_at yet, or
+    a structural UNAVAILABLE) stays on stale cached broker data until the
+    broker happens to be queried again by a dispatch - which never happens
+    on an otherwise-idle tick, so recovery is invisible until the next real
+    dispatch attempt fails too. provider_refresh must run every tick,
+    independent of whether there is any schedulable work."""
+    client = InMemoryTrelloClient()
+    registry = ProviderRegistry()
+    calls = []
+
+    def provider_refresh():
+        calls.append(1)
+        return True
+
+    outcome = run_tick(
+        client, registry, lambda project, provider: {},
+        default_providers=["claude"], provider_refresh=provider_refresh,
+    )
+
+    assert outcome.ran is False
+    assert calls == [1]
+
+
 def test_run_tick_does_not_use_pm_provider_state_for_dispatch():
     project = ProjectRecord(name="Demo", priority=3, status=ProjectStatus.READY)
     client = make_client_with_project(project)
@@ -1107,7 +1131,13 @@ def test_run_tick_logs_wait_when_provider_is_limited(caplog):
     assert "AO vybere" in messages
 
 
-def test_empty_workflow_refreshes_provider_notes_once_before_inbox_planner():
+def test_empty_workflow_refreshes_provider_notes_before_inbox_planner():
+    # Refreshes twice: once unconditionally at the top of every tick, and
+    # once more from the narrower Inbox-planning safety gate immediately
+    # before the planner call - the two guarantees are independent and each
+    # is tested on its own (see test_run_tick_refreshes_providers_every_tick_
+    # even_with_no_schedulable_work and test_failed_provider_refresh_
+    # blocks_inbox_planner_and_keeps_card).
     client = InMemoryTrelloClient()
     _, name_to_id = build_list_maps(client)
     client.create_card(
@@ -1139,10 +1169,10 @@ def test_empty_workflow_refreshes_provider_notes_once_before_inbox_planner():
     )
 
     assert outcome.ran is False
-    assert events == ["refresh", "planner"]
+    assert events == ["refresh", "refresh", "planner"]
 
 
-def test_empty_workflow_without_inbox_card_does_not_refresh_provider_notes():
+def test_empty_workflow_without_inbox_card_still_refreshes_once_per_tick():
     client = InMemoryTrelloClient()
     registry = ProviderRegistry()
     registry.mark_available("claude")
@@ -1161,7 +1191,9 @@ def test_empty_workflow_without_inbox_card_does_not_refresh_provider_notes():
     )
 
     assert outcome.ran is False
-    assert refresh_calls == []
+    # The unconditional per-tick refresh still runs even with no pending
+    # Inbox card; only the narrower Inbox-planning refresh is skipped.
+    assert refresh_calls == [True]
     assert planner_calls == []
 
 
@@ -1192,7 +1224,7 @@ def test_failed_provider_refresh_blocks_inbox_planner_and_keeps_card():
     assert client.get_card(source["id"])["closed"] is False
 
 
-def test_active_workflow_does_not_refresh_provider_notes_for_inbox():
+def test_active_workflow_only_refreshes_once_per_tick_not_for_inbox():
     client = InMemoryTrelloClient()
     _, name_to_id = build_list_maps(client)
     project = ProjectRecord(
@@ -1220,7 +1252,9 @@ def test_active_workflow_does_not_refresh_provider_notes_for_inbox():
     )
 
     assert outcome.ran is True
-    assert refresh_calls == []
+    # The unconditional per-tick refresh still runs; only the narrower
+    # Inbox-planning refresh is skipped because governed work is active.
+    assert refresh_calls == [True]
     assert planner_calls == []
 
 

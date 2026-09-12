@@ -666,6 +666,24 @@ def run_tick(
     not wired up the audit path yet) a Testování card simply stays put - never
     falling back into ordinary implementation dispatch either way.
     """
+    # Refresh every provider's cached health/model notes once at the start
+    # of every tick, independent of whether there turns out to be any work
+    # to dispatch this tick. Without this, a provider that failed earlier
+    # (LIMITED with no due retry_at yet, or a structural UNAVAILABLE) stays
+    # on stale cached data until the broker itself happens to be queried
+    # again by a dispatch - which never happens on an otherwise-idle tick,
+    # so recovery is invisible until the next real dispatch attempt fails
+    # too. A failed refresh is logged and never blocks the tick - provider
+    # health is best-effort background maintenance, not a dispatch
+    # precondition.
+    if provider_refresh is not None:
+        try:
+            refreshed = provider_refresh()
+        except Exception:  # noqa: BLE001 - refresh must never crash the tick
+            logger.exception("per-tick provider refresh raised")
+        else:
+            if not refreshed:
+                logger.warning("per-tick provider refresh did not complete")
     # Provider availability may change before a later Trello operation
     # fails (most importantly, run_fn can mark a provider LIMITED and the
     # subsequent card sync can fail). Persist in ``finally`` so a transient
