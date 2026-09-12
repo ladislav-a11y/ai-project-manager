@@ -214,10 +214,14 @@ try {
         # (D:\cw_dekoder) in free text, but the intake ran before
         # inbox_preparation.py learned to honor a declared "Pracovni
         # adresar:" line, so it auto-generated its own checkout instead
-        # (D:\orchestrator\cw-dekoder-v1-inbox-6a9b98c8). That work has been
-        # moved into D:\cw_dekoder (with git init) and this mapping repoints
-        # every remaining subtask (2/11-11/11) of the same Inbox idea there.
-        'cw dekoder v1 [Inbox 6a9b98c8]' = 'D:\cw_dekoder'
+        # (D:\orchestrator\cw-dekoder-v1-inbox-6a9b98c8). That work was first
+        # moved to D:\cw_dekoder, but that path sits outside the AO sandbox
+        # (config.yaml workspace_root, default D:\orchestrator - AO and
+        # ClaudeCodeAgent may never touch anything outside it), so it was
+        # relocated once more to D:\orchestrator\cw_dekoder (git history
+        # preserved). This mapping repoints every remaining subtask
+        # (2/11-11/11) of the same Inbox idea there.
+        'cw dekoder v1 [Inbox 6a9b98c8]' = 'D:\orchestrator\cw_dekoder'
     }
     $env:AI_PM_PROJECT_PATHS = $projectPaths | ConvertTo-Json -Compress
 
