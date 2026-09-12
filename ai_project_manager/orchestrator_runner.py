@@ -1628,15 +1628,30 @@ def build_run_fn(
             )
 
         initial_head = get_git_head(project_path, run_git=git_cmd)
-        preexisting_paths = []
-        if initial_head:
-            initial_status = git_cmd(("git", "-C", project_path, "status", "--porcelain"))
-            if initial_status.returncode != 0:
-                raise OrchestratorProcessError(
-                    "could not capture the repository baseline before dispatch: "
-                    f"{initial_status.stderr.strip() or initial_status.stdout.strip()}"
-                )
-            preexisting_paths = _status_paths(initial_status.stdout)
+        # Reuse an already-persisted baseline instead of recomputing it from
+        # the current dirty tree. A provider-limit pause (or any other
+        # interruption) can leave this task's own real, uncommitted work
+        # sitting in the working tree; recomputing "preexisting" from
+        # whatever happens to be dirty right now would misclassify that work
+        # as baseline noise from before this task started, and finalization
+        # would then refuse to commit it forever - "no current-task changes
+        # are available" (see incident: card P3.03, cw dekoder v1 - filtrace
+        # slabeho signalu). The baseline is only ever meaningful as "dirty
+        # before this checkpoint's task began its first dispatch", so once
+        # captured it must survive every later dispatch of the same task.
+        existing_context = (project.checkpoint or {}).get("controller_finalization_context")
+        if isinstance(existing_context, dict) and isinstance(existing_context.get("preexisting_paths"), list):
+            preexisting_paths = list(existing_context["preexisting_paths"])
+        else:
+            preexisting_paths = []
+            if initial_head:
+                initial_status = git_cmd(("git", "-C", project_path, "status", "--porcelain"))
+                if initial_status.returncode != 0:
+                    raise OrchestratorProcessError(
+                        "could not capture the repository baseline before dispatch: "
+                        f"{initial_status.stderr.strip() or initial_status.stdout.strip()}"
+                    )
+                preexisting_paths = _status_paths(initial_status.stdout)
 
         def with_scope_context(result: dict) -> dict:
             result = dict(result or {})

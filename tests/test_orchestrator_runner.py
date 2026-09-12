@@ -349,6 +349,58 @@ def test_run_fn_persists_preexisting_paths_for_controller_finalization(tmp_path)
     }
 
 
+def test_run_fn_reuses_persisted_baseline_instead_of_the_current_dirty_tree(tmp_path):
+    """A provider-limit pause (or any interruption) can leave this task's own
+    real, uncommitted work sitting in the working tree. Recomputing
+    "preexisting" from whatever is dirty right now on the resumed dispatch
+    would misclassify that work as baseline noise from before this task
+    started, and finalization would then refuse to commit it forever - "no
+    current-task changes are available" (see incident: card P3.03, cw
+    dekoder v1 - filtrace slabeho signalu)."""
+    registry = ProviderRegistry()
+    registry.mark_available("claude")
+
+    def fake_git(command):
+        if "status" in command:
+            # The task's own half-finished work (new_module.py) is now
+            # sitting dirty in the tree alongside the original baseline
+            # noise (user-owned.txt) - a fresh snapshot here must not be
+            # taken as this dispatch's baseline.
+            return completed(" M user-owned.txt\n?? new_module.py\n")
+        return completed("head123\n")
+
+    def fake_subprocess_run(command):
+        run_id = command[command.index("--run-id") + 1]
+        write_outbox_result(
+            tmp_path / "outbox",
+            "Demo",
+            {"status": "in_progress", "checkpoint": {"completed_dod_indices": []}},
+            run_id=run_id,
+        )
+        return completed()
+
+    project = ProjectRecord(
+        name="Demo",
+        orchestrator_ready_task="Implement the task",
+        dod=[DoDItem(text="implement the task")],
+        checkpoint={
+            "controller_finalization_context": {"preexisting_paths": ["user-owned.txt"]},
+        },
+    )
+    run_fn, _, _ = make_run_fn(
+        tmp_path,
+        registry,
+        subprocess_run=fake_subprocess_run,
+        run_git=fake_git,
+    )
+
+    result = run_fn(project, "provider-broker")
+
+    assert result["checkpoint"]["controller_finalization_context"] == {
+        "preexisting_paths": ["user-owned.txt"]
+    }
+
+
 def test_build_finalize_fn_skips_an_already_verified_checkout(tmp_path):
     """A card already finalized for the current HEAD (a research-only card
     with nothing to commit, or a retry after a transient Trello write
