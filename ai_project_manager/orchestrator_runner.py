@@ -1515,6 +1515,24 @@ def _controller_finalize(
     indices: list[int],
     run_git: RunCommand,
 ) -> dict:
+    def blocked_result(reason: str, finalization: Optional[dict] = None) -> dict:
+        receipt = dict(finalization or {})
+        receipt["status"] = "blocked"
+        receipt["done"] = False
+        receipt["committed"] = False
+        receipt["clean"] = None
+        receipt["tests_passed"] = False
+        receipt["pushed"] = False
+        receipt["remote"] = None
+        receipt["remote_commit"] = None
+        receipt["run_id"] = run_id
+        receipt["reason"] = reason
+        return {
+            "status": "blocked",
+            "stop_reason": reason,
+            "finalization": receipt,
+        }
+
     paths = _identity_setting(finalize_paths, project.project_key) or []
     allowed_remote = _identity_setting(allowed_push_remotes, project.project_key)
     full_command = list(command) + [
@@ -1527,29 +1545,23 @@ def _controller_finalize(
     for path in preexisting_paths or []:
         full_command.extend(["--preexisting-path", path])
     if not allowed_remote:
-        return {
-            "status": "blocked",
-            "stop_reason": (
-                "controller finalization requires an explicit allowed remote for "
-                f"project {project.project_key or project.name!r}"
-            ),
-        }
+        return blocked_result(
+            "controller finalization requires an explicit allowed remote for "
+            f"project {project.project_key or project.name!r}"
+        )
     # A card may enter Testování only after the controller has committed and
     # pushed the current task to an explicitly allowlisted remote. A local
     # commit without that receipt is not an auditable handoff.
     full_command.extend(["--push", "--allowed-remote", allowed_remote])
     previous_head = get_git_head(project_path, run_git=run_git)
     if not previous_head:
-        return {
-            "status": "blocked",
-            "stop_reason": "controller finalization cannot verify repository HEAD before execution",
-        }
+        return blocked_result(
+            "controller finalization cannot verify repository HEAD before execution"
+        )
     try:
         completed = subprocess_run(full_command)
     except Exception as exc:  # noqa: BLE001 - finalization is a governed boundary
-        return {
-            "status": "blocked", "stop_reason": f"controller finalization failed to start: {exc}",
-        }
+        return blocked_result(f"controller finalization failed to start: {exc}")
     try:
         payload = json.loads((completed.stdout or "").strip())
     except (TypeError, ValueError, json.JSONDecodeError):
@@ -1563,13 +1575,11 @@ def _controller_finalize(
         previous_head=previous_head,
     ):
         reason = payload.get("error", "controller finalization did not complete") if isinstance(payload, dict) else "invalid finalizer result"
-        return {
-            "status": "blocked",
-            "stop_reason": (
-                f"controller finalization did not provide a complete verified proof: {reason}"
-            ),
-            "finalization": payload,
-        }
+        return blocked_result(
+            "controller finalization did not provide a complete verified proof: "
+            f"{reason}",
+            payload if isinstance(payload, dict) else None,
+        )
     checkpoint = dict(project.checkpoint or {})
     completed_indices = set(checkpoint.get("completed_dod_indices") or [])
     completed_indices.update(indices)

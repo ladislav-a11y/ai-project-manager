@@ -209,6 +209,9 @@ bez změny; pouze explicitně označený nereworkový auditní gate může zůst
 `Testování`. Pokud karta historicky zůstala v `Testování` bez platného
 controllerového push důkazu, auditní fáze ji nejprve vrátí do `Pracuje se`,
 zapíše důvod a vyšle `finalization_blocked` do Slacku bez dalšího AI volání.
+Při trvající stejné blokaci se starý zavádějící receipt přepíše na
+`finalization.status=blocked` a další tick už nevytváří duplicitní lifecycle
+upozornění; audit se spustí až po doložení aktuálního povoleného remote a push.
 
 Pro bezpečné zastavení použijte z kořene projektu:
 

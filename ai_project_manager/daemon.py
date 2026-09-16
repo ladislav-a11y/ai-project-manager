@@ -179,6 +179,11 @@ def _promote_completed_implementations_to_testing(
         ) or {}
         if finalize_result.get("status") != "done":
             reason = finalize_result.get("stop_reason") or "controller finalization failed"
+            blocked_receipt = finalize_result.get("finalization")
+            if isinstance(blocked_receipt, dict):
+                checkpoint = dict(project.checkpoint or {})
+                checkpoint["finalization"] = blocked_receipt
+                project.checkpoint = checkpoint
             project.extra_data["controller_finalization_blocked_reason"] = reason
             project.stop_reason = (
                 "implementation DoD complete but controller finalization failed: "
@@ -203,8 +208,9 @@ def _promote_completed_implementations_to_testing(
                     status=project.status.value,
                     reason=reason,
                 )
-            logger.warning(
-                "controller finalization blocked promotion to Testování: "
+            log = logger.warning if not already_notified else logger.info
+            log(
+                "controller finalization remains blocked before Testování: "
                 "project=%r reason=%s",
                 project.name, reason,
             )

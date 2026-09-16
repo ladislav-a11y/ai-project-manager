@@ -914,6 +914,11 @@ def run_once_audit(
                 finalize_result = finalize_fn(project) or {}
                 if finalize_result.get("status") != "done":
                     reason = finalize_result.get("stop_reason") or "controller finalization failed"
+                    blocked_receipt = finalize_result.get("finalization")
+                    if isinstance(blocked_receipt, dict):
+                        checkpoint = dict(project.checkpoint or {})
+                        checkpoint["finalization"] = blocked_receipt
+                        project.checkpoint = checkpoint
                     project.stop_reason = (
                         "implementation DoD complete but controller finalization failed: "
                         f"{reason}"

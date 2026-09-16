@@ -329,6 +329,9 @@ def test_build_finalize_fn_blocks_without_a_configured_remote(tmp_path):
 
     assert result["status"] == "blocked"
     assert "explicit allowed remote" in result["stop_reason"]
+    assert result["finalization"]["status"] == "blocked"
+    assert result["finalization"]["done"] is False
+    assert result["finalization"]["pushed"] is not True
     assert registry_calls == []
 
 

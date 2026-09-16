@@ -360,6 +360,51 @@ def test_run_tick_blocks_promotion_when_finalization_fails():
     assert card.extra_data["controller_finalization_blocked_notified"] == "tests failed: 2 failures"
 
 
+def test_run_tick_persists_blocked_finalization_receipt_without_repeating_notification():
+    project = ProjectRecord(
+        name="Completed implementation",
+        priority=5,
+        status=ProjectStatus.IN_PROGRESS,
+        main_task="Implement and verify the feature",
+        dod=_implementation_plus_audit_dod(),
+        checkpoint={"finalization": {"status": "completed", "done": True, "pushed": False}},
+    )
+    client = make_client_with_project(project)
+    registry = ProviderRegistry()
+    registry.mark_available("claude")
+    lifecycle_events = []
+
+    def finalize_fn(_project):
+        return {
+            "status": "blocked",
+            "stop_reason": "controller finalization requires an explicit allowed remote",
+            "finalization": {
+                "status": "blocked",
+                "done": False,
+                "pushed": False,
+                "remote": None,
+            },
+        }
+
+    for _ in range(2):
+        run_tick(
+            client,
+            registry,
+            lambda *_args: (_ for _ in ()).throw(AssertionError("must not dispatch")),
+            finalize_fn=finalize_fn,
+            default_providers=["claude"],
+            lifecycle_notifier=lambda event, project, details: lifecycle_events.append(
+                (event, project.name, details)
+            ),
+        )
+
+    id_to_name, _ = build_list_maps(client)
+    card = project_from_card(client.get_card(project.trello_card_id), id_to_name)
+    assert card.checkpoint["finalization"]["status"] == "blocked"
+    assert card.checkpoint["finalization"]["done"] is False
+    assert [event[0] for event in lifecycle_events] == ["finalization_blocked"]
+
+
 def test_run_tick_blocks_promotion_when_finalizer_is_not_wired():
     """An absent finalizer is a configuration error, never a promotion bypass."""
     project = ProjectRecord(

@@ -96,6 +96,10 @@ už čistý a aktuální HEAD, commit hash, testy, push i remote HEAD souhlasí 
 důkazem. Nezávislý audit tento důkaz spotřebuje a nesmí vyžadovat druhý
 commit; chybějící, zastaralý nebo neshodující se důkaz zůstává fail-closed.
 Čistý checkout bez změn nevyžaduje prázdný commit.
+Při trvající stejné blokaci chybějícího remote PM pouze idempotentně zachová
+konkrétní důvod a uloží `finalization.status=blocked`; další tick nevydá
+duplicitní lifecycle upozornění ani nespustí AI audit. Nové upozornění vznikne
+po změně skutečné příčiny nebo po úspěšné finalizaci.
 
 Implementační agent nikdy sám neuzavírá kartu do `Hotovo`. Neúplné nebo
 neověřené DoD se nesmí označit jako hotové. Karta vrácená z auditu se nesmí
