@@ -16,7 +16,9 @@
       "Bash(git status:*)",
       "Bash(git diff:*)",
       "Bash(git add:*)",
-      "Bash(git log:*)"
+      "Bash(git log:*)",
+      "Bash(powershell -NoProfile -File D:\\orchestrator\\ai-orchestrator\\orchestrator\\runtime_gui_probe.ps1:*)",
+      "Bash(pwsh -NoProfile -File D:\\orchestrator\\ai-orchestrator\\orchestrator\\runtime_gui_probe.ps1:*)"
     ],
     "deny": [
       "Bash(git push:*)",
