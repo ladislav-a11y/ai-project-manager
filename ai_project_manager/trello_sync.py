@@ -812,6 +812,36 @@ def _bound_contract_history(data: dict) -> dict:
     lifecycle update itself fail at the Trello API boundary.
     """
     bounded = dict(data)
+    # Runtime receipts can contain the same provider facts three times:
+    # provider snapshot, raw response and usage events.  Keep the durable
+    # status contract (including reason and absolute retry_at), but remove
+    # redundant payloads before prose truncation.  This prevents an ordinary
+    # lifecycle write from failing merely because a provider failover added a
+    # second event to an already large PM-DATA block.
+    usage = bounded.get("usage")
+    if isinstance(usage, dict) and usage.get("events") and (
+        usage.get("by_provider") or usage.get("total")
+    ):
+        usage = dict(usage)
+        usage.pop("events", None)
+        bounded["usage"] = usage
+    provider_statuses = bounded.get("provider_statuses")
+    if isinstance(provider_statuses, dict):
+        compact_statuses = {}
+        for provider, raw_status in provider_statuses.items():
+            if not isinstance(raw_status, dict):
+                compact_statuses[provider] = raw_status
+                continue
+            compact_statuses[provider] = {
+                key: raw_status[key]
+                for key in (
+                    "state", "reason", "retry_at", "checked_at", "available_at",
+                    "response_kind", "source", "selected_model", "models",
+                    "capability_limits",
+                )
+                if key in raw_status
+            }
+        bounded["provider_statuses"] = compact_statuses
     checkpoint = bounded.get("checkpoint")
     if isinstance(checkpoint, dict) and "audit_evidence" in checkpoint:
         checkpoint = dict(checkpoint)

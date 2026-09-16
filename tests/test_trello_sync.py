@@ -76,6 +76,43 @@ def test_card_update_drops_provider_history_and_rendered_slack_from_contract():
     }
 
 
+def test_contract_history_compacts_redundant_runtime_receipts():
+    data = {
+        "main_task": "m",
+        "provider_statuses": {
+            "antigravity": {
+                "state": "ERROR",
+                "reason": "empty response",
+                "retry_at": None,
+                "checked_at": "2026-09-16T17:26:25Z",
+                "full_response": {"error": "empty response", "model": "free-model"},
+                "status_details": {"raw": "x" * 5000},
+            },
+            "claude-code": {
+                "state": "AVAILABLE",
+                "reason": "completed",
+                "retry_at": None,
+                "checked_at": "2026-09-16T17:33:03Z",
+                "full_response": {"model": "claude-opus-5"},
+            },
+        },
+        "usage": {
+            "events": [{"provider": "claude-code", "output_tokens": 10}] * 5,
+            "by_provider": {"claude-code": {"total_tokens": 10}},
+            "total": {"total_tokens": 10},
+        },
+    }
+
+    bounded = trello_sync._bound_contract_history(data)
+
+    assert "events" not in bounded["usage"]
+    assert bounded["usage"]["by_provider"]["claude-code"]["total_tokens"] == 10
+    assert bounded["provider_statuses"]["antigravity"]["reason"] == "empty response"
+    assert bounded["provider_statuses"]["antigravity"]["retry_at"] is None
+    assert "full_response" not in bounded["provider_statuses"]["antigravity"]
+    assert "status_details" not in bounded["provider_statuses"]["antigravity"]
+
+
 def test_done_card_drops_stale_audit_capability_failure():
     project = ProjectRecord(
         name="P5 — completed",
