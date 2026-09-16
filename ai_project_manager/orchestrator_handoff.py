@@ -420,6 +420,36 @@ def build_audit_task(project: ProjectRecord, provider: Optional[str] = None) -> 
     confirm the whole checklist, not just what is still unchecked.
     """
     task_text = _goal_text(project)
+    # The task wording alone is not an audit contract.  In particular, a
+    # phrase such as "Windows desktop" must not make the auditor invent a
+    # GUI/runtime gate for a backend or bootstrap card.  Carry the structured
+    # per-card verification plan from PM-DATA explicitly so AO can require
+    # GUI/runtime only when the planner made that requirement for this exact
+    # deliverable.
+    preparation = project.extra_data.get("inbox_preparation")
+    verification = preparation.get("verification") if isinstance(preparation, dict) else None
+    if isinstance(verification, dict):
+        required = verification.get("required")
+        acceptable = verification.get("acceptable")
+        reason = verification.get("reason")
+        if (
+            isinstance(required, list)
+            and required
+            and isinstance(acceptable, list)
+            and isinstance(reason, str)
+            and reason.strip()
+        ):
+            contract = {
+                "required": [str(item) for item in required],
+                "acceptable": [str(item) for item in acceptable],
+                "reason": reason.strip(),
+            }
+            task_text += (
+                "\n\nAuthoritative per-card audit verification contract from Trello PM-DATA "
+                "(use exactly this contract; do not infer GUI/runtime from a platform "
+                "or framework name): "
+                + json.dumps(contract, ensure_ascii=False, separators=(",", ":"))
+            )
     materialize_project_dod(project)
     dod = [item.text.strip() for item in project.dod if item.text and item.text.strip()]
     _validate_task(task_text, dod)

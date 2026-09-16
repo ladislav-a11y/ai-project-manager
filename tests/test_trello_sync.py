@@ -136,6 +136,42 @@ def test_contract_history_truncation_always_makes_progress(monkeypatch):
     assert bounded["open_feedback"][0].startswith("[zkráceno]")
 
 
+def test_large_audit_evidence_is_compacted_without_losing_verdict_identity():
+    data = {
+        "main_task": "audit",
+        "checkpoint": {
+            "audit_evidence": [
+                {
+                    "index": index,
+                    "accepted": False,
+                    "evidence": {
+                        "method": "method " + ("m" * 5000),
+                        "evidence": "evidence " + ("e" * 9000),
+                        "verification": {
+                            "kind": "test",
+                            "summary": "summary " + ("s" * 5000),
+                            "observed": "observed " + ("o" * 7000),
+                            "result": "rejected",
+                            "entrypoint": "dotnet test",
+                        },
+                        "provider_payload": "do not persist " + ("p" * 20000),
+                    },
+                }
+                for index in range(3)
+            ]
+        },
+    }
+
+    bounded = trello_sync._bound_contract_history(data)
+    evidence = bounded["checkpoint"]["audit_evidence"]
+
+    assert len(trello_sync._render_data_block(bounded)) <= 14000
+    assert [item["index"] for item in evidence] == [0, 1, 2]
+    assert all(item["accepted"] is False for item in evidence)
+    assert all(item["evidence"]["verification"]["result"] == "rejected" for item in evidence)
+    assert "provider_payload" not in evidence[0]["evidence"]
+
+
 def test_card_identity_ignores_rich_text_url_whitespace():
     client = InMemoryTrelloClient(("Připraveno", "Pracuje se", "Testování", "Hotovo"))
     card = client.create_card("list-2", "P5 — URL", labels=["P5", "APM"])

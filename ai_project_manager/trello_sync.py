@@ -756,6 +756,54 @@ def _bound_diagnostic_text(value: str, limit: int = MAX_TRELLO_DIAGNOSTIC_CHARS)
     return value[:head] + marker + value[-tail:]
 
 
+def _compact_audit_evidence(value: object) -> object:
+    """Keep audit traceability without copying provider reports into PM-DATA.
+
+    ``checkpoint.audit_evidence`` is evidence, not task definition.  Preserve
+    its indices, verdict flags, verification kind/result and bounded observed
+    details, while dropping arbitrary nested provider payloads that can make a
+    normal lifecycle write exceed Trello's description limit.
+    """
+    if not isinstance(value, list):
+        return value
+    compact: list[dict] = []
+    for raw in value:
+        if not isinstance(raw, dict):
+            continue
+        item: dict = {}
+        for key in ("index", "accepted"):
+            if key in raw:
+                item[key] = raw[key]
+        evidence = raw.get("evidence")
+        if isinstance(evidence, dict):
+            kept: dict = {}
+            for key in ("method", "evidence"):
+                current = evidence.get(key)
+                if current is not None:
+                    kept[key] = _bound_diagnostic_text(str(current), 900)
+            verification = evidence.get("verification")
+            if isinstance(verification, dict):
+                kept_verification = {}
+                for key, limit in (
+                    ("kind", 120),
+                    ("summary", 500),
+                    ("observed", 700),
+                    ("result", 500),
+                    ("entrypoint", 300),
+                    ("config", 400),
+                ):
+                    current = verification.get(key)
+                    if current is not None:
+                        kept_verification[key] = _bound_diagnostic_text(str(current), limit)
+                if kept_verification:
+                    kept["verification"] = kept_verification
+            item["evidence"] = kept
+        elif evidence is not None:
+            item["evidence"] = _bound_diagnostic_text(str(evidence), 1200)
+        compact.append(item)
+    return compact
+
+
 def _bound_contract_history(data: dict) -> dict:
     """Keep Trello writes below the API description limit.
 
@@ -764,6 +812,13 @@ def _bound_contract_history(data: dict) -> dict:
     lifecycle update itself fail at the Trello API boundary.
     """
     bounded = dict(data)
+    checkpoint = bounded.get("checkpoint")
+    if isinstance(checkpoint, dict) and "audit_evidence" in checkpoint:
+        checkpoint = dict(checkpoint)
+        checkpoint["audit_evidence"] = _compact_audit_evidence(
+            checkpoint.get("audit_evidence")
+        )
+        bounded["checkpoint"] = checkpoint
     feedback = bounded.get("open_feedback")
     if isinstance(feedback, list):
         entries = [str(item) for item in feedback if item]

@@ -305,6 +305,30 @@ def test_build_orchestrator_task_prefers_orchestrator_ready_task_over_fallback()
     assert task.task == "Implement auth wiring in auth.ts"
 
 
+def test_build_audit_task_carries_the_per_card_verification_contract():
+    project = ProjectRecord(
+        name="Desktop foundation",
+        status=ProjectStatus.TESTING,
+        orchestrator_ready_task="Implement the buildable desktop shell",
+        dod=[DoDItem(text="implementation", checked=True)],
+        extra_data={
+            "inbox_preparation": {
+                "verification": {
+                    "required": ["gui", "runtime"],
+                    "acceptable": ["unit", "static"],
+                    "reason": "This card delivers the runnable GUI shell.",
+                }
+            }
+        },
+    )
+
+    task = build_audit_task(project)
+
+    assert "Authoritative per-card audit verification contract" in task.task
+    assert '"required":["gui","runtime"]' in task.task
+    assert "do not infer GUI/runtime from a platform" in task.task
+
+
 def test_build_orchestrator_task_carries_trello_feedback_on_rework():
     project = ProjectRecord(
         name="Demo",
