@@ -784,8 +784,8 @@ def _compact_audit_evidence(value: object) -> object:
                 kept_verification = {}
                 for key, limit in (
                     ("kind", 120),
-                    ("observed", 120),
-                    ("result", 160),
+                    ("observed", 80),
+                    ("result", 100),
                 ):
                     current = verification.get(key)
                     if current is not None:
