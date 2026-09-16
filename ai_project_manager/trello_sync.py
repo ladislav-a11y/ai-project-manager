@@ -1160,6 +1160,11 @@ def card_updates_from_project(project: ProjectRecord, list_name_to_id: dict[str,
     machine-readable block (e.g. a human-friendly summary).
     """
     data = dict(project.extra_data)
+    # A terminal accepted/rejected audit supersedes an older capability-gate
+    # diagnostic. Keep that stale failure out of the durable card contract;
+    # current audit evidence remains in last_output/open_feedback.
+    if project.status == ProjectStatus.DONE:
+        data.pop("audit_capability_failure", None)
     # This transient marker tells maintenance that the read path repaired a
     # legacy card, but it must never become part of the durable contract.
     data.pop(_CONTRACT_MIGRATION_MARKER, None)
@@ -1660,6 +1665,8 @@ def maintain_board_contract(client) -> list[str]:
                     project.status == ProjectStatus.DONE and not raw.get("completed_at"),
                     project.status != ProjectStatus.DONE and bool(raw.get("completed_at")),
                     project.status == ProjectStatus.DONE and bool(raw.get("stop_reason")),
+                    project.status == ProjectStatus.DONE
+                    and bool(raw.get("audit_capability_failure")),
                     project.status in {ProjectStatus.PAUSED, ProjectStatus.BLOCKED, ProjectStatus.ERROR}
                     and not raw.get("waiting_since"),
                     # Stale blocking metadata: project_from_card already

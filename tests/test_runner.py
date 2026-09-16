@@ -500,6 +500,7 @@ def test_run_once_audit_is_the_only_path_to_hotovo():
         status=ProjectStatus.TESTING,
         main_task="Implement and verify the feature",
         dod=[DoDItem(text="implementation", checked=True)],
+        extra_data={"audit_capability_failure": {"reason": "stale gate"}},
     )
     client = make_client_with_project(project)
     registry = ProviderRegistry()
@@ -523,6 +524,7 @@ def test_run_once_audit_is_the_only_path_to_hotovo():
     assert reloaded.status == ProjectStatus.DONE
     assert "ai-orchestrator verified" in reloaded.last_output
     assert reloaded.returned_from_testing is False
+    assert "audit_capability_failure" not in reloaded.extra_data
 
 
 def test_run_once_audit_applies_limited_status_from_successful_failover_receipt():
@@ -1081,6 +1083,7 @@ def test_run_once_audit_blocks_when_no_provider_has_required_capability():
     assert project.status == ProjectStatus.BLOCKED
     assert "interactive_gui" in project.stop_reason
     assert "Zajistit auditora" in project.next_step
+    assert project.extra_data["capability_blocked_from_status"] == ProjectStatus.TESTING.value
 
 
 def test_run_once_audit_returns_incomplete_testing_card_to_work_without_ai_call():

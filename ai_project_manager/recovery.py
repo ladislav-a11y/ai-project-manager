@@ -60,6 +60,7 @@ _MAX_BACKOFF = timedelta(hours=6)
 
 class BlockCause(str, Enum):
     PROVIDER_ERROR_RESOLVED = "provider_error_resolved"
+    CAPABILITY_UNAVAILABLE = "capability_unavailable"
     TRANSIENT_EXTERNAL = "transient_external"
     MISSING_OR_INCONSISTENT_DATA = "missing_or_inconsistent_data"
     BAD_TASK_SPEC = "bad_task_spec"
@@ -113,6 +114,16 @@ _PROVIDER_PROTOCOL_ERROR_PATTERNS = re.compile(
     r"exit (?:code|kod) \d+|neúplný výstup|failed to load models cache|"
     r"no matching outbox result|usage.*(?:provider|model).*none|"
     r"nevrátil.*json|json.*(?:objekt|kontrakt)",
+    re.IGNORECASE,
+)
+
+# A capability gate can become valid after the provider adapter/catalog is
+# repaired. Keep that workflow block recoverable; otherwise the card would
+# remain human-required forever even though a later tick can select a valid
+# independent auditor.
+_CAPABILITY_UNAVAILABLE_PATTERNS = re.compile(
+    r"audit capability unavailable|žádný provider .*požadovan(?:é|ou) .*capabilit|"
+    r"no provider .*required .*capabilit",
     re.IGNORECASE,
 )
 
@@ -286,6 +297,8 @@ def _classify_recoverable_cause(project: ProjectRecord, reason_text: str) -> Opt
             return BlockCause.MISSING_OR_INCONSISTENT_DATA
         return BlockCause.BAD_TASK_SPEC
 
+    if reason_text and _CAPABILITY_UNAVAILABLE_PATTERNS.search(reason_text):
+        return BlockCause.CAPABILITY_UNAVAILABLE
     if reason_text and _PROVIDER_PROTOCOL_ERROR_PATTERNS.search(reason_text):
         return BlockCause.PROVIDER_ERROR_RESOLVED
     if reason_text and _TRANSIENT_EXTERNAL_PATTERNS.search(reason_text):
@@ -299,6 +312,11 @@ def _attempt_repair(project: ProjectRecord, cause: BlockCause) -> tuple[bool, st
     actionable reason a human needs to see (on failure). Never invents
     task content: it only ever copies real text already present on
     another field of the same card."""
+    if cause == BlockCause.CAPABILITY_UNAVAILABLE:
+        return True, (
+            "audit capability gate was previously unavailable; retrying so the "
+            "current broker capability catalog can select a compatible auditor"
+        )
     if cause == BlockCause.PROVIDER_ERROR_RESOLVED:
         return True, f"provider/protocol error looks resolved ({project.blocked_by or project.stop_reason})"
     if cause == BlockCause.TRANSIENT_EXTERNAL:
@@ -403,7 +421,17 @@ def recover_project(
     # one stale provider/protocol failure can deadlock every other card.
     if not project.is_blocked and project.status != ProjectStatus.ERROR:
         return None
-    if not _is_due(project, now):
+    # A capability block is produced by the orchestrator's current adapter
+    # contract, not by a human dependency. Recheck it immediately after a
+    # capability repair so a stale review_at from the old contract cannot
+    # strand the card until the normal backoff expires. Other block causes
+    # retain their rate limit.
+    capability_block = bool(
+        _CAPABILITY_UNAVAILABLE_PATTERNS.search(
+            " ".join(part for part in (project.blocked_by, project.stop_reason) if part)
+        )
+    )
+    if not _is_due(project, now) and not capability_block:
         return RecoveryOutcome(
             project_name=project.name, trello_card_id=project.trello_card_id,
             cause=None, action="deferred",
@@ -476,9 +504,19 @@ def recover_project(
 
     project.recovery_attempts += 1
     project.blocked_by = None
-    # Recovery only makes the card eligible again.  The PM takes work from
-    # Připraveno and moves it to Pracuje se only after acquiring its lock.
-    project.transition_to(ProjectStatus.READY)
+    # Recovery only makes the card eligible again. Preserve the audit phase
+    # for a capability block; returning such a card to Připraveno would
+    # incorrectly redispatch implementation work after the broker contract
+    # was repaired.
+    resume_status = ProjectStatus.READY
+    if (
+        cause == BlockCause.CAPABILITY_UNAVAILABLE
+        and project.extra_data.get("capability_blocked_from_status")
+        == ProjectStatus.TESTING.value
+    ):
+        resume_status = ProjectStatus.TESTING
+        project.extra_data.pop("capability_blocked_from_status", None)
+    project.transition_to(resume_status)
     project.stop_reason = f"auto-recovery ({cause.value}): {note}"
     project.review_at = None
     return RecoveryOutcome(

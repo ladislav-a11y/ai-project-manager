@@ -136,6 +136,55 @@ def test_provider_protocol_error_is_requeued_preserving_priority_and_checkpoint(
     assert project.review_at is None
 
 
+def test_stale_audit_capability_block_is_requeued_after_capability_contract_fix():
+    """A fixed broker capability contract must release the old durable block."""
+    project = _blocked(
+        blocked_by=(
+            "audit capability unavailable: Žádný provider nesplňuje požadované "
+            "auditní capability: interactive_gui, runtime_launch"
+        ),
+        checkpoint={"run_id": "keep-capability-run", "completed_dod_indices": [0]},
+    )
+
+    outcome = recover_project(project, NOW)
+
+    assert outcome.action == "requeued"
+    assert outcome.cause == BlockCause.CAPABILITY_UNAVAILABLE
+    assert project.status == ProjectStatus.READY
+    assert project.blocked_by is None
+    assert project.checkpoint == {
+        "run_id": "keep-capability-run",
+        "completed_dod_indices": [0],
+    }
+
+
+def test_capability_block_ignores_old_review_backoff_after_contract_fix():
+    """A stale review_at must not delay the first retry after capability repair."""
+    project = _blocked(
+        blocked_by="audit capability unavailable: no provider has required capabilities",
+        review_at=(NOW + timedelta(hours=6)).isoformat(),
+    )
+
+    outcome = recover_project(project, NOW)
+
+    assert outcome.action == "requeued"
+    assert outcome.cause == BlockCause.CAPABILITY_UNAVAILABLE
+    assert project.status == ProjectStatus.READY
+
+
+def test_audit_capability_block_resumes_testing_instead_of_implementation():
+    project = _blocked(
+        blocked_by="audit capability unavailable: no provider has required capabilities",
+        extra_data={"capability_blocked_from_status": ProjectStatus.TESTING.value},
+    )
+
+    outcome = recover_project(project, NOW)
+
+    assert outcome.action == "requeued"
+    assert project.status == ProjectStatus.TESTING
+    assert "capability_blocked_from_status" not in project.extra_data
+
+
 def test_legacy_provider_metadata_diagnostic_is_requeued_for_retry():
     """A stale adapter metadata error must not strand a valid card in human_required."""
     project = _blocked(

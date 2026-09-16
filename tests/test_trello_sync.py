@@ -76,6 +76,21 @@ def test_card_update_drops_provider_history_and_rendered_slack_from_contract():
     }
 
 
+def test_done_card_drops_stale_audit_capability_failure():
+    project = ProjectRecord(
+        name="P5 — completed",
+        priority=5,
+        status=ProjectStatus.DONE,
+        last_output="independent audit accepted",
+        extra_data={"audit_capability_failure": {"reason": "stale gate"}},
+    )
+
+    updates = card_updates_from_project(project, {"Hotovo": "done"})
+    data = _parse_data_block(updates["desc"])
+
+    assert "audit_capability_failure" not in data
+
+
 
 def test_oversized_provider_stop_reason_is_bounded_without_losing_error_signature():
     project = ProjectRecord(

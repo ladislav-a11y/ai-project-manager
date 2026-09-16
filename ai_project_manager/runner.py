@@ -980,6 +980,13 @@ def run_once_audit(
                         "reason": reason,
                         "evidence": result.get("evidence"),
                     }
+                    # Recovery must resume the same phase. An audit-only
+                    # capability failure from Testování must never be
+                    # requeued as implementation work after the broker is
+                    # repaired.
+                    project.extra_data["capability_blocked_from_status"] = (
+                        ProjectStatus.TESTING.value
+                    )
                     project.transition_to(ProjectStatus.BLOCKED)
                     provider_statuses = current_provider_statuses()
                     project.extra_data["provider_statuses"] = provider_statuses
@@ -1111,6 +1118,10 @@ def run_once_audit(
             provider_statuses = current_provider_statuses()
             project.extra_data["provider_statuses"] = provider_statuses
             project.extra_data["provider_selection"]["provider_statuses"] = provider_statuses
+            # A completed verdict supersedes any older capability-gate
+            # diagnostic. Do not leave a stale BLOCKED explanation in the
+            # terminal card after a compatible auditor has succeeded.
+            project.extra_data.pop("audit_capability_failure", None)
             sync_project_to_trello(client, project)
             emit_lifecycle(
                 lifecycle_notifier,
