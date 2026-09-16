@@ -242,6 +242,10 @@ Chybějící `AI_ORCHESTRATOR_FINALIZE_CMD` je fail-closed: PM nesmí povýšit
 implementaci do `Testování` bez controllerového commit/push důkazu. Inbox intake se
 v něm řídí výhradně načtenou konfigurací, nikdy dodatečným přepínačem
 `--enable-inbox-intake`.
+Před tickem se vždy ověří aktuální větev/ref, synchronizace s upstreamem a
+existence launcheru na absolutní cestě D:\orchestrator\ai-project-manager\scripts\run-ai-project-manager.ps1.
+Chybějící launcher se nesmí obcházet přímým interpreterem ani kopií z backups;
+checkout se nejdřív opraví nebo synchronizuje a znovu ověří.
 Pokud PM nemá explicitní `AI_ORCHESTRATOR_CMD`, sestaví v2 AO příkaz z
 `AI_ORCHESTRATOR_ROOT` nebo z registrovaného checkoutu `AI Orchestrator` a
 vždy použije jeho absolutní `.venv\Scripts\python.exe` a `orchestrator.py`;
