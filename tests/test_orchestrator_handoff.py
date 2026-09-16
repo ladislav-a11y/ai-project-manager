@@ -54,6 +54,11 @@ def test_rejected_implementation_is_reopened_for_actual_rework():
     ]
     assert project.dod[0].checked is False
     assert project.checkpoint["completed_dod_indices"] == []
+    assert project.next_step == (
+        "Zpracovat auditní feedback pro odmítnuté DoD body (0), "
+        "doplnit požadovanou nápravu nebo ověření a po dokončení "
+        "znovu vyžádat nezávislý audit."
+    )
 
 
 def test_rejected_audit_only_item_does_not_reopen_implementation():
@@ -110,7 +115,10 @@ def test_actionable_audit_rejection_creates_rework_item_and_returns_to_implement
         "Nápravný úkol: provést konkrétní nápravnou změnu "
         "vyplývající z poslední námitky a doložit její výsledek"
     )
-    assert project.next_step == project.dod[-1].text
+    assert project.next_step.startswith(
+        "Zpracovat auditní feedback pro odmítnuté DoD body (1), "
+    )
+    assert project.dod[-1].text in project.next_step
     # The rejected audit index is removed from the resumable checkpoint; the
     # new implementation item is intentionally absent until rework completes.
     assert project.checkpoint["completed_dod_indices"] == [0]

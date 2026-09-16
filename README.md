@@ -233,6 +233,12 @@ polling. Po deadline se provider bez zvláštního AI požadavku znovu povolí a
 práce pokračuje z checkpointu. Opakované identické chyby zastavuje guard, aby
 daemon nevytvářel nekonečnou smyčku permission/test pokusů.
 
+Explicitní odmítnutí auditu se nikdy neztratí v pouhém `in_progress`: PM uloží
+důvod do `open_feedback` a `stop_reason` a při návratu do `Pracuje se` vždy
+zapíše konkrétní neprázdný `next_step` s odmítnutými DoD body a podmínkou
+nového nezávislého auditu. Čistě auditní gate zůstává v `Testování` s pokynem,
+že se audit do odstranění blokace neopakuje automaticky.
+
 AI Inbox intake ukládá u každého rozděleného podúkolu také `depends_on` a
 prováděcí pořadí. Závislosti mají přednost před prioritou: vyšší priorita
 řadí jen mezi podúkoly, jejichž předpoklady jsou v `Hotovo`; cyklický nebo

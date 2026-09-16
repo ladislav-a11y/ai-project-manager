@@ -544,6 +544,12 @@ def apply_audit_verdict(
         implementation_rejected = {
             index for index in rejected if project.dod[index].phase == "implementation"
         }
+        rejected_labels = ", ".join(str(index) for index in sorted(rejected)) or "neuvedené"
+        project.next_step = (
+            "Zpracovat auditní feedback pro odmítnuté DoD body "
+            f"({rejected_labels}), doplnit požadovanou nápravu nebo ověření "
+            "a po dokončení znovu vyžádat nezávislý audit."
+        )
         for index in rejected:
             if index in implementation_rejected:
                 project.dod[index].checked = False
@@ -578,7 +584,7 @@ def apply_audit_verdict(
                 for item in project.dod
             ):
                 project.dod.append(DoDItem(text=rework_text))
-            project.next_step = rework_text
+            project.next_step = f"{project.next_step} Konkrétní rework: {rework_text}"
         project.mark_returned_from_testing("audit_rejected")
     elif target == ProjectStatus.TESTING:
         project.extra_data[AUDIT_WAITING_FOR_CHANGE_KEY] = True

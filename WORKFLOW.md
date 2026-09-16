@@ -54,7 +54,11 @@ fáze a nesmí obejít čekání, audit ani aktivní práci. Pořadí dispatch �
   broker.
 - `Testování → Hotovo`: pouze explicitní přijatý verdikt ai-orchestrátoru.
 - `Testování → Pracuje se` nebo `Připraveno`: pouze explicitní odmítnutí auditu
-  s konkrétní zpětnou vazbou.
+  s konkrétní zpětnou vazbou. Při návratu do `Pracuje se` PM znovu otevře
+  odmítnuté implementační DoD body a vždy zapíše neprázdný `next_step`, který
+  uvede odmítnuté indexy, požadovanou nápravu nebo ověření a podmínku dalšího
+  nezávislého auditu. Při čistě auditním gate v `Testování` se `next_step`
+  nastaví na odstranění blokující podmínky a audit se neopakuje automaticky.
 - `Testování → Čeká na AI`: pouze provider-limit; návratová fáze zůstává
   `Testování`.
 
