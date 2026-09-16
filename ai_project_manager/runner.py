@@ -530,6 +530,9 @@ def _apply_run_result(
     if isinstance(provider_statuses, dict):
         project.extra_data["provider_statuses"] = provider_statuses
         _apply_provider_statuses(provider_registry, provider_statuses, project.checkpoint)
+    usage = result.get("usage")
+    if isinstance(usage, dict):
+        project.extra_data["usage"] = usage
     if "status" in result:
         status = result["status"]
         if status == "waiting_for_provider":
@@ -978,6 +981,8 @@ def run_once_audit(
                         result["provider_statuses"],
                         project.checkpoint,
                     )
+                if isinstance(result.get("usage"), dict):
+                    project.extra_data["usage"] = result["usage"]
                 if _audit_capability_failure(result):
                     capability_key = audit_capability_key(project)
                     actual_provider = result.get("active_provider") or provider
