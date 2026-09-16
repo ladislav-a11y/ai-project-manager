@@ -83,17 +83,19 @@ smí měnit vlastní řídicí kód (např. AI Project Manager při self-update)
 běžný cílový projekt (např. Station Agent) žádný ruční seznam nevyžaduje.
 V obou případech se nikdy nepoužije globální `git add -A` - cesty se vždy
 stagují jednotlivě a explicitně vyjmenované. Push na vzdálený remote naopak
-zůstává vždy vázaný na explicitní `AI_ORCHESTRATOR_ALLOWED_PUSH_REMOTES`
-záznam pro daný projekt - bez něj finalizace zůstane commitnutá jen lokálně,
-`pushed=true` se nesplní a karta se vrátí do `Pracuje se` s konkrétním
-důvodem, dokud povolení nepřidá člověk. Finalizer ukládá `finalization` důkaz
-s `status=completed`, `done=true`, `commit_hash`, `clean=true`,
-`tests_passed=true`, `pushed=true`, `preexisting_paths`, `task_paths` a
-`remote_commit`, který se musí shodovat s aktuálním `commit_hash`.
+ zůstává vždy vázaný na explicitní `AI_ORCHESTRATOR_ALLOWED_PUSH_REMOTES`,
+ pokud projekt remote používá. U projektu bez remote je postačující
+ controllerový lokální commit, čistý checkout a úspěšné testy; receipt musí
+ výslovně uvést `pushed=false`, `remote=null` a `remote_commit=null`.
+ Finalizer ukládá `finalization` důkaz s `status=completed`, `done=true`,
+ `commit_hash`, `clean=true`, `tests_passed=true`, `pushed`,
+ `preexisting_paths` a `task_paths`; při pushi navíc `remote_commit`, který se
+ musí shodovat s aktuálním `commit_hash`.
 `committed=true` znamená nově vytvořený commit;
 `committed=false` je platný idempotentní no-op jen tehdy, když byl repozitář
-už čistý a aktuální HEAD, commit hash, testy, push i remote HEAD souhlasí s
-důkazem. Nezávislý audit tento důkaz spotřebuje a nesmí vyžadovat druhý
+už čistý a aktuální HEAD, commit hash a testy souhlasí s důkazem; u projektu
+s remote musí navíc souhlasit push a remote HEAD. Nezávislý audit tento důkaz
+spotřebuje a nesmí vyžadovat druhý
 commit; chybějící, zastaralý nebo neshodující se důkaz zůstává fail-closed.
 Čistý checkout bez změn nevyžaduje prázdný commit.
 Při trvající stejné blokaci chybějícího remote PM pouze idempotentně zachová

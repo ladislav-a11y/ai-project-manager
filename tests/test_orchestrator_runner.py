@@ -291,13 +291,17 @@ def test_build_finalize_fn_commits_a_fully_implemented_card(tmp_path):
     assert registry_calls[0][registry_calls[0].index("--path") + 1] == "tracked.py"
 
 
-def test_build_finalize_fn_blocks_without_a_configured_remote(tmp_path):
-    """A local-only commit must not cross the independent-audit boundary."""
+def test_build_finalize_fn_allows_local_backup_without_a_configured_remote(tmp_path):
+    """A local controller commit is sufficient when no remote is configured."""
     registry_calls = []
 
     def fake_subprocess_run(command):
         registry_calls.append(command)
-        raise AssertionError("must not finalize without an allowlisted remote")
+        return completed(json.dumps({
+            "status": "completed", "done": True, "committed": True,
+            "clean": True, "tests_passed": True, "pushed": False,
+            "commit_hash": "abc123", "remote": None, "remote_commit": None,
+        }))
 
     heads = iter(("before123", "before123", "abc123"))
 
@@ -327,12 +331,10 @@ def test_build_finalize_fn_blocks_without_a_configured_remote(tmp_path):
 
     result = finalize_fn(project)
 
-    assert result["status"] == "blocked"
-    assert "explicit allowed remote" in result["stop_reason"]
-    assert result["finalization"]["status"] == "blocked"
-    assert result["finalization"]["done"] is False
-    assert result["finalization"]["pushed"] is not True
-    assert registry_calls == []
+    assert result["status"] == "done"
+    assert result["finalization"]["backup_mode"] == "local"
+    assert result["finalization"]["pushed"] is False
+    assert "--push" not in registry_calls[0]
 
 
 def test_run_fn_persists_preexisting_paths_for_controller_finalization(tmp_path):
@@ -684,6 +686,23 @@ def test_controller_finalization_accepts_clean_refresh_without_second_commit():
         "pushed": True,
         "commit_hash": head,
         "remote_commit": head,
+    }
+
+    assert _controller_finalization_is_verified(finalization, head) is True
+
+
+def test_controller_finalization_accepts_verified_local_backup():
+    head = "9a8b7c6d5e4f3a2b1c0d9e8f7a6b5c4d3e2f1a0b"
+    finalization = {
+        "status": "completed",
+        "done": True,
+        "committed": True,
+        "clean": True,
+        "tests_passed": True,
+        "pushed": False,
+        "remote": None,
+        "remote_commit": None,
+        "commit_hash": head,
     }
 
     assert _controller_finalization_is_verified(finalization, head) is True

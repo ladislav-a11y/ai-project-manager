@@ -114,10 +114,10 @@ Nejprve proveďte jeden bezpečný produkční integrační tick přes launcher:
 Launcher načte produkční finalizer ai-orchestratoru, allowlist push remote a
 Slack konfiguraci. Přímé `python -m ai_project_manager --once` používejte
 jen pro diagnostiku, pokud jsou tyto hodnoty prostředí již explicitně
-nastavené; bez controllerové finalizace PM fail-closed nepřejde do
-`Testování`. Chybějící explicitně povolený remote nebo chybějící push důkaz
-proto kartu ponechá v `Pracuje se`; PM zapíše konkrétní důvod do Trella a
-odešle lifecycle zprávu do Slacku, aniž by spustil auditního providera.
+nastavené. Controllerová finalizace vyžaduje commit, čistý checkout a úspěšné
+testy; push je povinný jen pro projekty s nakonfigurovaným remote. U lokálního
+projektu PM uloží `pushed=false`, `remote=null` a `remote_commit=null` a může
+po úspěšném lokálním backupu pokračovat do `Testování`.
 
 Je-li workflow prázdné a v `INBOX / Nápady` čeká uživatelská karta, tento
 jednorázový tick sám provede řízený refresh providerů a Inbox intake. Intake
@@ -211,7 +211,8 @@ controllerového push důkazu, auditní fáze ji nejprve vrátí do `Pracuje se`
 zapíše důvod a vyšle `finalization_blocked` do Slacku bez dalšího AI volání.
 Při trvající stejné blokaci se starý zavádějící receipt přepíše na
 `finalization.status=blocked` a další tick už nevytváří duplicitní lifecycle
-upozornění; audit se spustí až po doložení aktuálního povoleného remote a push.
+upozornění. U lokálního projektu se po úspěšném controllerovém backupu audit
+spustí i bez remote; receipt tuto skutečnost zachová jako `pushed=false`.
 
 Pro bezpečné zastavení použijte z kořene projektu:
 

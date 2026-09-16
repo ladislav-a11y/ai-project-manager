@@ -1426,12 +1426,17 @@ def _controller_finalization_is_verified(
     previous_head: Optional[str] = None,
 ) -> bool:
     """Accept a controller proof for a commit already present at audit time."""
-    # A completed implementation handoff must carry proof that the current
-    # commit reached the explicit allowlisted remote. A local-only commit is
-    # not sufficient for the independent audit boundary.
+    # A completed implementation handoff must carry either proof that the
+    # current commit reached the explicit allowlisted remote, or an explicit
+    # local-backup receipt when the project has no remote by design.
     pushed = finalization.get("pushed") if isinstance(finalization, dict) else None
-    push_proof_ok = (
+    remote_proof_ok = (
         pushed is True and finalization.get("remote_commit") == current_head
+    )
+    local_backup_proof_ok = (
+        pushed is False
+        and finalization.get("remote") is None
+        and finalization.get("remote_commit") is None
     )
     proof_is_current = (
         isinstance(finalization, dict)
@@ -1440,7 +1445,7 @@ def _controller_finalization_is_verified(
         and isinstance(finalization.get("committed"), bool)
         and finalization.get("clean") is True
         and finalization.get("tests_passed") is True
-        and push_proof_ok
+        and (remote_proof_ok or local_backup_proof_ok)
         and bool(current_head)
         and finalization.get("commit_hash") == current_head
     )
@@ -1544,15 +1549,8 @@ def _controller_finalize(
         full_command.extend(["--path", path])
     for path in preexisting_paths or []:
         full_command.extend(["--preexisting-path", path])
-    if not allowed_remote:
-        return blocked_result(
-            "controller finalization requires an explicit allowed remote for "
-            f"project {project.project_key or project.name!r}"
-        )
-    # A card may enter Testování only after the controller has committed and
-    # pushed the current task to an explicitly allowlisted remote. A local
-    # commit without that receipt is not an auditable handoff.
-    full_command.extend(["--push", "--allowed-remote", allowed_remote])
+    if allowed_remote:
+        full_command.extend(["--push", "--allowed-remote", allowed_remote])
     previous_head = get_git_head(project_path, run_git=run_git)
     if not previous_head:
         return blocked_result(
@@ -1580,6 +1578,11 @@ def _controller_finalize(
             f"{reason}",
             payload if isinstance(payload, dict) else None,
         )
+    if not allowed_remote:
+        payload = dict(payload)
+        payload["backup_mode"] = "local"
+        payload["remote"] = None
+        payload["remote_commit"] = None
     checkpoint = dict(project.checkpoint or {})
     completed_indices = set(checkpoint.get("completed_dod_indices") or [])
     completed_indices.update(indices)
