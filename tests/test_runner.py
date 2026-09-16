@@ -1181,6 +1181,7 @@ def test_run_once_audit_returns_unfinalized_card_to_work_without_spending_audit_
     registry = ProviderRegistry()
     registry.mark_available("claude")
     audit_calls = []
+    lifecycle_events = []
 
     def finalize_fn(_project):
         return {"status": "blocked", "stop_reason": "tests failed: 2 failures"}
@@ -1196,12 +1197,26 @@ def test_run_once_audit_returns_unfinalized_card_to_work_without_spending_audit_
         audit_run_fn,
         default_providers=["claude"],
         finalize_fn=finalize_fn,
+        lifecycle_notifier=lambda event, notified_project, details: lifecycle_events.append(
+            (event, notified_project.name, details)
+        ),
     )
 
     assert outcome.ran is True
     assert audit_calls == []
     assert project.status == ProjectStatus.IN_PROGRESS
     assert "tests failed: 2 failures" in (project.stop_reason or "")
+    assert lifecycle_events == [
+        (
+            "finalization_blocked",
+            "Stuck in testing",
+            {
+                "status": "in_progress",
+                "provider": "provider-broker",
+                "reason": "tests failed: 2 failures",
+            },
+        )
+    ]
 
 
 def test_token_waste_audit_only_card_never_calls_implementation_agent():

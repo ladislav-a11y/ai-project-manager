@@ -115,7 +115,9 @@ Launcher načte produkční finalizer ai-orchestratoru, allowlist push remote a
 Slack konfiguraci. Přímé `python -m ai_project_manager --once` používejte
 jen pro diagnostiku, pokud jsou tyto hodnoty prostředí již explicitně
 nastavené; bez controllerové finalizace PM fail-closed nepřejde do
-`Testování`.
+`Testování`. Chybějící explicitně povolený remote nebo chybějící push důkaz
+proto kartu ponechá v `Pracuje se`; PM zapíše konkrétní důvod do Trella a
+odešle lifecycle zprávu do Slacku, aniž by spustil auditního providera.
 
 Je-li workflow prázdné a v `INBOX / Nápady` čeká uživatelská karta, tento
 jednorázový tick sám provede řízený refresh providerů a Inbox intake. Intake
@@ -204,7 +206,9 @@ rejection pouze auditních bodů automaticky přidá jeden nový neověřený
 implementační DoD bod s námitkou jako zadáním a kartu vrátí do `Pracuje se`,
 aby další provider skutečně provedl rework. Stejný audit se nesmí opakovat
 bez změny; pouze explicitně označený nereworkový auditní gate může zůstat v
-`Testování`.
+`Testování`. Pokud karta historicky zůstala v `Testování` bez platného
+controllerového push důkazu, auditní fáze ji nejprve vrátí do `Pracuje se`,
+zapíše důvod a vyšle `finalization_blocked` do Slacku bez dalšího AI volání.
 
 Pro bezpečné zastavení použijte z kořene projektu:
 

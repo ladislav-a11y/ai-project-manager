@@ -921,6 +921,14 @@ def run_once_audit(
                     project.mark_returned_from_testing("finalization_failed")
                     project.transition_to(ProjectStatus.IN_PROGRESS)
                     sync_project_to_trello(client, project)
+                    emit_lifecycle(
+                        lifecycle_notifier,
+                        "finalization_blocked",
+                        project,
+                        status=project.status.value,
+                        provider=provider,
+                        reason=reason,
+                    )
                     logger.warning("audit deferred: project=%s reason=%s", project.name, reason)
                     return RunOutcome(
                         ran=True,
