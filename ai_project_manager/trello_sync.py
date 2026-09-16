@@ -1482,6 +1482,18 @@ def _repair_nonterminal_audit_rejection(project: ProjectRecord) -> bool:
     """
     if project.status != ProjectStatus.TESTING:
         return False
+    # An operator or auditor may explicitly confirm that the rejected audit
+    # condition has changed.  This is deliberately a one-shot, durable
+    # Card-Contract signal instead of guessing from ``lastActivityAt`` (a
+    # normal sync also changes that timestamp and would re-open the same
+    # audit forever).  Keep the old rejection in ``open_feedback`` as
+    # history, but clear only the current lifecycle hold so the next tick can
+    # request a fresh independent verdict.
+    if project.extra_data.pop("audit_requeue_requested", False) is True:
+        project.extra_data.pop("audit_waiting_for_change", None)
+        project.stop_reason = None
+        project.next_step = "Provést nový nezávislý audit po potvrzené změně podmínky."
+        return True
     # A hold is valid only while the current lifecycle reason still proves
     # that an audit was rejected.  Clear an older persisted hold when the
     # current reason has already been cleared; historical ``open_feedback``

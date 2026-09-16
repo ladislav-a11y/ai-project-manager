@@ -40,6 +40,7 @@ from .scheduler import (
     pick_next_project,
 )
 from .trello_sync import project_from_card, sync_project_to_trello
+from .slack_notifications import LifecycleNotifierFn, emit_lifecycle
 
 logger = logging.getLogger("ai_project_manager")
 
@@ -545,6 +546,7 @@ def run_once(
     providers_for_project: Optional[dict] = None,
     default_providers: Optional[list] = None,
     finalize_fn: Optional[FinalizeFn] = None,
+    lifecycle_notifier: Optional[LifecycleNotifierFn] = None,
 ) -> RunOutcome:
     """Run exactly one project's worth of work, if any is schedulable.
 
@@ -591,6 +593,7 @@ def run_once(
                 "starting project=%r provider=%s model=%s reason=%s",
                 project.name, provider_detail, provider_reason, provider_reason,
             )
+            previous_status = project.status.value
             project.provider = provider
             project.extra_data["provider_selection"] = {
                 "provider": provider,
@@ -602,6 +605,15 @@ def run_once(
             # working, not leave an active card looking idle in Připraveno.
             project.transition_to(ProjectStatus.IN_PROGRESS)
             sync_project_to_trello(client, project)
+            emit_lifecycle(
+                lifecycle_notifier,
+                "work_started",
+                project,
+                from_status=previous_status,
+                to=ProjectStatus.IN_PROGRESS.value,
+                provider=provider,
+                status=project.status.value,
+            )
             logger.info(
                 "dispatching project=%r to provider=%s in autonomous mode (checkpoint=%s)",
                 project.name, provider, project.checkpoint,
@@ -631,6 +643,15 @@ def run_once(
                     project.name, provider, signature, halted,
                 )
                 sync_project_to_trello(client, project)
+                emit_lifecycle(
+                    lifecycle_notifier,
+                    "workflow_transition",
+                    project,
+                    from_status=ProjectStatus.IN_PROGRESS.value,
+                    to=project.status.value,
+                    provider=provider,
+                    status=project.status.value,
+                )
                 logger.info("synced project=%r state to trello (card=%s)", project.name, project.trello_card_id)
                 logger.warning(
                     "provider execution failed: project=%s provider=%s reason=%s",
@@ -695,6 +716,16 @@ def run_once(
                 "run_id": result.get("run_id"),
             }
             sync_project_to_trello(client, project)
+            if project.status.value != ProjectStatus.IN_PROGRESS.value:
+                emit_lifecycle(
+                    lifecycle_notifier,
+                    "workflow_transition",
+                    project,
+                    from_status=ProjectStatus.IN_PROGRESS.value,
+                    to=project.status.value,
+                    provider=actual_provider,
+                    status=project.status.value,
+                )
             logger.info("synced project=%r state to trello (card=%s)", project.name, project.trello_card_id)
             return RunOutcome(
                 ran=True,
@@ -718,6 +749,7 @@ def run_once_audit(
     providers_for_project: Optional[dict] = None,
     default_providers: Optional[list] = None,
     finalize_fn: Optional[FinalizeFn] = None,
+    lifecycle_notifier: Optional[LifecycleNotifierFn] = None,
 ) -> RunOutcome:
     """Run the audit-only path for exactly one Testování project, if any
     is currently awaiting an ai-orchestrator verdict.
@@ -823,6 +855,15 @@ def run_once_audit(
                 "source": "ao_runtime_selection",
             }
             sync_project_to_trello(client, project)
+            emit_lifecycle(
+                lifecycle_notifier,
+                "audit_started",
+                project,
+                from_status=ProjectStatus.TESTING.value,
+                to=ProjectStatus.TESTING.value,
+                provider=provider,
+                status=project.status.value,
+            )
             logger.info(
                 "dispatching project=%r to provider=%s in audit-only mode (checkpoint=%s)",
                 project.name, provider, project.checkpoint,
@@ -859,6 +900,7 @@ def run_once_audit(
                             "audit returned a review plan without concrete evidence or an independent verdict",
                         )
                 verdict = result.get("verdict")
+                audit_result = str(verdict) if verdict is not None else "waiting_for_provider"
                 if verdict is not None:
                     reject_target = None
                     raw_reject_target = result.get("reject_target")
@@ -914,6 +956,15 @@ def run_once_audit(
                     project.name, provider, signature, halted,
                 )
                 sync_project_to_trello(client, project)
+                emit_lifecycle(
+                    lifecycle_notifier,
+                    "audit_finished",
+                    project,
+                    result="error",
+                    provider=provider,
+                    status=project.status.value,
+                    reason=signature,
+                )
                 logger.warning(
                     "audit provider execution failed: project=%s provider=%s reason=%s",
                     project.name, provider, signature,
@@ -951,6 +1002,15 @@ def run_once_audit(
             if isinstance(result.get("provider_statuses"), dict):
                 project.extra_data["provider_selection"]["provider_statuses"] = result["provider_statuses"]
             sync_project_to_trello(client, project)
+            emit_lifecycle(
+                lifecycle_notifier,
+                "audit_finished",
+                project,
+                result=audit_result,
+                provider=actual_provider,
+                status=project.status.value,
+                reason=project.stop_reason,
+            )
             logger.info(
                 "audit result project=%r provider=%s status=%s stop_reason=%s",
                 project.name, provider, project.status.value, project.stop_reason,

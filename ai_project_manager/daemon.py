@@ -41,6 +41,7 @@ from .self_update import (
     prepare_safe_restart,
 )
 from .trello_sync import build_list_maps, fetch_all_projects, maintain_board_contract, sync_project_to_trello
+from .slack_notifications import LifecycleNotifierFn, emit_lifecycle
 
 logger = logging.getLogger("ai_project_manager")
 
@@ -62,6 +63,7 @@ def _resume_due_provider_waits(
     client,
     projects: list,
     provider_registry: ProviderRegistry,
+    lifecycle_notifier: Optional[LifecycleNotifierFn] = None,
 ) -> list:
     """Resume provider waits when their recorded retry time has passed.
 
@@ -112,6 +114,15 @@ def _resume_due_provider_waits(
                 provider_reason="provider-broker při dalším dispatchi znovu prověří všechny providery",
             )
         sync_project_to_trello(client, project)
+        emit_lifecycle(
+            lifecycle_notifier,
+            "workflow_transition",
+            project,
+            from_status=ProjectStatus.PAUSED.value,
+            to=project.status.value,
+            provider=project.provider,
+            status=project.status.value,
+        )
         resumed.append(project.name)
         destination = (
             "Testování" if resume_status == ProjectStatus.TESTING.value else "Připraveno"
@@ -125,7 +136,8 @@ def _resume_due_provider_waits(
 
 
 def _promote_completed_implementations_to_testing(
-    client, projects: list, finalize_fn: Optional[FinalizeFn] = None
+    client, projects: list, finalize_fn: Optional[FinalizeFn] = None,
+    lifecycle_notifier: Optional[LifecycleNotifierFn] = None,
 ) -> list[str]:
     """Expose the audit gate before invoking ai-orchestrator.
 
@@ -158,22 +170,51 @@ def _promote_completed_implementations_to_testing(
             finalize_result = finalize_fn(project) or {}
             if finalize_result.get("status") != "done":
                 reason = finalize_result.get("stop_reason") or "controller finalization failed"
+                project.extra_data["controller_finalization_blocked_reason"] = reason
                 project.stop_reason = (
                     "implementation DoD complete but controller finalization failed: "
                     f"{reason}"
                 )
+                project.next_step = (
+                    "Opravit controller finalizaci a zopakovat PM tick. "
+                    f"Důvod: {reason}"
+                )
+                already_notified = (
+                    project.extra_data.get("controller_finalization_blocked_notified")
+                    == reason
+                )
+                if not already_notified:
+                    project.extra_data["controller_finalization_blocked_notified"] = reason
                 sync_project_to_trello(client, project)
+                if not already_notified:
+                    emit_lifecycle(
+                        lifecycle_notifier,
+                        "finalization_blocked",
+                        project,
+                        status=project.status.value,
+                        reason=reason,
+                    )
                 logger.warning(
                     "controller finalization blocked promotion to Testování: "
                     "project=%r reason=%s",
                     project.name, reason,
                 )
                 continue
+            project.extra_data.pop("controller_finalization_blocked_reason", None)
+            project.extra_data.pop("controller_finalization_blocked_notified", None)
             if not finalize_result.get("already_verified"):
                 project.checkpoint = finalize_result.get("checkpoint", project.checkpoint)
         project.transition_to(ProjectStatus.TESTING)
         project.stop_reason = "implementation DoD complete; awaiting ai-orchestrator audit"
         sync_project_to_trello(client, project)
+        emit_lifecycle(
+            lifecycle_notifier,
+            "workflow_transition",
+            project,
+            from_status=ProjectStatus.IN_PROGRESS.value,
+            to=ProjectStatus.TESTING.value,
+            status=project.status.value,
+        )
         promoted.append(project.name)
         logger.info(
             "promoted completed implementation to Testování before audit: project=%r",
@@ -200,6 +241,7 @@ def _run_recovery_pass(
     provider_registry: ProviderRegistry,
     max_attempts: int,
     backoff,
+    lifecycle_notifier: Optional[LifecycleNotifierFn] = None,
 ) -> list:
     """Revisit every currently-blocked project (see recovery.scan_for_recovery),
     persisting and logging whatever it decided - requeued (unblocked,
@@ -247,6 +289,23 @@ def _run_recovery_pass(
 
         sync_project_to_trello(client, project)
 
+        if outcome.action == "human_required" and not already_notified:
+            emit_lifecycle(
+                lifecycle_notifier,
+                "human_required",
+                project,
+                status=project.status.value,
+                reason=outcome.reason,
+            )
+        elif outcome.action == "requeued":
+            emit_lifecycle(
+                lifecycle_notifier,
+                "recovery_requeued",
+                project,
+                status=project.status.value,
+                reason=outcome.reason,
+            )
+
         if outcome.action == "requeued":
             logger.info(
                 "recovery: requeued project=%r cause=%s attempts=%d reason=%s",
@@ -270,6 +329,12 @@ def _run_recovery_pass(
             project.human_notified_reason = None
             project.human_action_step = None
             sync_project_to_trello(client, project)
+            emit_lifecycle(
+                lifecycle_notifier,
+                "human_block_cleared",
+                project,
+                status=project.status.value,
+            )
             logger.info("human block cleared: project=%s; processing continues", project.name)
 
     return outcomes
@@ -646,6 +711,7 @@ def run_tick(
     inbox_planner: Optional[InboxPlannerFn] = None,
     provider_refresh: Optional[Callable[[], bool]] = None,
     finalize_fn: Optional[FinalizeFn] = None,
+    lifecycle_notifier: Optional[LifecycleNotifierFn] = None,
 ) -> RunOutcome:
     """Run exactly one scheduler tick: load real Trello state, resume
     provider waits whose Trello retry_after is due, revisit any blocked project that is due for an
@@ -666,24 +732,6 @@ def run_tick(
     not wired up the audit path yet) a Testování card simply stays put - never
     falling back into ordinary implementation dispatch either way.
     """
-    # Refresh every provider's cached health/model notes once at the start
-    # of every tick, independent of whether there turns out to be any work
-    # to dispatch this tick. Without this, a provider that failed earlier
-    # (LIMITED with no due retry_at yet, or a structural UNAVAILABLE) stays
-    # on stale cached data until the broker itself happens to be queried
-    # again by a dispatch - which never happens on an otherwise-idle tick,
-    # so recovery is invisible until the next real dispatch attempt fails
-    # too. A failed refresh is logged and never blocks the tick - provider
-    # health is best-effort background maintenance, not a dispatch
-    # precondition.
-    if provider_refresh is not None:
-        try:
-            refreshed = provider_refresh()
-        except Exception:  # noqa: BLE001 - refresh must never crash the tick
-            logger.exception("per-tick provider refresh raised")
-        else:
-            if not refreshed:
-                logger.warning("per-tick provider refresh did not complete")
     # Provider availability may change before a later Trello operation
     # fails (most importantly, run_fn can mark a provider LIMITED and the
     # subsequent card sync can fail). Persist in ``finally`` so a transient
@@ -767,6 +815,7 @@ def run_tick(
             client,
             projects,
             provider_registry,
+            lifecycle_notifier=lifecycle_notifier,
         ))
 
         audit_waits_resumed = {
@@ -790,11 +839,22 @@ def run_tick(
             provider_registry,
             max_attempts=recovery_max_attempts,
             backoff=recovery_backoff,
+            lifecycle_notifier=lifecycle_notifier,
         )
 
         # Reflect the test/audit phase on Trello before the audit provider is
         # invoked. This local transition spends no AI tokens.
-        _promote_completed_implementations_to_testing(client, projects, finalize_fn=finalize_fn)
+        _promote_completed_implementations_to_testing(
+            client, projects, finalize_fn=finalize_fn,
+            lifecycle_notifier=lifecycle_notifier,
+        )
+        finalization_blocked_projects = [
+            project for project in projects
+            if (
+                project.status == ProjectStatus.IN_PROGRESS
+                and project.extra_data.get("controller_finalization_blocked_reason")
+            )
+        ]
 
         # New Inbox tasks were already admitted to Připraveno above. They are
         # intentionally not eligible for implementation dispatch until the
@@ -846,6 +906,7 @@ def run_tick(
                 providers_for_project=providers_for_project,
                 default_providers=default_providers,
                 finalize_fn=finalize_fn,
+                lifecycle_notifier=lifecycle_notifier,
             )
 
         if (outcome is None or not outcome.ran) and audit_run_fn is not None:
@@ -867,6 +928,7 @@ def run_tick(
                 providers_for_project=providers_for_project,
                 default_providers=default_providers,
                 finalize_fn=finalize_fn,
+                lifecycle_notifier=lifecycle_notifier,
             )
 
         if outcome is None or not outcome.ran:
@@ -881,6 +943,18 @@ def run_tick(
                 providers_for_project=providers_for_project,
                 default_providers=default_providers,
                 finalize_fn=finalize_fn,
+                lifecycle_notifier=lifecycle_notifier,
+            )
+
+        if not outcome.ran and finalization_blocked_projects:
+            project = finalization_blocked_projects[0]
+            outcome = RunOutcome(
+                ran=False,
+                project_name=project.name,
+                reason=(
+                    "controller finalizace zablokovala přechod do Testování: "
+                    f"{project.extra_data['controller_finalization_blocked_reason']}"
+                ),
             )
 
         if outcome.ran:
@@ -1002,6 +1076,7 @@ def run_loop(
     artifact_cleanup_root: Optional[str] = None,
     artifact_cleanup_retention_seconds: float = 86400.0,
     finalize_fn: Optional[FinalizeFn] = None,
+    lifecycle_notifier: Optional[LifecycleNotifierFn] = None,
 ) -> RunOutcome:
     """Run the scheduler forever (or, with ``once=True``, exactly one tick
     and return - the safe live-smoke-test mode). Sleeps between ticks
@@ -1088,6 +1163,7 @@ def run_loop(
                     recovery_backoff=recovery_backoff,
                     audit_run_fn=audit_run_fn,
                     finalize_fn=finalize_fn,
+                    lifecycle_notifier=lifecycle_notifier,
                 )
             except Exception as exc:  # noqa: BLE001 - keep the unattended daemon alive
                 # Trello and provider-state persistence are external I/O. A

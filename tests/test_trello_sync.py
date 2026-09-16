@@ -592,6 +592,38 @@ def test_maintenance_clears_persisted_audit_hold_when_stop_reason_is_clear():
     assert "audit_waiting_for_change" not in raw
 
 
+def test_maintenance_requeues_audit_hold_on_explicit_change_request():
+    client = InMemoryTrelloClient()
+    project = ProjectRecord(
+        name="P3.02 — explicit audit requeue",
+        status=ProjectStatus.TESTING,
+        main_task="Verify current condition",
+        open_feedback=[
+            "ai-orchestrator audit rejected DoD index(es) [1]: runtime unavailable"
+        ],
+        stop_reason="ai-orchestrator audit rejected DoD index(es) [1]: runtime unavailable",
+        next_step="Po odstranění podmínky uvedené v auditním feedbacku znovu vyžádat audit.",
+        extra_data={
+            "audit_waiting_for_change": True,
+            "audit_requeue_requested": True,
+        },
+        dod=[
+            DoDItem(text="implementation", checked=True),
+            DoDItem(text="independent audit", phase="audit"),
+        ],
+    )
+    card = sync_project_to_trello(client, project)
+
+    assert maintain_board_contract(client) == []
+
+    raw = _parse_data_block(client.get_card(card["id"])["desc"])
+    assert raw.get("audit_waiting_for_change") is None
+    assert raw.get("audit_requeue_requested") is None
+    assert raw["stop_reason"] is None
+    assert raw["next_step"] == "Provést nový nezávislý audit po potvrzené změně podmínky."
+    assert raw["open_feedback"] == project.open_feedback
+
+
 def test_lifecycle_write_rejects_controller_verification_as_implementation_work():
     client = InMemoryTrelloClient()
     project = ProjectRecord(

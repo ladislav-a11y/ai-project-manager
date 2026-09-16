@@ -28,6 +28,7 @@ from .orchestrator_runner import (
 from .providers import ProviderRegistry
 from .provider_state import load_provider_state
 from .self_update import RESTART_REQUIRED_EXIT_CODE
+from .slack_notifications import SlackLifecycleNotifier
 from .trello_client import RealTrelloClient
 from .trello_sync import sync_project_to_trello
 
@@ -239,6 +240,7 @@ def main(
         artifact_cleanup_root=config.artifact_cleanup_root,
         artifact_cleanup_retention_seconds=config.artifact_cleanup_retention_seconds,
         finalize_fn=finalize_fn,
+        lifecycle_notifier=SlackLifecycleNotifier(),
     )
 
     if outcome.restart_required:
