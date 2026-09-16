@@ -47,6 +47,13 @@ def _args_to_dict(argv):
     return result
 
 
+def _without_controller_scope(checkpoint):
+    return {
+        key: value for key, value in checkpoint.items()
+        if key != "controller_finalization_context"
+    }
+
+
 def _fake_ai_orchestrator(outbox_dir, responses):
     calls = []
 
@@ -122,7 +129,7 @@ def test_blocked_card_is_reviewed_repaired_requeued_and_work_continues_same_tick
     # The checkpoint carried through the block into the real dispatch
     # untouched - recovery must never lose in-flight progress.
     spec = parse_spec_markdown(open(args["spec"], encoding="utf-8").read())
-    assert spec["checkpoint"] == {"step": 5}
+    assert _without_controller_scope(spec["checkpoint"]) == {"step": 5}
 
     id_to_name, _ = build_list_maps(client)
     reloaded = project_from_card(client.get_card(project.trello_card_id), id_to_name)
@@ -130,7 +137,7 @@ def test_blocked_card_is_reviewed_repaired_requeued_and_work_continues_same_tick
     assert reloaded.blocked_by is None
     assert reloaded.status == ProjectStatus.IN_PROGRESS
     assert reloaded.priority == 4
-    assert reloaded.checkpoint == {"step": 6}
+    assert _without_controller_scope(reloaded.checkpoint) == {"step": 6}
     assert reloaded.last_output == "resumed after recovery"
 
 
@@ -188,13 +195,13 @@ def test_tool_call_validation_block_is_recovered_and_dispatched_same_tick(tmp_pa
     assert outcome.ran is True
     assert len(calls) == 1
     spec = parse_spec_markdown(open(_args_to_dict(calls[0])["spec"], encoding="utf-8").read())
-    assert spec["checkpoint"] == {"run_id": "stale-run", "completed_dod_indices": []}
+    assert _without_controller_scope(spec["checkpoint"]) == {"run_id": "stale-run", "completed_dod_indices": []}
 
     id_to_name, _ = build_list_maps(client)
     reloaded = project_from_card(client.get_card(project.trello_card_id), id_to_name)
     assert reloaded.blocked_by is None
     assert reloaded.status == ProjectStatus.IN_PROGRESS
-    assert reloaded.checkpoint == {"run_id": "new-run", "completed_dod_indices": [0]}
+    assert _without_controller_scope(reloaded.checkpoint) == {"run_id": "new-run", "completed_dod_indices": [0]}
 
 
 
@@ -252,7 +259,7 @@ def test_json_schema_validation_block_is_recovered_and_dispatched_same_tick(tmp_
     assert outcome.ran is True
     assert len(calls) == 1
     spec = parse_spec_markdown(open(_args_to_dict(calls[0])["spec"], encoding="utf-8").read())
-    assert spec["checkpoint"] == {
+    assert _without_controller_scope(spec["checkpoint"]) == {
         "run_id": "schema-run",
         "completed_dod_indices": [],
     }
@@ -261,7 +268,7 @@ def test_json_schema_validation_block_is_recovered_and_dispatched_same_tick(tmp_
     reloaded = project_from_card(client.get_card(project.trello_card_id), id_to_name)
     assert reloaded.blocked_by is None
     assert reloaded.status == ProjectStatus.IN_PROGRESS
-    assert reloaded.checkpoint == {
+    assert _without_controller_scope(reloaded.checkpoint) == {
         "run_id": "schema-run-2",
         "completed_dod_indices": [0],
     }

@@ -321,6 +321,17 @@ svůj konkrétní pracovní rozsah; není nutné je vracet do Inboxu ani znovu
 rozdělovat. Nově připravená karta má mít právě jeden implementační výsledek,
 zatímco testování, live evidence a verdikt patří do auditní fáze.
 
+AI planner před přijetím plánu povinně porovná výsledek s původním lidským
+zadáním a vrátí `self_check` se všemi kontrolami `source_compared`,
+`source_coverage`, `atomicity`, `dependencies`, `verification` a
+`constraints_preserved` nastavenými na `true`; jinak PM zdroj ponechá v Inboxu.
+`verification.required` je závazný minimální důkaz a `acceptable` pouze
+doplňkový důkaz, který jej nikdy nenahrazuje. Pokud je vyžadováno GUI nebo
+runtime, musí audit skutečně spustit a pozorovat požadované prostředí. Intake
+nesmí při parafrázování vypustit provozní podmínku nutnou pro reprodukci nebo
+posouzení výsledku, například stav bez pending providerů nebo volbu všech
+režimů.
+
 Stav `ERROR` je čekací stav, který nejdříve projde recovery passem. Známá
 providerová/protokolová chyba se smí automaticky vrátit do `Připraveno` se
 zachovaným checkpointem; neznámá nebo opakovaná chyba vyžaduje člověka.
@@ -329,7 +340,10 @@ zachovaným checkpointem; neznámá nebo opakovaná chyba vyžaduje člověka.
 ## Důkaz dokončení
 
 Každý přechod musí být zpětně čitelný z Trella: viditelné DoD, poslední výstup,
-důvod čekání nebo odmítnutí, checkpoint a auditní evidence. Lokální soubory,
+důvod čekání nebo odmítnutí, checkpoint a auditní evidence. Nezávislý audit
+navíc ukládá strukturovaný receipt pro každý DoD bod (`kind`, `summary`,
+`observed`, `result`); u GUI/runtime je povinné skutečné viditelné ověření přes
+veřejný entrypoint koncového uživatele, screenshot není nutný. Lokální soubory,
 historické logy ani tvrzení agenta samy o sobě nejsou důkazem dokončení.
 Výsledky kvalifikačních smoke testů, live testů a volby modelu uložené na
 ověřených kartách v `Hotovo` jsou závazným vývojovým podkladem pro navazující

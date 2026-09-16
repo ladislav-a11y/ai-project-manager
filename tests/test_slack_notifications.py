@@ -57,6 +57,29 @@ def test_audit_finished_includes_current_provider_statuses_and_limit_deadline():
     assert "2026-09-16T12:30:00+00:00" in message
 
 
+def test_audit_finished_includes_structured_live_receipt():
+    message = build_lifecycle_message(
+        "audit_finished",
+        _project(),
+        {
+            "result": "accepted",
+            "audit_evidence": {
+                "0": {
+                    "verification": {
+                        "kind": "gui",
+                        "observed": "browser opened Station Agent and the changed frame was visible",
+                        "result": "accepted",
+                    }
+                }
+            },
+        },
+    )
+
+    assert "auditní důkaz" in message
+    assert "DoD 0: gui" in message
+    assert "changed frame was visible" in message
+
+
 def test_notifier_failure_is_best_effort():
     def failing(*args):
         raise RuntimeError("Slack down")

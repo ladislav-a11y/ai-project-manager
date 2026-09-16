@@ -72,6 +72,7 @@ def test_verification_plan_creates_specific_audit_evidence_dod():
     assert "integrační testy" in audit_text
     assert "cílené unit testy" in audit_text
     assert "live/runtime ověření" in audit_text
+    assert "nenahrazuje povinný důkaz" in audit_text
     assert "GUI" not in audit_text
     assert "Změna ovlivňuje pravidla" in audit_text
 

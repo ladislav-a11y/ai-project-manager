@@ -63,6 +63,27 @@ def _audit_capability_failure(result: dict) -> bool:
     text = " ".join(str(result.get(key) or "") for key in ("reason", "evidence", "stop_reason")).casefold()
     return sum(marker in text for marker in _AUDIT_CAPABILITY_LIMIT_MARKERS) >= 2
 
+
+def _persist_audit_evidence(project: ProjectRecord, result: dict) -> None:
+    """Copy the AO audit receipt into the durable PM checkpoint.
+
+    The receipt is observational evidence, not a new verdict.  Keeping it
+    in the checkpoint makes the exact per-DoD verification survive the PM
+    read/write round trip and gives Trello/Slack a structured source instead
+    of forcing them to parse the auditor's prose note.
+    """
+    receipt = result.get("audit_evidence")
+    if not isinstance(receipt, dict) or not receipt:
+        return
+    checkpoint = dict(project.checkpoint or {})
+    checkpoint["audit_evidence"] = [
+        {"index": int(index), "evidence": value}
+        for index, value in receipt.items()
+        if str(index).isdigit() and isinstance(value, dict)
+    ]
+    if checkpoint["audit_evidence"]:
+        project.checkpoint = checkpoint
+
 # run_fn performs the actual provider/orchestrator call for one project
 # and returns a result dict with any of: checkpoint, last_output,
 # next_step, stop_reason, retry_after, status.
@@ -947,6 +968,9 @@ def run_once_audit(
                         "audit orchestrator result must be a mapping, got "
                         f"{type(result).__name__}"
                     )
+                if "checkpoint" in result:
+                    project.checkpoint = dict(result["checkpoint"] or {})
+                _persist_audit_evidence(project, result)
                 if isinstance(result.get("provider_statuses"), dict):
                     project.extra_data["provider_statuses"] = result["provider_statuses"]
                     _apply_provider_statuses(
@@ -1024,8 +1048,6 @@ def run_once_audit(
                                 f"{sorted(_REJECT_TARGET_MAP)}"
                             )
                         reject_target = _REJECT_TARGET_MAP[raw_reject_target]
-                    if "checkpoint" in result:
-                        project.checkpoint = dict(result["checkpoint"] or {})
                     apply_audit_verdict(
                         project,
                         verdict,
@@ -1038,8 +1060,6 @@ def run_once_audit(
                     # A provider/session limit is a workflow wait, not an
                     # audit result. Keep the return phase so the next tick
                     # resumes with the audit path (never ordinary work).
-                    if "checkpoint" in result:
-                        project.checkpoint = dict(result["checkpoint"] or {})
                     if "stop_reason" in result:
                         project.stop_reason = result["stop_reason"]
                     if "retry_after" in result:
@@ -1132,6 +1152,7 @@ def run_once_audit(
                 status=project.status.value,
                 reason=project.stop_reason,
                 provider_statuses=provider_statuses,
+                audit_evidence=result.get("audit_evidence"),
             )
             logger.info(
                 "audit result project=%r provider=%s status=%s stop_reason=%s",

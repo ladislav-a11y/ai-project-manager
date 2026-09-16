@@ -911,6 +911,29 @@ def _completed_visible_notes(project: ProjectRecord) -> str:
                 line += f" — důvod: {reason or 'neuveden'}"
                 line += f"; znovu po: {retry_at or 'neuvedeno'}"
             lines.append(line)
+    audit_evidence = (project.checkpoint or {}).get("audit_evidence")
+    if isinstance(audit_evidence, list) and audit_evidence:
+        evidence_lines = []
+        for entry in audit_evidence:
+            if not isinstance(entry, dict):
+                continue
+            verification_record = entry.get("evidence")
+            if not isinstance(verification_record, dict):
+                continue
+            verification = verification_record.get("verification")
+            if not isinstance(verification, dict):
+                continue
+            index = entry.get("index", "?")
+            kind = verification.get("kind") or "unknown"
+            result = verification.get("result") or "neuveden"
+            observed = verification.get("observed") or "neuvedeno"
+            if len(str(observed)) > 320:
+                observed = str(observed)[:317] + "..."
+            evidence_lines.append(
+                f"- DoD {index}: {kind}; výsledek: {result}; pozorování: {observed}"
+            )
+        if evidence_lines:
+            lines.extend(["", "## Strukturovaný důkaz nezávislého auditu", *evidence_lines])
     if project.last_output:
         lines.extend(["", "## Poslední ověřený výstup", project.last_output[:3000]])
     return "\n".join(lines)

@@ -258,7 +258,11 @@ def _verification_audit_text(tasks: tuple[PreparedTask, ...]) -> Optional[str]:
         acceptable_text = ", ".join(
             VERIFICATION_EVIDENCE_LABELS[item] for item in acceptable
         )
-        text += f" Doplňující nebo náhradní důkaz může být: {acceptable_text}."
+        text += (
+            " Doplňující důkaz může být: "
+            f"{acceptable_text}; nikdy však nenahrazuje povinný důkaz uvedený "
+            "v části required."
+        )
     reasons = tuple(dict.fromkeys(plan.reason for plan in plans if plan.reason))
     if reasons:
         text += f" Důvod: {'; '.join(reasons)}."

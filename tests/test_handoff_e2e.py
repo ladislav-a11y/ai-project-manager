@@ -45,6 +45,13 @@ def _args_to_dict(argv):
     return result
 
 
+def _without_controller_scope(checkpoint):
+    return {
+        key: value for key, value in checkpoint.items()
+        if key != "controller_finalization_context"
+    }
+
+
 def _fake_ai_orchestrator(outbox_dir, responses):
     """A stand-in ai-orchestrator process: reads the --spec Markdown file,
     looks up a scripted response by project name, and writes it to the
@@ -122,7 +129,7 @@ def test_project_manager_hands_off_to_orchestrator_and_syncs_result_back(tmp_pat
     id_to_name, _ = build_list_maps(client)
     reloaded = project_from_card(client.get_card(project.trello_card_id), id_to_name)
 
-    assert reloaded.checkpoint == {"step": 2}
+    assert _without_controller_scope(reloaded.checkpoint) == {"step": 2}
     assert reloaded.last_output == "wired up polling"
     assert reloaded.next_step == "add error states"
     assert reloaded.status == ProjectStatus.IN_PROGRESS
@@ -166,11 +173,11 @@ def test_project_manager_dispatches_through_broker_even_with_legacy_limit_state(
     assert outcome_1.ran is True
     assert len(calls) == 1
     spec = parse_spec_markdown(open(_args_to_dict(calls[0])["spec"], encoding="utf-8").read())
-    assert spec["checkpoint"] == {"step": 5}
+    assert _without_controller_scope(spec["checkpoint"]) == {"step": 5}
 
     id_to_name, _ = build_list_maps(client)
     reloaded = project_from_card(client.get_card(project.trello_card_id), id_to_name)
-    assert reloaded.checkpoint == {"step": 6}
+    assert _without_controller_scope(reloaded.checkpoint) == {"step": 6}
 
 
 def test_full_visible_trello_dod_checklist_survives_to_completion(tmp_path):

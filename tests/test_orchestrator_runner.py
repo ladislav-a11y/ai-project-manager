@@ -37,6 +37,13 @@ def ProjectRecord(*args, **kwargs):
     return _ProjectRecord(*args, **kwargs)
 
 
+def _without_controller_scope(checkpoint):
+    return {
+        key: value for key, value in checkpoint.items()
+        if key != "controller_finalization_context"
+    }
+
+
 def test_inbox_planner_rejects_source_ref_assigned_to_two_tasks():
     task_fields = {
         "project_key": "Station Agent",
@@ -56,6 +63,29 @@ def test_inbox_planner_rejects_source_ref_assigned_to_two_tasks():
             {**task_fields, "scope": "první", "task": "První změna.", "priority": 2.1, "source_refs": ["1"]},
             {**task_fields, "scope": "druhá", "task": "Druhá změna.", "priority": 2.2, "source_refs": ["1"]},
         ]
+    }
+
+    assert _planner_tasks(payload, indivisible=False) is None
+
+
+def test_inbox_planner_requires_source_comparison_self_check():
+    payload = {
+        "tasks": [{
+            "scope": "feature",
+            "task": "Provést změnu.",
+            "next_step": "Ověřit výsledek.",
+            "priority": 2,
+            "priority_reason": "běžná změna",
+            "work_type": "implementation",
+            "split_reason": "samostatný výsledek",
+            "source_refs": ["1"],
+            "verification": {
+                "required": ["unit"],
+                "acceptable": [],
+                "reason": "Výsledek má cílené testy.",
+            },
+            "depends_on": [],
+        }]
     }
 
     assert _planner_tasks(payload, indivisible=False) is None
@@ -815,6 +845,19 @@ def test_audit_run_fn_uses_supported_autonomous_cli_and_reads_internal_audit(tmp
                     },
                 },
                 "last_output": "tests and independent audit passed",
+                "audit_evidence": {
+                    "0": {
+                        "accepted": True,
+                        "method": "runtime: public entrypoint",
+                        "evidence": "feature visible in running application",
+                        "verification": {
+                            "kind": "runtime",
+                            "summary": "feature behavior",
+                            "observed": "running application displayed the feature",
+                            "result": "accepted",
+                        },
+                    },
+                },
                 "iterations": [{
                     "audit_performed": True,
                     "audit_rejected_indices": [],
@@ -845,6 +888,7 @@ def test_audit_run_fn_uses_supported_autonomous_cli_and_reads_internal_audit(tmp
     assert result["active_provider"] == "anthropic"
     assert result["active_model"] == "claude-opus-4-1"
     assert result["provider_statuses"]["groq"]["diagnostics"]["signals"]["limited"] is True
+    assert result["audit_evidence"]["0"]["verification"]["kind"] == "runtime"
 
 
 def test_audit_and_implementation_leave_model_selection_to_ao(tmp_path):
@@ -1297,13 +1341,13 @@ def test_run_fn_invokes_real_cli_with_project_goal_spec_and_agent(tmp_path):
     assert spec_path.endswith(".md")
     spec_payload = parse_spec_markdown(open(spec_path, encoding="utf-8").read())
     assert spec_payload["goal"] == "Implement feature X"
-    assert spec_payload["checkpoint"] == {"step": 1}
+    assert _without_controller_scope(spec_payload["checkpoint"]) == {"step": 1}
     assert spec_payload["provider"] == "provider-broker"
     assert spec_payload["run_id"] == "fixed-run-id"
     assert "Wire up auth" in spec_payload["definition_of_done"]
     # No DoD line was ever left blank.
     assert all(item.strip() for item in spec_payload["definition_of_done"])
-    assert result["checkpoint"] == {"step": 2}
+    assert _without_controller_scope(result["checkpoint"]) == {"step": 2}
     assert result["last_output"] == "did work"
     assert result["next_step"] == "next"
     assert result["status"] == "in_progress"
@@ -1648,7 +1692,7 @@ def test_spec_file_is_stable_across_runs_for_checkpoint_resume(tmp_path):
     # identity never changes between runs for a given project.
     paths = list(spec_dir.glob("*.md"))
     assert len(paths) == 1
-    assert parse_spec_markdown(paths[0].read_text(encoding="utf-8"))["checkpoint"] == {"step": 2}
+    assert _without_controller_scope(parse_spec_markdown(paths[0].read_text(encoding="utf-8"))["checkpoint"]) == {"step": 2}
 
 
 def test_spec_file_round_trips_a_checkpoint_containing_html_comment_close(tmp_path):
@@ -1680,7 +1724,7 @@ def test_spec_file_round_trips_a_checkpoint_containing_html_comment_close(tmp_pa
     assert spec_text.count("-->") == 1
 
     spec_payload = parse_spec_markdown(spec_text)
-    assert spec_payload["checkpoint"] == checkpoint
+    assert _without_controller_scope(spec_payload["checkpoint"]) == checkpoint
 
 
 def test_run_fn_marks_done_when_orchestrator_reports_done(tmp_path):
@@ -1740,7 +1784,7 @@ def test_run_fn_detects_limit_reported_explicitly_in_outbox_payload(tmp_path):
 
     status = registry.get_status("provider-broker")
     assert status.state == ProviderState.AVAILABLE
-    assert result["checkpoint"] == {"step": 7}
+    assert _without_controller_scope(result["checkpoint"]) == {"step": 7}
     assert result["status"] == "paused"
 
 
@@ -2138,7 +2182,7 @@ def test_nonzero_cli_exit_with_valid_max_iterations_outbox_is_progress_not_crash
     result = run_fn(project, "provider-broker")
 
     assert result["status"] == "in_progress"
-    assert result["checkpoint"] == {"completed_dod_indices": [0]}
+    assert _without_controller_scope(result["checkpoint"]) == {"completed_dod_indices": [0]}
     assert result["next_step"] == "finish item 1"
 
 
@@ -2167,7 +2211,7 @@ def test_protocol_error_outbox_maps_to_blocked(tmp_path):
     result = run_fn(project, "provider-broker")
 
     assert result["status"] == "blocked"
-    assert result["checkpoint"] == {"completed_dod_indices": [0]}
+    assert _without_controller_scope(result["checkpoint"]) == {"completed_dod_indices": [0]}
     assert "invalid DoD JSON" in result["stop_reason"]
 
 def test_run_fn_generates_a_fresh_run_id_per_call(tmp_path):
@@ -2288,6 +2332,15 @@ def test_inbox_planner_excludes_retired_provider_names_and_returns_validated_ai_
                     "model": "openai/gpt-oss-120b",
                     "output": json.dumps(
                         {
+                            "self_check": {
+                                "source_compared": True,
+                                "source_coverage": True,
+                                "atomicity": True,
+                                "dependencies": True,
+                                "verification": True,
+                                "constraints_preserved": True,
+                                "notes": "Plán porovnán s původním lidským zadáním.",
+                            },
                             "tasks": [
                                 {
                                     "project_key": "AI Project Manager",
@@ -2364,6 +2417,15 @@ def test_inbox_planner_sends_only_human_source_text_and_project_identities():
                     "model": "claude-haiku",
                     "output": json.dumps(
                         {
+                            "self_check": {
+                                "source_compared": True,
+                                "source_coverage": True,
+                                "atomicity": True,
+                                "dependencies": True,
+                                "verification": True,
+                                "constraints_preserved": True,
+                                "notes": "Plán porovnán s původním lidským zadáním.",
+                            },
                             "tasks": [
                                 {
                                     "scope": "feature",
@@ -2445,6 +2507,15 @@ def test_inbox_planner_uses_one_central_call_and_projects_provider_receipt():
             },
             "provider_sequence": ["groq", "antigravity"],
             "output": json.dumps({
+                "self_check": {
+                    "source_compared": True,
+                    "source_coverage": True,
+                    "atomicity": True,
+                    "dependencies": True,
+                    "verification": True,
+                    "constraints_preserved": True,
+                    "notes": "Plán porovnán s původním lidským zadáním.",
+                },
                 "tasks": [{
                     "scope": "feature",
                     "task": "Vytvořit funkci.",
@@ -2567,9 +2638,18 @@ def _two_task_subprocess(command, **kwargs):
                 "success": True,
                 "provider": "claude",
                 "model": "claude-haiku",
-                "output": json.dumps(
-                    {
-                        "tasks": [
+                    "output": json.dumps(
+                        {
+                            "self_check": {
+                                "source_compared": True,
+                                "source_coverage": True,
+                                "atomicity": True,
+                                "dependencies": True,
+                                "verification": True,
+                                "constraints_preserved": True,
+                                "notes": "Plán porovnán s původním lidským zadáním.",
+                            },
+                            "tasks": [
                             {
                                 "scope": "část 1",
                                 "task": "Udělat první část.",

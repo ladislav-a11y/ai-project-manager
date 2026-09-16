@@ -755,6 +755,7 @@ def process_inbox(
                         "intake_provider_reason": (planner_result or {}).get("provider_reason"),
                         "intake_model_reason": (planner_result or {}).get("model_reason"),
                         "intake_selection_reason": (planner_result or {}).get("selection_reason"),
+                        "planner_self_check": (planner_result or {}).get("self_check"),
                         })
                     if isinstance((planner_result or {}).get("provider_statuses"), dict):
                         task.extra_data["provider_statuses"] = planner_result["provider_statuses"]
@@ -811,6 +812,7 @@ def process_inbox(
                             "intake_provider_reason": (planner_result or {}).get("provider_reason"),
                             "intake_model_reason": (planner_result or {}).get("model_reason"),
                             "intake_selection_reason": (planner_result or {}).get("selection_reason"),
+                            "planner_self_check": (planner_result or {}).get("self_check"),
                         }
                     },
                 )

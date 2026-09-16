@@ -175,6 +175,34 @@ def test_live_audit_readback_is_prompt_only_and_not_persisted():
     assert "live_trello_readback" not in _parse_data_block(updates["desc"])
 
 
+def test_completed_card_shows_structured_audit_receipt():
+    project = ProjectRecord(
+        name="P5 — audit receipt",
+        status=ProjectStatus.DONE,
+        main_task="Implement the feature",
+        dod=[DoDItem(text="GUI change", checked=True)],
+        checkpoint={
+            "audit_evidence": [{
+                "index": 0,
+                "evidence": {
+                    "accepted": True,
+                    "verification": {
+                        "kind": "gui",
+                        "observed": "browser opened the app and the changed frame was visible",
+                        "result": "accepted",
+                    },
+                },
+            }],
+        },
+    )
+
+    updates = card_updates_from_project(project, {"Hotovo": "done"})
+
+    assert "Strukturovaný důkaz nezávislého auditu" in updates["desc"]
+    assert "DoD 0: gui" in updates["desc"]
+    assert "changed frame was visible" in updates["desc"]
+
+
 def test_priority_falls_back_to_card_title_when_board_has_no_priority_labels():
     assert priority_from_card({"name": "P5 — AI Orchestrator", "labels": []}) == 5
     assert priority_from_card({"name": "P1 - Audit", "labels": []}) == 1

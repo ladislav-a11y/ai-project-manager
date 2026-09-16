@@ -5,6 +5,7 @@ __pycache__/
 .pytest_cache/
 .pytest-basetemp-*/
 .pytest-tmp-*/
+.tmp/
 *.bak
 *.bak-*
 runner_before_*.py

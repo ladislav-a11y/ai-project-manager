@@ -345,7 +345,35 @@ def _json_object(text: str) -> Optional[dict]:
             return None
 
 
+_PLANNER_SELF_CHECK_FIELDS = (
+    "source_compared",
+    "source_coverage",
+    "atomicity",
+    "dependencies",
+    "verification",
+    "constraints_preserved",
+)
+
+
+def _planner_self_check(payload: dict) -> Optional[dict]:
+    """Require the AI planner to compare its plan with the human source."""
+    check = payload.get("self_check")
+    if not isinstance(check, dict):
+        return None
+    if any(check.get(field) is not True for field in _PLANNER_SELF_CHECK_FIELDS):
+        return None
+    notes = check.get("notes")
+    if not isinstance(notes, str) or not notes.strip() or len(notes.strip()) > 1200:
+        return None
+    return {
+        **{field: True for field in _PLANNER_SELF_CHECK_FIELDS},
+        "notes": notes.strip(),
+    }
+
+
 def _planner_tasks(payload: dict, *, indivisible: bool) -> Optional[list[PreparedTask]]:
+    if _planner_self_check(payload) is None:
+        return None
     tasks = payload.get("tasks")
     # Fail-closed indivisible source contract: an AI plan for a source card
     # explicitly marked ``[indivisible]`` must describe exactly one task. An
@@ -484,6 +512,17 @@ def _planner_payload_diagnostic(payload: object, *, indivisible: bool) -> str:
     """
     if not isinstance(payload, dict):
         return "výstup planneru není JSON objekt"
+    self_check = payload.get("self_check")
+    if not isinstance(self_check, dict):
+        return "planner nevrátil povinný self_check porovnávající výsledek s lidským zadáním"
+    failed_checks = [
+        field for field in _PLANNER_SELF_CHECK_FIELDS
+        if self_check.get(field) is not True
+    ]
+    if failed_checks:
+        return "self_check planneru selhal v bodech: " + ", ".join(failed_checks)
+    if not isinstance(self_check.get("notes"), str) or not self_check["notes"].strip():
+        return "self_check planneru nemá neprázdné notes"
     tasks = payload.get("tasks")
     if not isinstance(tasks, list):
         return (
@@ -756,6 +795,7 @@ def build_inbox_planner_fn(
                 if isinstance(envelope.get("usage"), dict)
                 else {}
             ),
+            "self_check": _planner_self_check(plan_payload or {}),
             "tasks": tasks,
         }
 
@@ -2123,6 +2163,20 @@ def build_audit_run_fn(
             if isinstance(last_iteration, dict)
             else False
         )
+        audit_evidence = payload.get("audit_evidence")
+        if not isinstance(audit_evidence, dict) or not audit_evidence:
+            audit_evidence = (
+                last_iteration.get("audit_evidence")
+                if isinstance(last_iteration, dict)
+                else None
+            )
+        if not isinstance(audit_evidence, dict) or not audit_evidence:
+            audit_evidence = {
+                str(item.get("index", index)): item["audit_evidence"]
+                for index, item in enumerate(last_iteration.get("dod_snapshot") or [])
+                if isinstance(item, dict)
+                and isinstance(item.get("audit_evidence"), dict)
+            } if isinstance(last_iteration, dict) else {}
         evidence = (
             payload.get("last_output")
             or (last_iteration.get("test_output") if isinstance(last_iteration, dict) else None)
@@ -2146,6 +2200,7 @@ def build_audit_run_fn(
                 "status": "capability_unavailable",
                 "stop_reason": reason,
                 "evidence": evidence,
+                "audit_evidence": audit_evidence,
                 "checkpoint": payload.get("checkpoint", project.checkpoint),
             }
             for key in ("provider_statuses", "active_provider", "active_model", "model", "provider_sequence"):
@@ -2188,6 +2243,7 @@ def build_audit_run_fn(
                 return {
                     "verdict": verdict,
                     "evidence": evidence,
+                    "audit_evidence": audit_evidence,
                     "usage": payload.get("usage"),
                     **{
                         key: payload[key]
@@ -2219,7 +2275,7 @@ def build_audit_run_fn(
         if audit_performed and rejected_indices:
             all_rejected = sorted(set(list(rejected_indices) + report.rejected_indices))
             detail = report.rejection_summary or (last_iteration.get("note") if isinstance(last_iteration, dict) else None) or payload.get("stop_reason") or "ai-orchestrator audit rejected the implementation"
-            audit_evidence = "\n".join(
+            audit_text = "\n".join(
                 part for part in (
                     evidence,
                     last_iteration.get("note") if isinstance(last_iteration, dict) else None,
@@ -2229,7 +2285,8 @@ def build_audit_run_fn(
             return {
                 "verdict": AUDIT_VERDICT_REJECTED,
                 "reason": f"ai-orchestrator audit rejected DoD index(es) {all_rejected}: {detail}",
-                "evidence": audit_evidence,
+                "evidence": audit_text,
+                "audit_evidence": audit_evidence,
                 "reject_target": _audit_reject_target(project, all_rejected),
                 "rejected_indices": all_rejected,
                 "usage": payload.get("usage"),
@@ -2254,6 +2311,7 @@ def build_audit_run_fn(
                 "verdict": AUDIT_VERDICT_REJECTED,
                 "reason": f"ai-orchestrator audit rejected DoD index(es) {report.rejected_indices}: {report.rejection_summary}",
                 "evidence": evidence,
+                "audit_evidence": audit_evidence,
                 "reject_target": _audit_reject_target(project, report.rejected_indices),
                 "rejected_indices": report.rejected_indices,
                 "usage": payload.get("usage"),
@@ -2275,6 +2333,7 @@ def build_audit_run_fn(
                 "verdict": AUDIT_VERDICT_REJECTED,
                 "reason": terminal_issue,
                 "evidence": evidence,
+                "audit_evidence": audit_evidence,
                 "reject_target": "in_progress",
                 "usage": payload.get("usage"),
                 **{
@@ -2287,6 +2346,8 @@ def build_audit_run_fn(
         result: dict = {"verdict": verdict, "reason": payload.get("reason")}
         if "evidence" in payload or evidence:
             result["evidence"] = payload.get("evidence") or evidence
+        if audit_evidence:
+            result["audit_evidence"] = audit_evidence
         if "reject_target" in payload:
             result["reject_target"] = payload["reject_target"]
         elif verdict == AUDIT_VERDICT_REJECTED:

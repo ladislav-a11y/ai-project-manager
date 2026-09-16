@@ -56,6 +56,27 @@ def _provider_status_summary(statuses: object) -> str:
     return "; ".join(rendered)
 
 
+def _audit_evidence_summary(receipts: object) -> str:
+    """Render a compact per-DoD audit receipt for the operator message."""
+    if not isinstance(receipts, Mapping) or not receipts:
+        return ""
+    rendered = []
+    for index in sorted(receipts, key=str):
+        receipt = receipts[index]
+        if not isinstance(receipt, Mapping):
+            continue
+        verification = receipt.get("verification")
+        if not isinstance(verification, Mapping):
+            continue
+        kind = str(verification.get("kind") or "unknown")
+        result = str(verification.get("result") or "neuveden")
+        observed = str(verification.get("observed") or "")
+        if len(observed) > 180:
+            observed = observed[:177] + "..."
+        rendered.append(f"DoD {index}: {kind}; {result}; pozorováno: {observed}")
+    return " | ".join(rendered)
+
+
 def build_lifecycle_message(
     event: str,
     project: object,
@@ -77,7 +98,9 @@ def build_lifecycle_message(
         suffix = f" — {reason}" if reason else ""
         provider_summary = _provider_status_summary(details.get("provider_statuses"))
         provider_suffix = f" — provideři: {provider_summary}" if provider_summary else ""
-        return f"PM: audit ukončen — výsledek: {result} — karta {label} (stav: {status}{suffix}{provider_suffix})"
+        audit_summary = _audit_evidence_summary(details.get("audit_evidence"))
+        audit_suffix = f" — auditní důkaz: {audit_summary}" if audit_summary else ""
+        return f"PM: audit ukončen — výsledek: {result} — karta {label} (stav: {status}{suffix}{provider_suffix}{audit_suffix})"
     if event == "workflow_transition":
         previous = details.get("from_status") or details.get("from") or "unknown"
         destination = details.get("to") or status
