@@ -1135,6 +1135,13 @@ def run_once_audit(
             project.extra_data["provider_selection"]["actual_provider"] = actual_provider
             project.extra_data["provider_selection"]["actual_model"] = actual_model
             project.extra_data["provider_selection"]["provider_reason"] = actual_provider_reason
+            reported_sequence = result.get("provider_sequence")
+            if isinstance(reported_sequence, str):
+                reported_sequence = [reported_sequence]
+            if isinstance(reported_sequence, list):
+                project.extra_data["provider_sequence"] = [
+                    item for item in reported_sequence if isinstance(item, str) and item
+                ]
             provider_statuses = current_provider_statuses()
             project.extra_data["provider_statuses"] = provider_statuses
             project.extra_data["provider_selection"]["provider_statuses"] = provider_statuses
