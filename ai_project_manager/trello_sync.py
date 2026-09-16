@@ -784,7 +784,6 @@ def _compact_audit_evidence(value: object) -> object:
                 kept_verification = {}
                 for key, limit in (
                     ("kind", 120),
-                    ("observed", 80),
                     ("result", 100),
                 ):
                     current = verification.get(key)
@@ -1256,12 +1255,6 @@ def card_updates_from_project(project: ProjectRecord, list_name_to_id: dict[str,
     # required top-level provider_statuses receipt, but never copy old history
     # or notification payloads into every future Trello description.
     data.pop("provider_selection_history", None)
-    # The implementation provider receipt is historical telemetry.  The
-    # current provider_selection/provider_statuses/usage fields are the
-    # authoritative receipt for the latest lifecycle step; retaining this
-    # duplicate intake-era block wastes the small Trello description budget
-    # and can hide actionable audit feedback.
-    data.pop("implementation_provider_selection", None)
     selection = data.get("provider_selection")
     if isinstance(selection, dict):
         selection = dict(selection)
