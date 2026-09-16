@@ -760,9 +760,11 @@ def _compact_audit_evidence(value: object) -> object:
     """Keep audit traceability without copying provider reports into PM-DATA.
 
     ``checkpoint.audit_evidence`` is evidence, not task definition.  Preserve
-    its indices, verdict flags, verification kind/result and bounded observed
-    details, while dropping arbitrary nested provider payloads that can make a
-    normal lifecycle write exceed Trello's description limit.
+    its indices, verdict flags, verification kind/result and a short observed
+    detail, while dropping arbitrary nested provider payloads that can make a
+    normal lifecycle write exceed Trello's description limit.  The full
+    provider report remains in the local AO outbox/log; the card only needs a
+    compact, actionable receipt for the next implementation/audit handoff.
     """
     if not isinstance(value, list):
         return value
@@ -777,26 +779,25 @@ def _compact_audit_evidence(value: object) -> object:
         evidence = raw.get("evidence")
         if isinstance(evidence, dict):
             kept: dict = {}
-            for key in ("method", "evidence"):
-                current = evidence.get(key)
-                if current is not None:
-                    kept[key] = _bound_diagnostic_text(str(current), 900)
             verification = evidence.get("verification")
             if isinstance(verification, dict):
                 kept_verification = {}
                 for key, limit in (
                     ("kind", 120),
-                    ("summary", 500),
-                    ("observed", 700),
-                    ("result", 500),
-                    ("entrypoint", 300),
-                    ("config", 400),
+                    ("observed", 260),
+                    ("result", 220),
                 ):
                     current = verification.get(key)
                     if current is not None:
                         kept_verification[key] = _bound_diagnostic_text(str(current), limit)
                 if kept_verification:
                     kept["verification"] = kept_verification
+            # Some auditors put the actionable finding directly under
+            # ``evidence`` rather than under ``verification``. Keep only a
+            # bounded excerpt in that case; paths, commands and provider
+            # payloads are already available in the local audit receipt.
+            if not kept and evidence:
+                kept["evidence"] = _bound_diagnostic_text(str(evidence), 320)
             item["evidence"] = kept
         elif evidence is not None:
             item["evidence"] = _bound_diagnostic_text(str(evidence), 1200)
