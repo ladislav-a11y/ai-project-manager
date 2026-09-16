@@ -430,6 +430,26 @@ def _apply_provider_statuses(
         )
 
 
+def _provider_status_snapshot(provider_registry: ProviderRegistry) -> dict:
+    """Return the current provider state in the compact Trello/Slack shape.
+
+    AO receipts may contain only the providers touched by one failover. The
+    registry is the PM's current durable view, so completion notifications
+    must use it to include every configured provider and its exact limit
+    reason/deadline instead of replaying a partial or stale receipt.
+    """
+    snapshot = {}
+    for name in provider_registry.registered_names():
+        status = provider_registry.get_status(name)
+        snapshot[name] = {
+            "state": status.state,
+            "retry_at": status.retry_after.isoformat() if status.retry_after else None,
+            "reason": status.last_error,
+            "selected_model": status.selected_model,
+        }
+    return snapshot
+
+
 def _apply_run_result(
     project: ProjectRecord,
     result: dict,
@@ -951,6 +971,8 @@ def run_once_audit(
                 if halted:
                     project.transition_to(ProjectStatus.BLOCKED)
                     project.blocked_by = f"repeated audit failure: {signature}"
+                provider_statuses = _provider_status_snapshot(provider_registry)
+                project.extra_data["provider_statuses"] = provider_statuses
                 logger.warning(
                     "audit failed project=%r provider=%s error=%s halted=%s",
                     project.name, provider, signature, halted,
@@ -964,6 +986,7 @@ def run_once_audit(
                     provider=provider,
                     status=project.status.value,
                     reason=signature,
+                    provider_statuses=provider_statuses,
                 )
                 logger.warning(
                     "audit provider execution failed: project=%s provider=%s reason=%s",
@@ -999,8 +1022,9 @@ def run_once_audit(
             project.extra_data["provider_selection"]["actual_provider"] = actual_provider
             project.extra_data["provider_selection"]["actual_model"] = actual_model
             project.extra_data["provider_selection"]["provider_reason"] = actual_provider_reason
-            if isinstance(result.get("provider_statuses"), dict):
-                project.extra_data["provider_selection"]["provider_statuses"] = result["provider_statuses"]
+            provider_statuses = _provider_status_snapshot(provider_registry)
+            project.extra_data["provider_statuses"] = provider_statuses
+            project.extra_data["provider_selection"]["provider_statuses"] = provider_statuses
             sync_project_to_trello(client, project)
             emit_lifecycle(
                 lifecycle_notifier,
@@ -1010,6 +1034,7 @@ def run_once_audit(
                 provider=actual_provider,
                 status=project.status.value,
                 reason=project.stop_reason,
+                provider_statuses=provider_statuses,
             )
             logger.info(
                 "audit result project=%r provider=%s status=%s stop_reason=%s",

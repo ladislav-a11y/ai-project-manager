@@ -166,44 +166,53 @@ def _promote_completed_implementations_to_testing(
         implementation_items = [item for item in project.dod if item.phase == "implementation"]
         if not implementation_items or not all(item.checked for item in implementation_items):
             continue
-        if finalize_fn is not None:
-            finalize_result = finalize_fn(project) or {}
-            if finalize_result.get("status") != "done":
-                reason = finalize_result.get("stop_reason") or "controller finalization failed"
-                project.extra_data["controller_finalization_blocked_reason"] = reason
-                project.stop_reason = (
-                    "implementation DoD complete but controller finalization failed: "
-                    f"{reason}"
+        finalize_result = (
+            finalize_fn(project)
+            if finalize_fn is not None
+            else {
+                "status": "blocked",
+                "stop_reason": (
+                    "controller finalization is not configured: "
+                    "no finalize_fn was supplied"
+                ),
+            }
+        ) or {}
+        if finalize_result.get("status") != "done":
+            reason = finalize_result.get("stop_reason") or "controller finalization failed"
+            project.extra_data["controller_finalization_blocked_reason"] = reason
+            project.stop_reason = (
+                "implementation DoD complete but controller finalization failed: "
+                f"{reason}"
+            )
+            project.next_step = (
+                "Opravit controller finalizaci a zopakovat PM tick. "
+                f"Důvod: {reason}"
+            )
+            already_notified = (
+                project.extra_data.get("controller_finalization_blocked_notified")
+                == reason
+            )
+            if not already_notified:
+                project.extra_data["controller_finalization_blocked_notified"] = reason
+            sync_project_to_trello(client, project)
+            if not already_notified:
+                emit_lifecycle(
+                    lifecycle_notifier,
+                    "finalization_blocked",
+                    project,
+                    status=project.status.value,
+                    reason=reason,
                 )
-                project.next_step = (
-                    "Opravit controller finalizaci a zopakovat PM tick. "
-                    f"Důvod: {reason}"
-                )
-                already_notified = (
-                    project.extra_data.get("controller_finalization_blocked_notified")
-                    == reason
-                )
-                if not already_notified:
-                    project.extra_data["controller_finalization_blocked_notified"] = reason
-                sync_project_to_trello(client, project)
-                if not already_notified:
-                    emit_lifecycle(
-                        lifecycle_notifier,
-                        "finalization_blocked",
-                        project,
-                        status=project.status.value,
-                        reason=reason,
-                    )
-                logger.warning(
-                    "controller finalization blocked promotion to Testování: "
-                    "project=%r reason=%s",
-                    project.name, reason,
-                )
-                continue
-            project.extra_data.pop("controller_finalization_blocked_reason", None)
-            project.extra_data.pop("controller_finalization_blocked_notified", None)
-            if not finalize_result.get("already_verified"):
-                project.checkpoint = finalize_result.get("checkpoint", project.checkpoint)
+            logger.warning(
+                "controller finalization blocked promotion to Testování: "
+                "project=%r reason=%s",
+                project.name, reason,
+            )
+            continue
+        project.extra_data.pop("controller_finalization_blocked_reason", None)
+        project.extra_data.pop("controller_finalization_blocked_notified", None)
+        if not finalize_result.get("already_verified"):
+            project.checkpoint = finalize_result.get("checkpoint", project.checkpoint)
         project.transition_to(ProjectStatus.TESTING)
         project.stop_reason = "implementation DoD complete; awaiting ai-orchestrator audit"
         sync_project_to_trello(client, project)

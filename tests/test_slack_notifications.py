@@ -34,6 +34,29 @@ def test_notifier_uses_injected_post_function_without_network():
     assert "ACCEPTED" in sent[0]
 
 
+def test_audit_finished_includes_current_provider_statuses_and_limit_deadline():
+    message = build_lifecycle_message(
+        "audit_finished",
+        _project(),
+        {
+            "result": "accepted",
+            "provider_statuses": {
+                "antigravity": {"state": "AVAILABLE"},
+                "groq": {
+                    "state": "LIMITED",
+                    "reason": "TPM quota",
+                    "retry_at": "2026-09-16T12:30:00+00:00",
+                },
+            },
+        },
+    )
+
+    assert "antigravity=AVAILABLE" in message
+    assert "groq=LIMITED" in message
+    assert "TPM quota" in message
+    assert "2026-09-16T12:30:00+00:00" in message
+
+
 def test_notifier_failure_is_best_effort():
     def failing(*args):
         raise RuntimeError("Slack down")

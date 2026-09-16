@@ -1502,12 +1502,22 @@ def build_finalize_fn(
     independent audit finds an unchanged checkout (see the repeated
     "checkout se nezmenil" rejections this was written to fix).
 
-    Returns ``None`` when no ``command`` (``AI_ORCHESTRATOR_FINALIZE_CMD``)
-    is configured - finalization is then simply skipped, exactly like
-    today, rather than blocking every promotion on an unset config value.
+    The returned callable is fail-closed when no ``command``
+    (``AI_ORCHESTRATOR_FINALIZE_CMD``) is configured: it reports a concrete
+    blocked result, so the daemon cannot promote an implementation into
+    ``Testování`` without controller-owned commit/push verification.
     """
     if not command:
-        return None
+        def unavailable_finalize_fn(_project: ProjectRecord) -> dict:
+            return {
+                "status": "blocked",
+                "stop_reason": (
+                    "controller finalization is not configured: "
+                    "AI_ORCHESTRATOR_FINALIZE_CMD is missing"
+                ),
+            }
+
+        return unavailable_finalize_fn
     git_cmd = run_git or default_run_command
     if subprocess_run is None:
         subprocess_run = functools.partial(_default_subprocess_run, timeout=timeout_seconds)
@@ -1520,12 +1530,26 @@ def build_finalize_fn(
         except ProjectPathError as exc:
             return {"status": "blocked", "stop_reason": str(exc)}
         current_head = get_git_head(project_path, run_git=git_cmd)
-        if _controller_finalization_is_verified(
-            (project.checkpoint or {}).get("finalization"), current_head
+        status_ok, current_status = get_git_status(project_path, run_git=git_cmd)
+        if not status_ok:
+            return {
+                "status": "blocked",
+                "stop_reason": (
+                    "controller finalization cannot verify current git status: "
+                    f"{current_status}"
+                ),
+            }
+        if (
+            not current_status.strip()
+            and _controller_finalization_is_verified(
+                (project.checkpoint or {}).get("finalization"), current_head
+            )
         ):
             # Already committed/pushed for the current HEAD (for example a
             # research-only card with nothing to commit, or a retry after a
-            # transient Trello write failure) - nothing to do.
+            # transient Trello write failure) - nothing to do. A dirty
+            # checkout deliberately invalidates an old proof and must go
+            # through the finalizer again, even when HEAD is unchanged.
             return {"status": "done", "already_verified": True}
         run_id = run_id_fn()
         context = (project.checkpoint or {}).get("controller_finalization_context")

@@ -548,6 +548,13 @@ def test_run_once_audit_applies_limited_status_from_successful_failover_receipt(
     assert registry.get_status("groq").state == ProviderState.LIMITED
     assert registry.get_status("groq").retry_after.isoformat() == "2099-01-01T00:00:00+00:00"
     assert registry.get_status("codex").state == ProviderState.AVAILABLE
+    assert project.extra_data["provider_statuses"]["groq"] == {
+        "state": "LIMITED",
+        "retry_at": "2099-01-01T00:00:00+00:00",
+        "reason": "Groq TPD limit",
+        "selected_model": None,
+    }
+    assert project.extra_data["provider_statuses"]["codex"]["state"] == "AVAILABLE"
 
 
 def test_run_once_audit_does_not_select_model_from_pm_catalog():

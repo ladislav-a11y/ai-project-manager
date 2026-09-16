@@ -202,12 +202,12 @@ def test_run_fn_does_not_controller_finalize_fresh_implementation_card(tmp_path)
     assert "--implementation-only" in calls[0]
 
 
-def test_build_finalize_fn_returns_none_without_a_configured_command():
-    """No AI_ORCHESTRATOR_FINALIZE_CMD configured means finalization is
-    simply skipped - daemon.py treats a None finalize_fn as "not wired up"
-    and promotes without it, exactly like before this feature existed."""
-    assert build_finalize_fn(None) is None
-    assert build_finalize_fn([]) is None
+def test_build_finalize_fn_blocks_without_a_configured_command():
+    """Missing controller finalization configuration must fail closed."""
+    for finalize_fn in (build_finalize_fn(None), build_finalize_fn([])):
+        result = finalize_fn(ProjectRecord(name="Demo"))
+        assert result["status"] == "blocked"
+        assert "AI_ORCHESTRATOR_FINALIZE_CMD" in result["stop_reason"]
 
 
 def test_build_finalize_fn_commits_a_fully_implemented_card(tmp_path):
@@ -504,6 +504,8 @@ def test_build_finalize_fn_skips_an_already_verified_checkout(tmp_path):
         raise AssertionError("must not re-run the finalizer for a verified HEAD")
 
     def fake_git(_command):
+        if "status" in _command:
+            return completed()
         return completed("abc123\n")
 
     project = ProjectRecord(
@@ -527,6 +529,46 @@ def test_build_finalize_fn_skips_an_already_verified_checkout(tmp_path):
     result = finalize_fn(project)
 
     assert result == {"status": "done", "already_verified": True}
+
+
+def test_build_finalize_fn_does_not_trust_verified_proof_on_dirty_checkout(tmp_path):
+    """An old proof at the same HEAD cannot hide new uncommitted work."""
+    calls = []
+
+    def fake_subprocess_run(command):
+        calls.append(command)
+        return completed(json.dumps({"status": "blocked", "error": "dirty task paths"}))
+
+    def fake_git(command):
+        if "status" in command:
+            return completed(" M current-task.py\n")
+        if command[-1] == "HEAD":
+            return completed("abc123\n")
+        return completed("main\n")
+
+    project = ProjectRecord(
+        name="Demo",
+        dod=[DoDItem(text="implementation complete", checked=True)],
+        checkpoint={
+            "finalization": {
+                "status": "completed", "done": True, "committed": True,
+                "clean": True, "tests_passed": True, "pushed": True,
+                "commit_hash": "abc123", "remote_commit": "abc123",
+            },
+        },
+    )
+    finalize_fn = build_finalize_fn(
+        ["controller-finalize"],
+        project_paths={"Demo": str(tmp_path / "demo-checkout")},
+        subprocess_run=fake_subprocess_run,
+        run_git=fake_git,
+    )
+
+    result = finalize_fn(project)
+
+    assert calls
+    assert result["status"] == "blocked"
+    assert "controller finalization did not provide" in result["stop_reason"]
 
 
 def test_build_finalize_fn_reconciles_existing_controller_commit_after_card_move(tmp_path):

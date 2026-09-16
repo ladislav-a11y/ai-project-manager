@@ -233,8 +233,13 @@ Při ověřování PM/AO se vždy používá skutečný interpreter cílového r
 první v PATH pro všechny testovací subprocessy. Systémový `python` nebo
 WindowsApps alias se nesmí použít bez ověření jeho skutečné absolutní cesty;
 jinak může selhání prostředí vypadat jako chyba implementace.
-Jednorázový produkční PM tick se spouští pouze příkazem
-`.\.venv\Scripts\python.exe -m ai_project_manager --once`; Inbox intake se
+Jednorázový produkční PM tick se spouští pouze produkčním launcherem
+`.\scripts\run-ai-project-manager.ps1 -Once`; ten načte finalizer,
+allowlist povolených push remote a Slack konfiguraci. Přímý příkaz
+`.\.venv\Scripts\python.exe -m ai_project_manager --once` je přípustný jen
+pro diagnostiku s již explicitně nastavenými stejnými hodnotami prostředí.
+Chybějící `AI_ORCHESTRATOR_FINALIZE_CMD` je fail-closed: PM nesmí povýšit
+implementaci do `Testování` bez controllerového commit/push důkazu. Inbox intake se
 v něm řídí výhradně načtenou konfigurací, nikdy dodatečným přepínačem
 `--enable-inbox-intake`.
 Pokud PM nemá explicitní `AI_ORCHESTRATOR_CMD`, sestaví v2 AO příkaz z
@@ -246,6 +251,13 @@ failover pořadí. Každý `LIMITED` záznam nese absolutní UTC `retry_at`; PM
 zapíše všechny tyto termíny do persistentního stavu a do PM-DATA/Trella
 readbacku. `retry_after_seconds` je pouze zpětně kompatibilní fallback,
 nikdy se nesmí použít tak, že by se ostatní limity ztratily.
+Při dokončení auditního běhu PM z aktuální `ProviderRegistry` sestaví úplný
+snapshot všech registrovaných providerů a uloží jej do PM-DATA. U stavů
+`LIMITED` a `ERROR` musí snapshot obsahovat konkrétní `reason` a absolutní
+`retry_at` (nebo explicitní informaci, že termín chybí). Při `accepted` a
+přesunu do `Hotovo` se stejný snapshot zobrazí také ve viditelné části karty
+a v lifecycle zprávě Slacku; Slack je pouze zrcadlo, Trello zůstává zdrojem
+pravdy.
 
 Opravy, potvrzené chyby, regrese a rework mají vždy závaznou nejvyšší prioritu
 (`P5`); ani explicitní nižší štítek ze zdrojového Inboxu je nesmí snížit.

@@ -105,11 +105,17 @@ nutné použít neměnné card ID.
 
 ## Spuštění
 
-Nejprve proveďte jeden bezpečný integrační tick:
+Nejprve proveďte jeden bezpečný produkční integrační tick přes launcher:
 
 ```powershell
-python -m ai_project_manager --once --log-level INFO
+.\scripts\run-ai-project-manager.ps1 -Once
 ```
+
+Launcher načte produkční finalizer ai-orchestratoru, allowlist push remote a
+Slack konfiguraci. Přímé `python -m ai_project_manager --once` používejte
+jen pro diagnostiku, pokud jsou tyto hodnoty prostředí již explicitně
+nastavené; bez controllerové finalizace PM fail-closed nepřejde do
+`Testování`.
 
 Je-li workflow prázdné a v `INBOX / Nápady` čeká uživatelská karta, tento
 jednorázový tick sám provede řízený refresh providerů a Inbox intake. Intake
@@ -238,6 +244,11 @@ důvod do `open_feedback` a `stop_reason` a při návratu do `Pracuje se` vždy
 zapíše konkrétní neprázdný `next_step` s odmítnutými DoD body a podmínkou
 nového nezávislého auditu. Čistě auditní gate zůstává v `Testování` s pokynem,
 že se audit do odstranění blokace neopakuje automaticky.
+
+Při dokončení auditu PM zapíše do PM-DATA aktuální snapshot všech providerů.
+U `LIMITED` a `ERROR` uvádí důvod a absolutní `retry_at`; při přechodu do
+`Hotovo` se stejná informace zobrazí v dokončené Trello kartě i v lifecycle
+zprávě Slacku. Slack je pouze provozní zrcadlo, nikoli zdroj workflow stavu.
 
 AI Inbox intake ukládá u každého rozděleného podúkolu také `depends_on` a
 prováděcí pořadí. Závislosti mají přednost před prioritou: vyšší priorita

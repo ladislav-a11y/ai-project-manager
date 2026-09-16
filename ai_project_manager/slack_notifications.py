@@ -37,6 +37,25 @@ def _project_label(project: object) -> str:
     return f"<{url}|{name}>" if url else name
 
 
+def _provider_status_summary(statuses: object) -> str:
+    """Render a compact, human-readable snapshot for lifecycle messages."""
+    if not isinstance(statuses, Mapping) or not statuses:
+        return ""
+    rendered = []
+    for name in sorted(statuses):
+        status = statuses[name]
+        if not isinstance(status, Mapping):
+            continue
+        state = str(status.get("state") or "UNKNOWN").upper()
+        item = f"{name}={state}"
+        if state in {"LIMITED", "ERROR"}:
+            reason = status.get("reason") or status.get("last_error") or "neuvedený důvod"
+            retry_at = status.get("retry_at") or status.get("retry_after") or "neuvedeno"
+            item += f" (důvod: {reason}; znovu po: {retry_at})"
+        rendered.append(item)
+    return "; ".join(rendered)
+
+
 def build_lifecycle_message(
     event: str,
     project: object,
@@ -56,7 +75,9 @@ def build_lifecycle_message(
         result = str(details.get("result") or "unknown").upper()
         reason = details.get("reason")
         suffix = f" — {reason}" if reason else ""
-        return f"PM: audit ukončen — výsledek: {result} — karta {label} (stav: {status}{suffix})"
+        provider_summary = _provider_status_summary(details.get("provider_statuses"))
+        provider_suffix = f" — provideři: {provider_summary}" if provider_summary else ""
+        return f"PM: audit ukončen — výsledek: {result} — karta {label} (stav: {status}{suffix}{provider_suffix})"
     if event == "workflow_transition":
         previous = details.get("from_status") or details.get("from") or "unknown"
         destination = details.get("to") or status

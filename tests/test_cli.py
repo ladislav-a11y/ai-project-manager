@@ -305,7 +305,8 @@ def test_main_once_resolves_project_path_via_real_wiring_without_exact_title_ove
 
     id_to_name, _ = build_list_maps(client)
     reloaded = project_from_card(client.get_card(project.trello_card_id), id_to_name)
-    assert reloaded.status == ProjectStatus.TESTING
+    assert reloaded.status == ProjectStatus.IN_PROGRESS
+    assert "controller finalization failed" in reloaded.stop_reason
     assert reloaded.last_output == f"resolved project path: {station_checkout}"
 
 
@@ -387,7 +388,8 @@ def test_main_once_resolves_project_path_via_stable_label_identity_without_title
 
     id_to_name, _ = build_list_maps(client)
     reloaded = project_from_card(client.get_card(project.trello_card_id), id_to_name)
-    assert reloaded.status == ProjectStatus.TESTING
+    assert reloaded.status == ProjectStatus.IN_PROGRESS
+    assert "controller finalization failed" in reloaded.stop_reason
     assert reloaded.last_output == f"resolved project path: {checkout}"
 
 
@@ -477,7 +479,8 @@ def test_main_once_migrates_and_resolves_real_production_card_without_exact_titl
 
     reloaded = project_from_card(reloaded_card, id_to_name)
     assert reloaded.project_key == "AI Project Manager"
-    assert reloaded.status == ProjectStatus.TESTING
+    assert reloaded.status == ProjectStatus.IN_PROGRESS
+    assert "controller finalization failed" in reloaded.stop_reason
     assert reloaded.last_output == f"resolved project path: {checkout}"
 
 
@@ -558,7 +561,8 @@ def test_main_once_migrates_real_production_card_via_title_keyed_config_matching
 
     reloaded = project_from_card(reloaded_card, id_to_name)
     assert reloaded.project_key == "AI Project Manager"
-    assert reloaded.status == ProjectStatus.TESTING
+    assert reloaded.status == ProjectStatus.IN_PROGRESS
+    assert "controller finalization failed" in reloaded.stop_reason
     assert reloaded.last_output == f"resolved project path: {checkout}"
 
 

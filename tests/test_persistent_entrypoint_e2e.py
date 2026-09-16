@@ -64,7 +64,7 @@ _HARNESS_SOURCE = textwrap.dedent(
     exit_code = cli.main(["--once", "--log-level", "INFO"], client=client, run_fn=run_fn)
 
     readback = [
-        {{"name": p.name, "status": p.status.value, "last_output": p.last_output}}
+        {{"name": p.name, "status": p.status.value, "stop_reason": p.stop_reason, "last_output": p.last_output}}
         for p in fetch_all_projects(client)
     ]
     with open(readback_path, "w", encoding="utf-8") as fh:
@@ -104,8 +104,8 @@ def test_live_e2e_persistent_entrypoint_readback_trello_log_process(tmp_path):
     # Nor its real controller finalize command: this machine's live scheduler
     # setup may already export AI_ORCHESTRATOR_FINALIZE_CMD. Inheriting it
     # would make main()'s real build_finalize_fn() run the actual controller
-    # finalizer for a project with no configured checkout at all, failing
-    # closed instead of reaching the "testing" status this test verifies.
+    # finalizer for a project with no configured checkout at all; the
+    # fail-closed result is the behavior this test verifies.
     env.pop("AI_ORCHESTRATOR_FINALIZE_CMD", None)
 
     result = subprocess.run(
@@ -132,5 +132,6 @@ def test_live_e2e_persistent_entrypoint_readback_trello_log_process(tmp_path):
     readback = json.loads(readback_path.read_text(encoding="utf-8"))
     assert len(readback) == 1
     assert readback[0]["name"] == "Persistent Entrypoint Demo"
-    assert readback[0]["status"] == "testing"
+    assert readback[0]["status"] == "in_progress"
+    assert "controller finalization failed" in readback[0]["stop_reason"]
     assert readback[0]["last_output"] == "hotovo pres live e2e test"

@@ -896,6 +896,21 @@ def _completed_visible_notes(project: ProjectRecord) -> str:
         lines.extend(f"- [{'x' if item.checked else ' '}] {item.text}" for item in dod_items)
     else:
         lines.append("- [x] Úkol dokončen a ověřen nadřazeným orchestrátorem.")
+    provider_statuses = project.extra_data.get("provider_statuses")
+    if isinstance(provider_statuses, dict) and provider_statuses:
+        lines.extend(["", "## Stav providerů při dokončení"])
+        for name in sorted(provider_statuses):
+            status = provider_statuses[name]
+            if not isinstance(status, dict):
+                continue
+            state = str(status.get("state") or "UNKNOWN").upper()
+            line = f"- {name}: {state}"
+            if state in {"LIMITED", "ERROR"}:
+                reason = status.get("reason") or status.get("last_error")
+                retry_at = status.get("retry_at") or status.get("retry_after")
+                line += f" — důvod: {reason or 'neuveden'}"
+                line += f"; znovu po: {retry_at or 'neuvedeno'}"
+            lines.append(line)
     if project.last_output:
         lines.extend(["", "## Poslední ověřený výstup", project.last_output[:3000]])
     return "\n".join(lines)

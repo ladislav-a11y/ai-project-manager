@@ -1293,6 +1293,34 @@ def test_done_card_keeps_human_visible_checked_dod_above_pm_data():
     assert "<!-- PM-DATA" in created["desc"]
 
 
+def test_done_card_shows_provider_limit_reason_and_retry_at():
+    client = InMemoryTrelloClient()
+    project = ProjectRecord(
+        name="Demo",
+        status=ProjectStatus.DONE,
+        dod=[DoDItem(text="a", checked=True)],
+        extra_data={
+            "provider_statuses": {
+                "antigravity": {"state": "AVAILABLE", "retry_at": None},
+                "groq": {
+                    "state": "LIMITED",
+                    "reason": "TPM quota",
+                    "retry_at": "2026-09-16T12:30:00+00:00",
+                },
+            },
+        },
+    )
+
+    created = sync_project_to_trello(client, project)
+    visible = created["desc"].split("<!-- PM-DATA", 1)[0]
+
+    assert "Stav providerů při dokončení" in visible
+    assert "antigravity: AVAILABLE" in visible
+    assert "groq: LIMITED" in visible
+    assert "TPM quota" in visible
+    assert "2026-09-16T12:30:00+00:00" in visible
+
+
 def test_visible_checklist_above_pm_data_parses_into_project_dod():
     """A fresh card (never synced by the Project Manager yet) whose
     visible description carries a Definition-of-Done checklist must have

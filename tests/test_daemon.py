@@ -360,6 +360,36 @@ def test_run_tick_blocks_promotion_when_finalization_fails():
     assert card.extra_data["controller_finalization_blocked_notified"] == "tests failed: 2 failures"
 
 
+def test_run_tick_blocks_promotion_when_finalizer_is_not_wired():
+    """An absent finalizer is a configuration error, never a promotion bypass."""
+    project = ProjectRecord(
+        name="Completed implementation",
+        priority=5,
+        status=ProjectStatus.IN_PROGRESS,
+        main_task="Implement and verify the feature",
+        dod=_implementation_plus_audit_dod(),
+    )
+    client = make_client_with_project(project)
+    registry = ProviderRegistry()
+    registry.mark_available("claude")
+
+    outcome = run_tick(
+        client,
+        registry,
+        lambda *_args: (_ for _ in ()).throw(
+            AssertionError("implementation must not be dispatched again")
+        ),
+        default_providers=["claude"],
+    )
+
+    assert outcome.ran is False
+    assert "no finalize_fn was supplied" in outcome.reason
+    id_to_name, _ = build_list_maps(client)
+    card = project_from_card(client.get_card(project.trello_card_id), id_to_name)
+    assert card.status == ProjectStatus.IN_PROGRESS
+    assert "controller finalization failed" in card.stop_reason
+
+
 def test_run_tick_loads_real_projects_and_processes_inbox_only_when_explicitly_enabled():
     client = InMemoryTrelloClient()
     _, name_to_id = build_list_maps(client)
