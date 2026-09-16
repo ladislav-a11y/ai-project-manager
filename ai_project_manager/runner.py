@@ -430,7 +430,11 @@ def _apply_provider_statuses(
         )
 
 
-def _provider_status_snapshot(provider_registry: ProviderRegistry) -> dict:
+def _provider_status_snapshot(
+    provider_registry: ProviderRegistry,
+    *,
+    fresh: bool = True,
+) -> dict:
     """Return the current provider state in the compact Trello/Slack shape.
 
     AO receipts may contain only the providers touched by one failover. The
@@ -439,13 +443,34 @@ def _provider_status_snapshot(provider_registry: ProviderRegistry) -> dict:
     reason/deadline instead of replaying a partial or stale receipt.
     """
     snapshot = {}
+    now = datetime.now(timezone.utc)
     for name in provider_registry.registered_names():
         status = provider_registry.get_status(name)
+        state = status.state
+        retry_at = status.retry_after
+        reason = status.last_error
+        # An expired LIMITED status without a successful fresh probe is not
+        # evidence of a current limit. Expose UNKNOWN in human-facing
+        # notifications while keeping the scheduler's conservative gate in
+        # its durable registry.
+        if (
+            not fresh
+            and state == ProviderState.LIMITED
+            and retry_at is not None
+            and retry_at.astimezone(timezone.utc) <= now
+        ):
+            state = "UNKNOWN"
+            retry_at = None
+            reason = (
+                "Aktuální provider probe se nepodařilo provést; historický "
+                "LIMITED již není potvrzen jako aktuální."
+            )
         snapshot[name] = {
-            "state": status.state,
-            "retry_at": status.retry_after.isoformat() if status.retry_after else None,
-            "reason": status.last_error,
+            "state": state,
+            "retry_at": retry_at.isoformat() if retry_at else None,
+            "reason": reason,
             "selected_model": status.selected_model,
+            "checked_at": status.updated_at.isoformat(),
         }
     return snapshot
 
@@ -770,6 +795,7 @@ def run_once_audit(
     default_providers: Optional[list] = None,
     finalize_fn: Optional[FinalizeFn] = None,
     lifecycle_notifier: Optional[LifecycleNotifierFn] = None,
+    provider_refresh: Optional[Callable[[], bool]] = None,
 ) -> RunOutcome:
     """Run the audit-only path for exactly one Testování project, if any
     is currently awaiting an ai-orchestrator verdict.
@@ -809,6 +835,24 @@ def run_once_audit(
         project, provider, providers_for_project, default_providers, provider_registry, TASK_AUDIT
     )
     logger.info("selected project=%r provider=%s for audit", project.name, provider)
+
+    provider_status_refresh_ok: Optional[bool] = None
+
+    def current_provider_statuses() -> dict:
+        nonlocal provider_status_refresh_ok
+        if provider_status_refresh_ok is None:
+            if provider_refresh is None:
+                provider_status_refresh_ok = False
+            else:
+                try:
+                    provider_status_refresh_ok = bool(provider_refresh())
+                except Exception:  # noqa: BLE001 - status readback must not abort audit
+                    logger.exception("AO provider status refresh failed at audit finalization")
+                    provider_status_refresh_ok = False
+        return _provider_status_snapshot(
+            provider_registry,
+            fresh=provider_status_refresh_ok,
+        )
 
     try:
         with lock_manager.hold(project.name, holder):
@@ -971,7 +1015,7 @@ def run_once_audit(
                 if halted:
                     project.transition_to(ProjectStatus.BLOCKED)
                     project.blocked_by = f"repeated audit failure: {signature}"
-                provider_statuses = _provider_status_snapshot(provider_registry)
+                provider_statuses = current_provider_statuses()
                 project.extra_data["provider_statuses"] = provider_statuses
                 logger.warning(
                     "audit failed project=%r provider=%s error=%s halted=%s",
@@ -1022,7 +1066,7 @@ def run_once_audit(
             project.extra_data["provider_selection"]["actual_provider"] = actual_provider
             project.extra_data["provider_selection"]["actual_model"] = actual_model
             project.extra_data["provider_selection"]["provider_reason"] = actual_provider_reason
-            provider_statuses = _provider_status_snapshot(provider_registry)
+            provider_statuses = current_provider_statuses()
             project.extra_data["provider_statuses"] = provider_statuses
             project.extra_data["provider_selection"]["provider_statuses"] = provider_statuses
             sync_project_to_trello(client, project)

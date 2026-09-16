@@ -1,7 +1,7 @@
 import json
 import re
 import subprocess
-from datetime import timedelta
+from datetime import datetime, timedelta, timezone
 
 import pytest
 
@@ -24,6 +24,7 @@ from ai_project_manager.orchestrator_runner import (
     spec_file_path,
     _bounded_subprocess_run,
     _default_subprocess_run,
+    _apply_ao_provider_refresh,
     _planner_tasks,
 )
 from ai_project_manager.providers import ProviderRegistry, ProviderState
@@ -2863,3 +2864,35 @@ def test_provider_refresh_handoff_uses_dedicated_ao_command_once():
 
     assert refresh() is True
     assert calls == [["python", "orchestrator.py", "refresh-provider-notes"]]
+
+
+def test_ao_refresh_clears_historical_limited_status_in_pm_registry():
+    registry = ProviderRegistry()
+    registry.mark_limited(
+        "antigravity",
+        retry_after=datetime(2026, 9, 13, 12, 46, 14, 223239, tzinfo=timezone.utc),
+        reason="stale quota message",
+    )
+    payload = {
+        "success": True,
+        "refresh": {
+            "providers": {
+                "antigravity": {
+                    "state": "AVAILABLE",
+                    "checked_at": "2026-09-16T10:00:00+00:00",
+                    "reason": "agy ready",
+                },
+                "claude-code": {
+                    "state": "AVAILABLE",
+                    "checked_at": "2026-09-16T10:00:00+00:00",
+                },
+            }
+        },
+    }
+
+    _apply_ao_provider_refresh(registry, payload)
+
+    status = registry.get_status("antigravity")
+    assert status.state == ProviderState.AVAILABLE
+    assert status.retry_after is None
+    assert status.last_error is None

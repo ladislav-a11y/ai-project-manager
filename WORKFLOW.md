@@ -222,6 +222,16 @@ Pokud provider oznámí omezení, receipt i stavová zpráva uvádí absolutní
 řídí on. PM pouze promítne výsledek do workflow/Trella a žádného konkrétního
 providera nepředává do failover řetězce.
 
+Brokerový capability gate je součástí každého AO handoffu: požadované
+`required_capabilities` se předávají brokeru spolu s task profilem a provider
+se smí nabídnout jen při konečné deklaraci všech požadovaných schopností.
+Chybějící nebo neznámý kontrakt se vyhodnotí fail-closed. GUI nebo desktopový
+audit proto vyžaduje obecné `runtime_launch` a `interactive_gui`; headless
+CLI provider (včetně aktuálního Antigravity `agy --print` a Groq API) se jako
+GUI auditor nikdy nenabídne. Provider-specific runtime instrukce se předají
+z jeho `lang*.json` pouze vybranému provideru po splnění gate. Stejný model
+platí pro webové GUI, Windows desktop `.exe` i další budoucí runtime typy.
+
 ### Bezpečná změna runtime
 
 Pokud běží PM tick, persistentní PM nebo jeho ai-orchestrator child proces,
@@ -261,7 +271,10 @@ snapshot všech registrovaných providerů a uloží jej do PM-DATA. U stavů
 `retry_at` (nebo explicitní informaci, že termín chybí). Při `accepted` a
 přesunu do `Hotovo` se stejný snapshot zobrazí také ve viditelné části karty
 a v lifecycle zprávě Slacku; Slack je pouze zrcadlo, Trello zůstává zdrojem
-pravdy.
+pravdy. Před snapshotem se provede aktuální AO provider refresh. Prošlý
+historický `LIMITED` se nesmí znovu zobrazit jako aktuální; při neúspěšném
+refreshi se v lidském snapshotu uvede `UNKNOWN` s důvodem, zatímco lokální
+scheduler může konzervativně zachovat interní gate do dalšího probe.
 
 Opravy, potvrzené chyby, regrese a rework mají vždy závaznou nejvyšší prioritu
 (`P5`); ani explicitní nižší štítek ze zdrojového Inboxu je nesmí snížit.

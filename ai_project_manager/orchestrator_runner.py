@@ -89,6 +89,7 @@ from .orchestrator_handoff import (
 )
 from .providers import (
     ProviderRegistry,
+    ProviderState,
     TASK_INBOX_PLANNING,
     detect_limit,
 )
@@ -764,6 +765,7 @@ def build_inbox_planner_fn(
 def build_provider_refresh_fn(
     command: list,
     *,
+    provider_registry: Optional[ProviderRegistry] = None,
     subprocess_run: Optional[Callable[..., "subprocess.CompletedProcess"]] = None,
     timeout_seconds: float = 180,
 ):
@@ -793,10 +795,79 @@ def build_provider_refresh_fn(
                 str((payload or {}).get("error") or "missing JSON success envelope")[:500],
             )
             return False
+        if provider_registry is not None:
+            _apply_ao_provider_refresh(provider_registry, payload)
         logger.info("AO provider refresh completed before Inbox intake")
         return True
 
     return refresh
+
+
+def _apply_ao_provider_refresh(
+    provider_registry: ProviderRegistry, payload: dict
+) -> None:
+    """Fold AO's fresh broker status into PM's durable scheduling registry.
+
+    AO is the provider boundary and performs the real probes. PM only maps
+    the confirmed status envelope into its local scheduler state; it never
+    calls a provider directly. A fresh non-LIMITED result clears an expired
+    historical limit and its old retry deadline.
+    """
+    refresh = payload.get("refresh")
+    providers = refresh.get("providers") if isinstance(refresh, dict) else None
+    if not isinstance(providers, dict):
+        return
+    aliases = {"claude-code": "claude"}
+    for source_name, raw in providers.items():
+        if not isinstance(source_name, str) or not isinstance(raw, dict):
+            continue
+        name = aliases.get(source_name, source_name)
+        if name not in provider_registry.registered_names():
+            continue
+        current = provider_registry.get_status(name)
+        checkpoint = dict(current.checkpoint)
+        state = str(raw.get("state") or "UNKNOWN").upper()
+        reason = str(raw.get("reason") or "AO provider probe nevrátil důvod")
+        if state == ProviderState.AVAILABLE:
+            refreshed = provider_registry.mark_available(name)
+            refreshed.checkpoint = checkpoint
+            continue
+        if state == ProviderState.LIMITED:
+            retry_at = raw.get("retry_at")
+            if isinstance(retry_at, str) and retry_at.strip():
+                try:
+                    retry_value = datetime.fromisoformat(
+                        retry_at.strip().replace("Z", "+00:00")
+                    )
+                except ValueError:
+                    retry_value = None
+                if retry_value is not None:
+                    if retry_value.tzinfo is None:
+                        retry_value = retry_value.replace(tzinfo=timezone.utc)
+                    provider_registry.mark_limited(
+                        name, retry_value, checkpoint=checkpoint, reason=reason
+                    )
+                    continue
+            retry_seconds = raw.get("retry_after_seconds")
+            try:
+                retry_delta = timedelta(seconds=float(retry_seconds))
+            except (TypeError, ValueError, OverflowError):
+                retry_delta = timedelta(minutes=30)
+            if retry_delta.total_seconds() < 0:
+                retry_delta = timedelta(minutes=30)
+            provider_registry.mark_limited(
+                name, retry_delta, checkpoint=checkpoint, reason=reason
+            )
+            continue
+        # PM has no separate UNAVAILABLE state. ERROR is the conservative
+        # representation of a fresh, non-usable probe and receives the normal
+        # bounded recheck backoff rather than inheriting a stale quota date.
+        provider_registry.mark_error(
+            name,
+            reason,
+            retry_after=timedelta(minutes=5),
+            checkpoint=checkpoint,
+        )
 
 
 class OrchestratorProcessError(RuntimeError):

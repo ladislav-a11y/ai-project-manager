@@ -196,6 +196,7 @@ def main(
     )
     provider_refresh = build_provider_refresh_fn(
         config.orchestrator.command,
+        provider_registry=provider_registry,
         timeout_seconds=config.orchestrator.inbox_planner_timeout_seconds,
     )
 

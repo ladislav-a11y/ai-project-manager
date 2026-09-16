@@ -938,6 +938,7 @@ def run_tick(
                 default_providers=default_providers,
                 finalize_fn=finalize_fn,
                 lifecycle_notifier=lifecycle_notifier,
+                provider_refresh=provider_refresh,
             )
 
         if outcome is None or not outcome.ran:

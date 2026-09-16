@@ -1,4 +1,4 @@
-from datetime import timedelta
+from datetime import datetime, timedelta, timezone
 
 from ai_project_manager.guard import OrchestratorGuard
 from ai_project_manager.lock import ProjectLockManager
@@ -6,6 +6,7 @@ from ai_project_manager.models import DoDItem, ProjectRecord, ProjectStatus
 from ai_project_manager.providers import ProviderRegistry, ProviderState
 from ai_project_manager.runner import (
     _capture_live_trello_readback,
+    _provider_status_snapshot,
     run_once,
     run_once_audit,
 )
@@ -18,6 +19,21 @@ def make_client_with_project(project: ProjectRecord) -> InMemoryTrelloClient:
     created = sync_project_to_trello(client, project)
     project.trello_card_id = created["id"]
     return client
+
+
+def test_expired_limited_status_is_unknown_without_fresh_probe():
+    registry = ProviderRegistry()
+    registry.mark_limited(
+        "groq",
+        retry_after=datetime(2020, 1, 1, tzinfo=timezone.utc),
+        reason="historical quota message",
+    )
+
+    snapshot = _provider_status_snapshot(registry, fresh=False)
+
+    assert snapshot["groq"]["state"] == "UNKNOWN"
+    assert snapshot["groq"]["retry_at"] is None
+    assert "historický" in snapshot["groq"]["reason"]
 
 
 def test_run_once_executes_and_syncs_full_state_back_to_trello():
@@ -548,12 +564,11 @@ def test_run_once_audit_applies_limited_status_from_successful_failover_receipt(
     assert registry.get_status("groq").state == ProviderState.LIMITED
     assert registry.get_status("groq").retry_after.isoformat() == "2099-01-01T00:00:00+00:00"
     assert registry.get_status("codex").state == ProviderState.AVAILABLE
-    assert project.extra_data["provider_statuses"]["groq"] == {
-        "state": "LIMITED",
-        "retry_at": "2099-01-01T00:00:00+00:00",
-        "reason": "Groq TPD limit",
-        "selected_model": None,
-    }
+    assert project.extra_data["provider_statuses"]["groq"]["state"] == "LIMITED"
+    assert project.extra_data["provider_statuses"]["groq"]["retry_at"] == "2099-01-01T00:00:00+00:00"
+    assert project.extra_data["provider_statuses"]["groq"]["reason"] == "Groq TPD limit"
+    assert project.extra_data["provider_statuses"]["groq"]["selected_model"] is None
+    assert project.extra_data["provider_statuses"]["groq"]["checked_at"]
     assert project.extra_data["provider_statuses"]["codex"]["state"] == "AVAILABLE"
 
 
