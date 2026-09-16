@@ -2118,6 +2118,11 @@ def build_audit_run_fn(
             else None
         )
         audit_protocol_error = bool(last_iteration.get("audit_protocol_error")) if isinstance(last_iteration, dict) else False
+        audit_capability_incompatible = (
+            bool(last_iteration.get("audit_capability_incompatible"))
+            if isinstance(last_iteration, dict)
+            else False
+        )
         evidence = (
             payload.get("last_output")
             or (last_iteration.get("test_output") if isinstance(last_iteration, dict) else None)
@@ -2127,6 +2132,26 @@ def build_audit_run_fn(
             # path). Do not discard that concrete provider/audit readback.
             or (last_iteration.get("note") if isinstance(last_iteration, dict) else None)
         )
+
+        # No provider capable of the requested live GUI/runtime audit is a
+        # durable workflow block, not a missing verdict to retry forever and
+        # not a reason for PM to invent accepted/rejected.
+        if payload.get("status") == "blocked" and audit_capability_incompatible:
+            reason = str(
+                payload.get("error")
+                or (last_iteration.get("note") if isinstance(last_iteration, dict) else None)
+                or "Žádný provider nesplňuje požadované auditní capability."
+            )
+            result = {
+                "status": "capability_unavailable",
+                "stop_reason": reason,
+                "evidence": evidence,
+                "checkpoint": payload.get("checkpoint", project.checkpoint),
+            }
+            for key in ("provider_statuses", "active_provider", "active_model", "model", "provider_sequence"):
+                if key in payload:
+                    result[key] = payload[key]
+            return result
 
         # A Testování pass audits the already-finalized implementation. A
         # controller-owned commit is therefore evidence from the preceding

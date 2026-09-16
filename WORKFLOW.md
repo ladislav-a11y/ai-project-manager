@@ -231,6 +231,9 @@ CLI provider (včetně aktuálního Antigravity `agy --print` a Groq API) se jak
 GUI auditor nikdy nenabídne. Provider-specific runtime instrukce se předají
 z jeho `lang*.json` pouze vybranému provideru po splnění gate. Stejný model
 platí pro webové GUI, Windows desktop `.exe` i další budoucí runtime typy.
+Pokud žádný provider požadované capability nesplňuje, AO vrátí explicitní
+`BLOCKED` důvod a PM kartu zablokuje s `next_step`; PM nevymýšlí auditní verdict,
+neklasifikuje tento stav jako quota wait a audit neopakuje bez změny capability.
 
 ### Bezpečná změna runtime
 

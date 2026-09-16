@@ -963,6 +963,48 @@ def run_once_audit(
                             capability_key,
                             "audit returned a review plan without concrete evidence or an independent verdict",
                         )
+                if result.get("status") == "capability_unavailable":
+                    reason = str(
+                        result.get("stop_reason")
+                        or "Žádný provider nesplňuje požadované auditní capability."
+                    )
+                    if "checkpoint" in result:
+                        project.checkpoint = dict(result["checkpoint"] or {})
+                    project.stop_reason = reason
+                    project.blocked_by = f"audit capability unavailable: {reason}"
+                    project.next_step = (
+                        "Zajistit auditora s požadovanou runtime/GUI capability a poté "
+                        "spustit nový nezávislý audit."
+                    )
+                    project.extra_data["audit_capability_failure"] = {
+                        "reason": reason,
+                        "evidence": result.get("evidence"),
+                    }
+                    project.transition_to(ProjectStatus.BLOCKED)
+                    provider_statuses = current_provider_statuses()
+                    project.extra_data["provider_statuses"] = provider_statuses
+                    sync_project_to_trello(client, project)
+                    emit_lifecycle(
+                        lifecycle_notifier,
+                        "audit_finished",
+                        project,
+                        result="blocked",
+                        provider=provider,
+                        status=project.status.value,
+                        reason=reason,
+                        provider_statuses=provider_statuses,
+                    )
+                    logger.warning(
+                        "audit blocked project=%r provider=%s reason=%s",
+                        project.name, provider, reason,
+                    )
+                    return RunOutcome(
+                        ran=True,
+                        project_name=project.name,
+                        provider=provider,
+                        reason=reason,
+                        halted=True,
+                    )
                 verdict = result.get("verdict")
                 audit_result = str(verdict) if verdict is not None else "waiting_for_provider"
                 if verdict is not None:

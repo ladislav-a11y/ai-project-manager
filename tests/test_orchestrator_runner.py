@@ -909,6 +909,52 @@ def test_audit_and_implementation_leave_model_selection_to_ao(tmp_path):
     assert "--provider-models" not in audit_seen["command"]
 
 
+def test_audit_capability_block_is_returned_without_fabricating_verdict(tmp_path):
+    registry = ProviderRegistry()
+    registry.mark_available("groq")
+    project = ProjectRecord(
+        name="Demo",
+        status=ProjectStatus.TESTING,
+        main_task="Ověřit GUI",
+        dod=[DoDItem(text="ověřit GUI", checked=True)],
+        checkpoint={"completed_dod_indices": [0]},
+    )
+
+    def fake_subprocess_run(command):
+        write_outbox_result(
+            tmp_path / "outbox",
+            project.name,
+            {
+                "status": "blocked",
+                "error": "Žádný provider nepodporuje interactive_gui.",
+                "iterations": [{
+                    "audit_performed": True,
+                    "audit_rejected_indices": [],
+                    "audit_protocol_error": False,
+                    "audit_capability_incompatible": True,
+                    "note": "[audit capability] interactive_gui není dostupné",
+                }],
+            },
+            run_id="capability-block-run",
+        )
+        return completed()
+
+    result = build_audit_run_fn(
+        registry,
+        command=["ai-orchestrator"],
+        project_paths={"Demo": str(tmp_path / "demo-checkout")},
+        spec_dir=str(tmp_path / "specs"),
+        outbox_dir=str(tmp_path / "outbox"),
+        subprocess_run=fake_subprocess_run,
+        run_id_fn=lambda: "capability-block-run",
+        run_git=lambda command, cwd=None: completed(stdout="abc123\n"),
+    )(project, "provider-broker")
+
+    assert result["status"] == "capability_unavailable"
+    assert "interactive_gui" in result["stop_reason"]
+    assert "verdict" not in result
+
+
 def test_production_audit_starts_with_pm_selected_provider_and_skips_capability_limited_provider(tmp_path):
     registry = ProviderRegistry()
     for name in ("antigravity", "claude", "codex"):

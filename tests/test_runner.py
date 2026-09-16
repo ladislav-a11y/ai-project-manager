@@ -1051,6 +1051,38 @@ def test_run_once_audit_marks_provider_error_and_preserves_testing_on_missing_ve
     assert registry.get_status("antigravity").retry_after is None
 
 
+def test_run_once_audit_blocks_when_no_provider_has_required_capability():
+    project = ProjectRecord(
+        name="GUI capability block",
+        priority=3,
+        status=ProjectStatus.TESTING,
+        checkpoint={"completed_dod_indices": [0]},
+        dod=[DoDItem(text="ověřit GUI", checked=True)],
+    )
+    client = make_client_with_project(project)
+    registry = ProviderRegistry()
+    registry.mark_available("antigravity")
+
+    outcome = run_once_audit(
+        client,
+        [project],
+        registry,
+        lambda _project, _provider: {
+            "status": "capability_unavailable",
+            "stop_reason": "Žádný provider nepodporuje interactive_gui.",
+            "evidence": "broker capability gate",
+            "checkpoint": project.checkpoint,
+        },
+        default_providers=["antigravity"],
+    )
+
+    assert outcome.ran is True
+    assert outcome.halted is True
+    assert project.status == ProjectStatus.BLOCKED
+    assert "interactive_gui" in project.stop_reason
+    assert "Zajistit auditora" in project.next_step
+
+
 def test_run_once_audit_returns_incomplete_testing_card_to_work_without_ai_call():
     project = ProjectRecord(
         name="Incomplete audit",
