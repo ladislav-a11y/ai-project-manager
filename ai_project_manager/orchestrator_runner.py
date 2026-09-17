@@ -165,24 +165,41 @@ def _default_run_id() -> str:
 
 
 def _terminate_process_tree(process: "subprocess.Popen") -> None:
-    """Terminate a timed-out child and any provider descendants it spawned."""
+    """Terminate a timed-out child (AO) and any provider descendants it spawned."""
+    ao_pid = process.pid
     if os.name == "nt":
         try:
             result = subprocess.run(
-                ["taskkill", "/PID", str(process.pid), "/T", "/F"],
+                ["taskkill", "/PID", str(ao_pid), "/T", "/F"],
                 capture_output=True,
                 text=True,
                 check=False,
                 timeout=10,
             )
             if getattr(result, "returncode", 1) == 0:
+                logger.warning(
+                    "AO child process tree terminated after timeout: PID=%s result=taskkill_ok",
+                    ao_pid,
+                )
                 return
+            logger.warning(
+                "taskkill failed for AO child PID=%s (exit=%s); falling back to direct kill",
+                ao_pid, getattr(result, "returncode", None),
+            )
         except Exception:  # noqa: BLE001 - fall back to the direct child
-            pass
+            logger.warning(
+                "taskkill raised for AO child PID=%s; falling back to direct kill", ao_pid
+            )
     try:
         process.kill()
     except OSError:
         pass
+    # ``poll()`` reflects the real OS state (None while still alive), so the
+    # logged termination result is never just the PID we asked to kill.
+    logger.warning(
+        "AO child process direct-kill result: PID=%s state=%s",
+        ao_pid, "still_alive" if process.poll() is None else "terminated",
+    )
 
 
 def _default_subprocess_run(
@@ -223,8 +240,12 @@ def _bounded_subprocess_run(
         getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0),
     )
     process = subprocess.Popen(command, **kwargs)
+    logger.info("AO child process started: PID=%s", process.pid)
     try:
         stdout, stderr = process.communicate(input=input_data, timeout=timeout)
+        logger.info(
+            "AO child process exited: PID=%s exit_code=%s", process.pid, process.returncode
+        )
     except subprocess.TimeoutExpired:
         _terminate_process_tree(process)
         try:

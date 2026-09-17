@@ -47,6 +47,18 @@ logger = logging.getLogger("ai_project_manager.watchdog")
 
 DEFAULT_STATE_PATH = "runtime/watchdog_state.json"
 DEFAULT_LOCK_PATH = "runtime/watchdog.lock"
+# Held for the lifetime of the actual persistent PM loop (``python -m
+# ai_project_manager`` without ``--once``/``--maintain-only``) - a distinct
+# lock from ``DEFAULT_LOCK_PATH`` above, which only guards one watchdog
+# supervisor at a time. A watchdog's own supervised child already can't
+# collide with its own watchdog (they are different lock files), but nothing
+# previously stopped a second persistent PM loop from being started directly
+# (bypassing the watchdog entirely) while one was already running under
+# supervision. This lock closes that gap: whichever process runs the
+# long-lived scheduler loop - supervised or not - holds it for as long as
+# that loop runs, so a second persistent loop against the same checkout
+# refuses to start instead of racing the first for the same Trello board.
+DEFAULT_PM_PROCESS_LOCK_PATH = "runtime/pm_process.lock"
 DEFAULT_MAX_CONSECUTIVE_RESTARTS = 5
 DEFAULT_RESTART_BACKOFF_SECONDS = 5.0
 ROLLBACK_WORKTREE_RELATIVE_PATH = str(Path("runtime") / "self_update_rollback_worktree")
@@ -152,7 +164,27 @@ class WatchdogProcessLock:
 
 
 def _default_launch(argv: Sequence[str], cwd: Optional[str] = None) -> subprocess.CompletedProcess:
-    return subprocess.run(list(argv), cwd=cwd, check=False)
+    """Launch the PM child (or the post-restart smoke test) and log its real
+    PID at start and its real exit code at stop.
+
+    Uses ``Popen`` rather than ``subprocess.run`` purely to get the PID
+    before waiting: ``process.wait()`` below still blocks for the actual OS
+    process to exit, so the logged exit is the process's real, observed
+    termination - never just a value we assumed from the moment we logged
+    the PID.
+    """
+    argv = list(argv)
+    process = subprocess.Popen(argv, cwd=cwd)
+    logger.info(
+        "[AI Project Manager] PM child process started: PID=%s cmd=%s%s",
+        process.pid, " ".join(argv), f" cwd={cwd}" if cwd else "",
+    )
+    returncode = process.wait()
+    logger.info(
+        "[AI Project Manager] PM child process exited: PID=%s exit_code=%s",
+        process.pid, returncode,
+    )
+    return subprocess.CompletedProcess(args=argv, returncode=returncode)
 
 
 @dataclass

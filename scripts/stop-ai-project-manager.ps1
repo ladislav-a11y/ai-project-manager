@@ -24,6 +24,15 @@ else {
     Write-Host "Scheduled Task '$TaskName' is not registered."
 }
 
+function Get-ProcessRole {
+    param([string]$CommandLine)
+    if ($CommandLine -like "*ai_project_manager.watchdog*") { return 'Watchdog' }
+    if ($CommandLine -like "*run-ai-project-manager.ps1*") { return 'Launcher' }
+    if ($CommandLine -like "*-m ai_project_manager*") { return 'PM-child' }
+    if ($CommandLine -like "*orchestrator.py*" -or $CommandLine -like "*finalize.py*") { return 'AO-child' }
+    return 'Other'
+}
+
 function Get-ProjectProcesses {
     $processes = @(Get-CimInstance Win32_Process -ErrorAction Stop)
     $projectPattern = [WildcardPattern]::new("*$projectRoot*")
@@ -54,7 +63,25 @@ function Get-ProjectProcesses {
     @($processes | Where-Object { $ids.Contains([int]$_.ProcessId) })
 }
 
+function Write-ProcessRoleLog {
+    param([array]$Processes, [string]$Label)
+    if ($Processes.Count -eq 0) {
+        Write-Host "$Label`: no PM-owned process found."
+        return
+    }
+    foreach ($process in $Processes) {
+        $role = Get-ProcessRole -CommandLine ([string]$process.CommandLine)
+        # Re-check against the real, current process table - a PID collected
+        # a moment earlier can already be gone; never log a PID as evidence
+        # of a running process without this fresh, real-state confirmation.
+        $stillRunning = [bool](Get-Process -Id ([int]$process.ProcessId) -ErrorAction SilentlyContinue)
+        Write-Host "$Label`: role=$role PID=$($process.ProcessId) parentPID=$($process.ParentProcessId) alive=$stillRunning"
+    }
+}
+
 $processes = @(Get-ProjectProcesses)
+Write-ProcessRoleLog -Processes $processes -Label 'discovered'
+$initialDiscovered = $processes
 while ($processes.Count -gt 0) {
     # Stop leaves first, then their parents. Avoid -Force initially so normal
     # process cleanup/finally blocks get a chance to run.
@@ -82,7 +109,17 @@ if ($processes.Count -gt 0) {
 }
 
 if ($processes.Count -gt 0) {
+    Write-ProcessRoleLog -Processes $processes -Label 'still-running (termination failed)'
     throw "Could not stop all PM-owned processes: $((@($processes | ForEach-Object ProcessId) -join ', '))"
+}
+
+# Report the real, current termination result per originally discovered PID
+# (role + a fresh Get-Process check) rather than trusting that "we asked it
+# to stop" means it actually stopped.
+foreach ($process in $initialDiscovered) {
+    $role = Get-ProcessRole -CommandLine ([string]$process.CommandLine)
+    $stillRunning = [bool](Get-Process -Id ([int]$process.ProcessId) -ErrorAction SilentlyContinue)
+    Write-Host "terminated: role=$role PID=$($process.ProcessId) alive=$stillRunning"
 }
 
 Write-Host 'AI Project Manager a watchdog jsou zastavené; jiné Python procesy nebyly cílené.' -ForegroundColor Green

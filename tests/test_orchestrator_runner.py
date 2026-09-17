@@ -2617,6 +2617,71 @@ def test_bounded_inbox_subprocess_kills_windows_process_tree_on_timeout(monkeypa
     assert process.killed is True
 
 
+def test_bounded_subprocess_run_logs_ao_child_pid_and_real_exit_code(monkeypatch, caplog):
+    class FakeProcess:
+        pid = 9911
+        returncode = None
+
+        def communicate(self, input=None, timeout=None):
+            self.returncode = 0
+            return "ok", ""
+
+    def fake_popen(command, **kwargs):
+        return FakeProcess()
+
+    monkeypatch.setattr("ai_project_manager.orchestrator_runner.os.name", "nt")
+    monkeypatch.setattr("ai_project_manager.orchestrator_runner.subprocess.Popen", fake_popen)
+
+    with caplog.at_level("INFO", logger="ai_project_manager"):
+        result = _bounded_subprocess_run(["ai-orchestrator"], timeout=5)
+
+    assert result.returncode == 0
+    assert any(
+        "AO child process started: PID=9911" in record.message for record in caplog.records
+    )
+    assert any(
+        "AO child process exited: PID=9911 exit_code=0" in record.message
+        for record in caplog.records
+    )
+
+
+def test_terminate_process_tree_logs_real_state_after_taskkill_failure(monkeypatch, caplog):
+    class FakeProcess:
+        pid = 7373
+
+        def __init__(self):
+            self.kill_calls = 0
+            self._alive = True
+
+        def kill(self):
+            self.kill_calls += 1
+            self._alive = False
+
+        def poll(self):
+            return None if self._alive else 0
+
+    def fake_run(command, **kwargs):
+        return completed(returncode=1)
+
+    monkeypatch.setattr("ai_project_manager.orchestrator_runner.os.name", "nt")
+    monkeypatch.setattr("ai_project_manager.orchestrator_runner.subprocess.run", fake_run)
+
+    process = FakeProcess()
+    with caplog.at_level("WARNING", logger="ai_project_manager"):
+        from ai_project_manager.orchestrator_runner import _terminate_process_tree
+
+        _terminate_process_tree(process)
+
+    assert process.kill_calls == 1
+    assert any(
+        "taskkill failed for AO child PID=7373" in record.message for record in caplog.records
+    )
+    assert any(
+        "AO child process direct-kill result: PID=7373 state=terminated" in record.message
+        for record in caplog.records
+    )
+
+
 def test_default_subprocess_run_uses_timeout_safe_process_tree_runner(monkeypatch):
     seen = {}
 

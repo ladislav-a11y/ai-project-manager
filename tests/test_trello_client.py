@@ -420,7 +420,26 @@ def test_list_cards_and_get_card_map_raw_trello_shape():
         "list_id": "list-1",
         "labels": [{"id": "label-1", "name": "P3"}],
         "url": None,
+        "closed": False,
     }
+
+
+def test_get_card_surfaces_closed_state_for_archived_cards():
+    session = FakeSession()
+    raw_card = {
+        "id": "card-1",
+        "name": "Demo",
+        "desc": "some description",
+        "idList": "list-1",
+        "labels": [],
+        "closed": True,
+    }
+    session.script("GET", "/cards/card-1", raw_card)
+    client = make_client(session)
+
+    card = client.get_card("card-1")
+
+    assert card["closed"] is True
 
     assert client.get_card("card-1") == card
 

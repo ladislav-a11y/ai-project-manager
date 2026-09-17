@@ -36,7 +36,7 @@ from .inbox_preparation import (
     is_read_only_verification,
     is_repair_request,
 )
-from .trello_client import MAX_TRELLO_DESC_CHARS
+from .trello_client import MAX_TRELLO_DESC_CHARS, TrelloError
 from .card_contract import (
     CURRENT_SCHEMA_VERSION,
     DOD_ROUTING_POLICY,
@@ -1941,10 +1941,49 @@ def sync_project_to_trello(client, project: ProjectRecord, notes: str = "") -> d
     _, name_to_id = build_list_maps(client)
     updates = card_updates_from_project(project, name_to_id, notes=notes)
     if project.trello_card_id:
-        current = client.get_card(project.trello_card_id)
+        # Trello is the single source of truth, and a human can delete or
+        # archive a card at any moment - including in the window between an
+        # earlier board read and this write. Re-fetch immediately before
+        # writing (rather than trusting whatever state triggered this sync)
+        # so a card that vanished or got archived in the meantime is caught
+        # here instead of being silently resurrected by an update, or worse,
+        # having a brand-new duplicate card created for it. Because
+        # ``project.trello_card_id`` is never cleared below, every later tick
+        # retries this same check and keeps refusing - the card is never
+        # recreated.
+        try:
+            current = client.get_card(project.trello_card_id)
+        except TrelloError as exc:
+            logger.error(
+                "Trello sync aborted for project %r: card %s could not be read "
+                "before write (likely deleted) - discarding this tick's update, "
+                "not recreating the card: %s",
+                project.name, project.trello_card_id, exc,
+            )
+            raise CardContractError(
+                f"refusing Trello write for {project.name!r}: card "
+                f"{project.trello_card_id!r} could not be read before sync: {exc}"
+            ) from exc
+        if current.get("closed"):
+            logger.error(
+                "Trello sync aborted for project %r: card %s is closed/archived "
+                "- discarding this tick's update, not recreating the card",
+                project.name, project.trello_card_id,
+            )
+            raise CardContractError(
+                f"refusing Trello write for {project.name!r}: card "
+                f"{project.trello_card_id!r} is closed/archived"
+            )
         if project.trello_card_url and current.get("url") and (
             _card_url_key(current["url"]) != _card_url_key(project.trello_card_url)
         ):
+            logger.error(
+                "Trello sync aborted for project %r: card %s URL mismatch "
+                "(expected %r, actual %r) - discarding this tick's update, "
+                "not recreating the card",
+                project.name, project.trello_card_id,
+                project.trello_card_url, current.get("url"),
+            )
             raise CardContractError(
                 f"refusing Trello write for {project.name!r}: expected card URL "
                 f"{project.trello_card_url!r}, actual {current['url']!r}"

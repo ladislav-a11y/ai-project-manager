@@ -1331,6 +1331,73 @@ def test_sync_refuses_wrong_existing_card_id_when_expected_url_differs():
     assert client.get_card(second["id"])["name"] == "Second"
 
 
+def test_sync_refuses_write_when_existing_card_was_archived_before_sync():
+    client = InMemoryTrelloClient()
+    ready = client.get_list_id_by_name("Ready")
+    card = client.create_card(ready, "Archived race")
+    project = ProjectRecord(
+        name="Archived race", status=ProjectStatus.READY,
+        trello_card_id=card["id"], trello_card_url=card["url"],
+    )
+    sync_project_to_trello(client, project)
+    original_desc = client.get_card(card["id"])["desc"]
+
+    # Simulate a human archiving the card between the scheduler loading its
+    # last known state and this tick attempting to write to it.
+    client.archive_card(card["id"])
+
+    with pytest.raises(CardContractError, match="closed/archived"):
+        sync_project_to_trello(client, project)
+
+    # Nothing about the archived card changed, and no duplicate was created.
+    assert client.get_card(card["id"])["desc"] == original_desc
+    assert client.get_card(card["id"])["closed"] is True
+    assert len(client.list_all_cards()) == 1
+
+    # The project must never be recreated on a later tick either: the card
+    # id is still bound, so every retry keeps hitting the same refusal.
+    with pytest.raises(CardContractError, match="closed/archived"):
+        sync_project_to_trello(client, project)
+    assert len(client.list_all_cards()) == 1
+
+
+def test_sync_refuses_write_when_existing_card_was_deleted_before_sync():
+    client = InMemoryTrelloClient()
+    ready = client.get_list_id_by_name("Ready")
+    card = client.create_card(ready, "Deleted race")
+    project = ProjectRecord(
+        name="Deleted race", status=ProjectStatus.READY,
+        trello_card_id=card["id"], trello_card_url=card["url"],
+    )
+    sync_project_to_trello(client, project)
+
+    # Simulate a human permanently deleting the card between the scheduler
+    # loading its last known state and this tick attempting to write to it.
+    del client._cards[card["id"]]
+
+    with pytest.raises(CardContractError, match="could not be read"):
+        sync_project_to_trello(client, project)
+
+    assert client.list_all_cards() == []
+
+    # A later tick must not silently fall back to creating a brand-new card
+    # for a project whose card id is still bound to the vanished one.
+    with pytest.raises(CardContractError, match="could not be read"):
+        sync_project_to_trello(client, project)
+    assert client.list_all_cards() == []
+
+
+def test_sync_still_creates_legitimate_new_inbox_card():
+    client = InMemoryTrelloClient()
+    project = ProjectRecord(name="Brand new inbox idea", status=ProjectStatus.INBOX)
+
+    created = sync_project_to_trello(client, project)
+
+    assert created["name"] == "Brand new inbox idea"
+    assert project.trello_card_id == created["id"]
+    assert len(client.list_all_cards()) == 1
+
+
 def test_malformed_pm_data_is_not_silently_reset_to_empty_defaults():
     card = {
         "id": "broken", "name": "Broken", "list_id": "ready", "labels": [],

@@ -63,6 +63,45 @@ def test_main_returns_error_code_when_required_config_missing(monkeypatch):
     assert exit_code == 2
 
 
+def test_main_refuses_second_persistent_loop_when_pm_process_lock_is_held(monkeypatch):
+    """A directly-invoked persistent run (no ``--once``) must not race a
+    watchdog-supervised persistent run already using this same checkout -
+    see ai_project_manager.watchdog.DEFAULT_PM_PROCESS_LOCK_PATH. Pre-holding
+    the lock (as an already-running persistent process would) must make a
+    second persistent ``main()`` call refuse before it ever reaches
+    ``run_loop`` - never racing Trello or provider state."""
+    from ai_project_manager.watchdog import DEFAULT_PM_PROCESS_LOCK_PATH, WatchdogProcessLock
+
+    _set_trello_env(monkeypatch)
+
+    run_fn_calls = []
+
+    def fake_run_fn(project, provider):
+        run_fn_calls.append((project.name, provider))
+        return {"status": "in_progress"}
+
+    with WatchdogProcessLock(Path.cwd() / DEFAULT_PM_PROCESS_LOCK_PATH):
+        exit_code = main([], client=InMemoryTrelloClient(), run_fn=fake_run_fn)
+
+    assert exit_code == 1
+    assert run_fn_calls == []
+
+
+def test_main_once_does_not_take_the_persistent_pm_process_lock(monkeypatch):
+    """--once is a short, self-contained tick (per run-ai-project-manager.ps1)
+    and must stay runnable even while the persistent loop holds its lock."""
+    from ai_project_manager.watchdog import DEFAULT_PM_PROCESS_LOCK_PATH, WatchdogProcessLock
+
+    _set_trello_env(monkeypatch)
+
+    with WatchdogProcessLock(Path.cwd() / DEFAULT_PM_PROCESS_LOCK_PATH):
+        exit_code = main(
+            ["--once"], client=InMemoryTrelloClient(), run_fn=lambda project, provider: {}
+        )
+
+    assert exit_code == 0
+
+
 def _set_trello_env(monkeypatch):
     monkeypatch.setenv("TRELLO_KEY", "test-key")
     monkeypatch.setenv("TRELLO_TOKEN", "test-token")

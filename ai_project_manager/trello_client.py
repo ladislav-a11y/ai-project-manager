@@ -495,6 +495,7 @@ class RealTrelloClient:
             "list_id": list_id,
             "labels": [{"id": label.get("id"), "name": label.get("name")} for label in labels],
             "url": short_url if isinstance(short_url, str) and short_url else None,
+            "closed": bool(raw.get("closed", False)),
         }
         if raw.get("pos") is not None:
             card["position"] = raw["pos"]

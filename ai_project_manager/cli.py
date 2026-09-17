@@ -13,7 +13,10 @@ from __future__ import annotations
 
 import argparse
 import logging
+import os
 import sys
+from contextlib import nullcontext
+from pathlib import Path
 from typing import Optional, Sequence
 
 from .config import ConfigError, load_config
@@ -31,6 +34,7 @@ from .self_update import RESTART_REQUIRED_EXIT_CODE
 from .slack_notifications import SlackLifecycleNotifier
 from .trello_client import RealTrelloClient
 from .trello_sync import sync_project_to_trello
+from .watchdog import DEFAULT_PM_PROCESS_LOCK_PATH, WatchdogAlreadyRunning, WatchdogProcessLock
 
 logger = logging.getLogger("ai_project_manager")
 
@@ -200,49 +204,74 @@ def main(
         timeout_seconds=config.orchestrator.inbox_planner_timeout_seconds,
     )
 
+    pid = os.getpid()
     logger.info(
-        "starting ai-project-manager (once=%s, providers=%s, poll_interval=%ss, inbox_enabled=%s, inbox_list=%r)",
+        "starting ai-project-manager (once=%s, PID=%s, providers=%s, poll_interval=%ss, "
+        "inbox_enabled=%s, inbox_list=%r)",
         args.once,
+        pid,
         config.providers,
         config.poll_interval_seconds,
         config.inbox_enabled or args.enable_inbox_intake,
         config.trello.inbox_list_name,
     )
 
-    outcome = run_loop(
-        client,
-        provider_registry,
-        run_fn,
-        once=args.once,
-        poll_interval_seconds=config.poll_interval_seconds,
-        holder=config.holder,
-        providers_for_project=config.providers_for_project,
-        default_providers=config.providers,
-        inbox_list_name=config.trello.inbox_list_name,
-        process_inbox_enabled=config.inbox_enabled or args.enable_inbox_intake,
-        auto_intake_when_workflow_empty=True,
-        provider_state_path=config.provider_state_path,
-        project_paths=(
-            config.orchestrator.project_paths if validate_repository_paths else None
-        ),
-        projects_root=(
-            config.orchestrator.projects_root if validate_repository_paths else None
-        ),
-        workspace_root=(
-            config.orchestrator.workspace_root if validate_repository_paths else None
-        ),
-        git_user_name=config.orchestrator.git_user_name,
-        git_user_email=config.orchestrator.git_user_email,
-        card_project_keys=config.card_project_keys,
-        recovery_max_attempts=config.recovery_max_attempts,
-        audit_run_fn=audit_run_fn,
-        inbox_planner=inbox_planner,
-        provider_refresh=provider_refresh,
-        artifact_cleanup_root=config.artifact_cleanup_root,
-        artifact_cleanup_retention_seconds=config.artifact_cleanup_retention_seconds,
-        finalize_fn=finalize_fn,
-        lifecycle_notifier=SlackLifecycleNotifier(),
+    # A single tick (--once) or a maintenance pass (--maintain-only, already
+    # returned above) is a short, self-contained process that is safe to run
+    # concurrently with the persistent loop. Only the persistent loop itself
+    # - the process that keeps polling Trello and dispatching work forever -
+    # needs a cross-process singleton: without it, a second `python -m
+    # ai_project_manager` started directly (bypassing the supervising
+    # watchdog, which already guards against a second *watchdog*) would race
+    # the first for the same Trello board and provider state. The watchdog's
+    # own lock (watchdog.py) and this lock are deliberately different files:
+    # a watchdog-launched child must not collide with its own supervisor.
+    pm_lock = (
+        nullcontext()
+        if args.once
+        else WatchdogProcessLock(Path.cwd() / DEFAULT_PM_PROCESS_LOCK_PATH)
     )
+    try:
+        with pm_lock:
+            outcome = run_loop(
+                client,
+                provider_registry,
+                run_fn,
+                once=args.once,
+                poll_interval_seconds=config.poll_interval_seconds,
+                holder=config.holder,
+                providers_for_project=config.providers_for_project,
+                default_providers=config.providers,
+                inbox_list_name=config.trello.inbox_list_name,
+                process_inbox_enabled=config.inbox_enabled or args.enable_inbox_intake,
+                auto_intake_when_workflow_empty=True,
+                provider_state_path=config.provider_state_path,
+                project_paths=(
+                    config.orchestrator.project_paths if validate_repository_paths else None
+                ),
+                projects_root=(
+                    config.orchestrator.projects_root if validate_repository_paths else None
+                ),
+                workspace_root=(
+                    config.orchestrator.workspace_root if validate_repository_paths else None
+                ),
+                git_user_name=config.orchestrator.git_user_name,
+                git_user_email=config.orchestrator.git_user_email,
+                card_project_keys=config.card_project_keys,
+                recovery_max_attempts=config.recovery_max_attempts,
+                audit_run_fn=audit_run_fn,
+                inbox_planner=inbox_planner,
+                provider_refresh=provider_refresh,
+                artifact_cleanup_root=config.artifact_cleanup_root,
+                artifact_cleanup_retention_seconds=config.artifact_cleanup_retention_seconds,
+                finalize_fn=finalize_fn,
+                lifecycle_notifier=SlackLifecycleNotifier(),
+            )
+    except WatchdogAlreadyRunning as exc:
+        logger.error(
+            "refusing to start persistent ai-project-manager loop: %s (PID=%s)", exc, pid
+        )
+        return 1
 
     if outcome.restart_required:
         # Never restart in-process - the whole point is that this
@@ -250,13 +279,15 @@ def main(
         # dedicated code so the supervising watchdog (watchdog.py), a
         # separate parent process, is the only thing that ever launches
         # the replacement.
-        logger.warning("exiting for supervised restart: %s", outcome.reason)
+        logger.warning("exiting for supervised restart: %s (PID=%s)", outcome.reason, pid)
         return RESTART_REQUIRED_EXIT_CODE
 
     if args.once:
-        logger.info("--once tick complete: ran=%s reason=%s", outcome.ran, outcome.reason)
+        logger.info("--once tick complete: ran=%s reason=%s (PID=%s)", outcome.ran, outcome.reason, pid)
         if outcome.operational_error:
             return 1
+    else:
+        logger.info("ai-project-manager stopped (PID=%s)", pid)
     return 0
 
 

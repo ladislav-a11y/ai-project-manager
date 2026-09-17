@@ -11,6 +11,7 @@ from ai_project_manager.watchdog import (
     WatchdogAlreadyRunning,
     WatchdogProcessLock,
     WatchdogState,
+    _default_launch,
     _resolve_python_executable,
     build_parser,
     main,
@@ -431,6 +432,27 @@ def test_main_returns_failure_without_launching_child_when_watchdog_is_already_r
 
     assert exit_code == 1
     run.assert_not_called()
+
+
+def test_default_launch_logs_real_pid_and_exit_code(tmp_path, caplog):
+    import sys
+
+    with caplog.at_level("INFO", logger="ai_project_manager.watchdog"):
+        result = _default_launch([sys.executable, "-c", "pass"], cwd=str(tmp_path))
+
+    assert result.returncode == 0
+    start_records = [
+        r for r in caplog.records if "PM child process started: PID=" in r.message
+    ]
+    exit_records = [
+        r for r in caplog.records if "PM child process exited: PID=" in r.message
+    ]
+    assert len(start_records) == 1
+    assert len(exit_records) == 1
+    # The PID logged at start must be the PID a fresh, real OS wait()
+    # confirms actually exited - never just an assumed/echoed value.
+    logged_pid = start_records[0].message.split("PID=")[1].split()[0]
+    assert exit_records[0].message == f"[AI Project Manager] PM child process exited: PID={logged_pid} exit_code=0"
 
 
 def test_repository_relative_python_is_stable_across_rollback_cwd(tmp_path):
