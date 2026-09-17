@@ -81,6 +81,10 @@ nakonfigurován explicitní kurátorovaný seznam (`AI_ORCHESTRATOR_FINALIZE_PAT
 - takový seznam zůstává jen přísnější volitelnou výjimkou pro projekt, který
 smí měnit vlastní řídicí kód (např. AI Project Manager při self-update); pro
 běžný cílový projekt (např. Station Agent) žádný ruční seznam nevyžaduje.
+Před tímto scope se controller pokusí uklidit pouze známé generované buildové
+artefakty uvnitř `Debug`/`Release` v `bin`/`obj` (včetně omylem nastageovaných
+souborů). Neznámá nebo nejednoznačná cesta se nemaže a finalizace zůstane
+fail-closed s konkrétním důvodem.
 V obou případech se nikdy nepoužije globální `git add -A` - cesty se vždy
 stagují jednotlivě a explicitně vyjmenované. Push na vzdálený remote naopak
  zůstává vždy vázaný na explicitní `AI_ORCHESTRATOR_ALLOWED_PUSH_REMOTES`,
