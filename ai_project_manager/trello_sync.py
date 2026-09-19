@@ -862,8 +862,7 @@ def _bound_contract_history(data: dict) -> dict:
                 key: raw_status[key]
                 for key in (
                     "state", "reason", "retry_at", "checked_at", "available_at",
-                    "response_kind", "source", "selected_model", "models",
-                    "capability_limits",
+                    "response_kind", "source", "selected_model",
                 )
                 if key in raw_status
             }
@@ -933,13 +932,77 @@ def _bound_contract_history(data: dict) -> dict:
                 changed = True
                 break
         if not changed:
+            # A completed audit can add several compact receipts to a card
+            # that was already close to Trello's limit.  Reduce only
+            # redundant machine evidence before failing closed: the verdict,
+            # evidence kind and result remain durable and actionable.
+            audit = (bounded.get("checkpoint") or {}).get("audit_evidence")
+            if isinstance(audit, list) and audit:
+                minimal_audit = []
+                for raw in audit:
+                    if not isinstance(raw, dict):
+                        continue
+                    item = {
+                        key: raw[key]
+                        for key in ("index", "accepted")
+                        if key in raw
+                    }
+                    evidence = raw.get("evidence")
+                    verification = evidence.get("verification") if isinstance(evidence, dict) else None
+                    if isinstance(verification, dict):
+                        item["evidence"] = {
+                            "verification": {
+                                key: _bound_diagnostic_text(str(verification[key]), 80)
+                                for key in ("kind", "result")
+                                if verification.get(key) is not None
+                            }
+                        }
+                    minimal_audit.append(item)
+                if minimal_audit != audit:
+                    checkpoint = dict(bounded.get("checkpoint") or {})
+                    checkpoint["audit_evidence"] = minimal_audit
+                    bounded["checkpoint"] = checkpoint
+                    changed = True
+            if changed:
+                new_rendered_length = len(_render_data_block(bounded))
+                if new_rendered_length >= rendered_length:
+                    raise CardContractError(
+                        "refusing Trello write: diagnostic truncation did not reduce PM-DATA"
+                    )
+                rendered_length = new_rendered_length
+                continue
+
+            statuses = bounded.get("provider_statuses")
+            if isinstance(statuses, dict):
+                minimal_statuses = {}
+                for provider, raw_status in statuses.items():
+                    if isinstance(raw_status, dict):
+                        minimal_statuses[provider] = {
+                            key: raw_status[key]
+                            for key in ("state", "reason", "retry_at")
+                            if key in raw_status
+                        }
+                    else:
+                        minimal_statuses[provider] = raw_status
+                if minimal_statuses != statuses:
+                    bounded["provider_statuses"] = minimal_statuses
+                    changed = True
+            if changed:
+                new_rendered_length = len(_render_data_block(bounded))
+                if new_rendered_length >= rendered_length:
+                    raise CardContractError(
+                        "refusing Trello write: diagnostic truncation did not reduce PM-DATA"
+                    )
+                rendered_length = new_rendered_length
+                continue
+
             # This is an unusually large task/DoD/checkpoint. Keep the
             # contract intact and fail closed rather than sending a payload
             # that Trello may truncate or reject.
-            raise CardContractError(
-                "refusing Trello write: PM-DATA exceeds the safe description "
-                f"limit of {MAX_TRELLO_DESC_CHARS} characters after diagnostic truncation"
-            )
+                raise CardContractError(
+                    "refusing Trello write: PM-DATA exceeds the safe description "
+                    f"limit of {MAX_TRELLO_DESC_CHARS} characters after diagnostic truncation"
+                )
         new_rendered_length = len(_render_data_block(bounded))
         if new_rendered_length >= rendered_length:
             raise CardContractError(
