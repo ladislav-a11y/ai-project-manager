@@ -2,72 +2,6 @@
   "version": 1,
   "events": [
     {
-      "reservation_id": "529e3b3f151c46f18caa3e2fafbfb9c9",
-      "reserved_at": "2026-09-16T08:58:25.716706+00:00",
-      "tokens": 1087,
-      "status": "completed"
-    },
-    {
-      "reservation_id": "a50b7a8faa404ece9ed827791a32acfa",
-      "reserved_at": "2026-09-16T08:58:26.378345+00:00",
-      "tokens": 819,
-      "status": "completed"
-    },
-    {
-      "reservation_id": "a189ab8e550a49a38128bd80b739849f",
-      "reserved_at": "2026-09-16T09:00:52.903295+00:00",
-      "tokens": 1453,
-      "status": "completed"
-    },
-    {
-      "reservation_id": "bc2b175a27134865acf943ad8d824e1a",
-      "reserved_at": "2026-09-16T09:00:53.365100+00:00",
-      "tokens": 1144,
-      "status": "completed"
-    },
-    {
-      "reservation_id": "d780e9e18c6d44ffb2887875b4c0cea8",
-      "reserved_at": "2026-09-16T09:04:11.272046+00:00",
-      "tokens": 1490,
-      "status": "completed"
-    },
-    {
-      "reservation_id": "28add5833f03466ea4fcaafd779024a0",
-      "reserved_at": "2026-09-16T09:04:11.643248+00:00",
-      "tokens": 1146,
-      "status": "completed"
-    },
-    {
-      "reservation_id": "44b9ef54cc354794bc5cf98e7b43ca98",
-      "reserved_at": "2026-09-16T11:41:40.919676+00:00",
-      "tokens": 1137,
-      "status": "completed"
-    },
-    {
-      "reservation_id": "8ea206f7202d414dbcf38f0340197568",
-      "reserved_at": "2026-09-16T11:41:41.745698+00:00",
-      "tokens": 1344,
-      "status": "completed"
-    },
-    {
-      "reservation_id": "dd6fafdc28bc4d46871dc36f8c8e3737",
-      "reserved_at": "2026-09-16T11:41:42.152632+00:00",
-      "tokens": 1398,
-      "status": "completed"
-    },
-    {
-      "reservation_id": "bca682fee4f6472eb386f5d9327c6011",
-      "reserved_at": "2026-09-16T13:04:02.134853+00:00",
-      "tokens": 1079,
-      "status": "completed"
-    },
-    {
-      "reservation_id": "860356e49d594ddfb4176c6681019e05",
-      "reserved_at": "2026-09-16T13:04:03.089239+00:00",
-      "tokens": 2115,
-      "status": "completed"
-    },
-    {
       "reservation_id": "bb9a213a528a49aa97c50b7e986c0398",
       "reserved_at": "2026-09-16T14:37:50.761447+00:00",
       "tokens": 1075,
@@ -89,6 +23,234 @@
       "reservation_id": "8f227c9e45154f98a9800827f207ea6b",
       "reserved_at": "2026-09-16T14:37:52.689813+00:00",
       "tokens": 1526,
+      "status": "completed"
+    },
+    {
+      "reservation_id": "aefec5b6c78341fc8f43864342d5e39c",
+      "reserved_at": "2026-09-16T20:08:55.120013+00:00",
+      "tokens": 1055,
+      "status": "completed"
+    },
+    {
+      "reservation_id": "291241093b3f4325913f705604cecf46",
+      "reserved_at": "2026-09-16T20:08:55.938701+00:00",
+      "tokens": 2576,
+      "status": "completed"
+    },
+    {
+      "reservation_id": "1667f8212a6445c7b5dc1fc0a9b4e851",
+      "reserved_at": "2026-09-16T21:14:41.387057+00:00",
+      "tokens": 1066,
+      "status": "completed"
+    },
+    {
+      "reservation_id": "fbd67a17aa054257b9335c55f6389db8",
+      "reserved_at": "2026-09-16T21:14:42.221596+00:00",
+      "tokens": 2608,
+      "status": "completed"
+    },
+    {
+      "reservation_id": "cade3372e4764b778e84db50395890d3",
+      "reserved_at": "2026-09-16T21:55:41.462864+00:00",
+      "tokens": 1069,
+      "status": "completed"
+    },
+    {
+      "reservation_id": "28cb197cf87c4421b9b39fde6dd301ba",
+      "reserved_at": "2026-09-16T21:55:42.002875+00:00",
+      "tokens": 2620,
+      "status": "completed"
+    },
+    {
+      "reservation_id": "920719ff6a734023add86bf1294e4a27",
+      "reserved_at": "2026-09-17T06:06:34.647964+00:00",
+      "tokens": 1132,
+      "status": "completed"
+    },
+    {
+      "reservation_id": "76693d509d5c4d169164d75583887355",
+      "reserved_at": "2026-09-17T06:06:35.560617+00:00",
+      "tokens": 1337,
+      "status": "completed"
+    },
+    {
+      "reservation_id": "7194a3ac241a4cf6a8045fc7bf7f7c47",
+      "reserved_at": "2026-09-17T06:06:36.181248+00:00",
+      "tokens": 5124,
+      "status": "usage_unknown"
+    },
+    {
+      "reservation_id": "3d9d6606c5774f8db70c4e7dff456b47",
+      "reserved_at": "2026-09-17T06:09:20.736261+00:00",
+      "tokens": 1132,
+      "status": "completed"
+    },
+    {
+      "reservation_id": "c6f786942d9e44c88995007d82b6cef8",
+      "reserved_at": "2026-09-17T06:09:21.447468+00:00",
+      "tokens": 1337,
+      "status": "completed"
+    },
+    {
+      "reservation_id": "bd83feeff0044f34bcd55692dd07b5c5",
+      "reserved_at": "2026-09-17T06:09:21.847012+00:00",
+      "tokens": 2241,
+      "status": "completed"
+    },
+    {
+      "reservation_id": "cb4824da630a4435b9c37f9065028db7",
+      "reserved_at": "2026-09-17T06:45:53.423917+00:00",
+      "tokens": 1169,
+      "status": "completed"
+    },
+    {
+      "reservation_id": "cad43c45530c413a980d82143df3dcb6",
+      "reserved_at": "2026-09-17T06:45:54.203507+00:00",
+      "tokens": 5634,
+      "status": "reserved"
+    },
+    {
+      "reservation_id": "6cfd74fc5fbf4728af2a09dc7f5dd7f0",
+      "reserved_at": "2026-09-17T06:47:03.434221+00:00",
+      "tokens": 1067,
+      "status": "completed"
+    },
+    {
+      "reservation_id": "f55406b3e66041b7b89804f8e3a215b4",
+      "reserved_at": "2026-09-17T06:47:03.857608+00:00",
+      "tokens": 806,
+      "status": "completed"
+    },
+    {
+      "reservation_id": "38acb75b36314c0d936e861475434be4",
+      "reserved_at": "2026-09-17T06:47:04.568591+00:00",
+      "tokens": 1552,
+      "status": "completed"
+    },
+    {
+      "reservation_id": "ad4288f7729d4ddbbe79fc9a8161b8bc",
+      "reserved_at": "2026-09-17T07:00:00.465921+00:00",
+      "tokens": 1162,
+      "status": "completed"
+    },
+    {
+      "reservation_id": "8535ec6e62dd40dfa8ce250b45164c01",
+      "reserved_at": "2026-09-17T07:00:01.128101+00:00",
+      "tokens": 1809,
+      "status": "completed"
+    },
+    {
+      "reservation_id": "1a45aab817a64bcebf40e7484cf9c04a",
+      "reserved_at": "2026-09-17T07:15:44.694643+00:00",
+      "tokens": 1143,
+      "status": "completed"
+    },
+    {
+      "reservation_id": "11f243ecc6044e1e9615c8e7e548722e",
+      "reserved_at": "2026-09-17T07:15:45.514669+00:00",
+      "tokens": 1484,
+      "status": "completed"
+    },
+    {
+      "reservation_id": "9608125759a64eca854dc0c66cc01875",
+      "reserved_at": "2026-09-17T07:43:00.721775+00:00",
+      "tokens": 1146,
+      "status": "completed"
+    },
+    {
+      "reservation_id": "48591d8cd6544f5e8735327d5326dde4",
+      "reserved_at": "2026-09-17T07:43:01.529782+00:00",
+      "tokens": 2505,
+      "status": "completed"
+    },
+    {
+      "reservation_id": "677c4ac4ff4f4167b41c8eaa80873680",
+      "reserved_at": "2026-09-17T07:57:49.003790+00:00",
+      "tokens": 1061,
+      "status": "completed"
+    },
+    {
+      "reservation_id": "cf1aab5e9f9b4f9a8160bb3fc0b516cf",
+      "reserved_at": "2026-09-17T07:57:49.683529+00:00",
+      "tokens": 1357,
+      "status": "completed"
+    },
+    {
+      "reservation_id": "823cb5d224434b3aa47ff46c76886553",
+      "reserved_at": "2026-09-17T07:57:58.705999+00:00",
+      "tokens": 1403,
+      "status": "completed"
+    },
+    {
+      "reservation_id": "098df0d8980442b6953843a5a9c34e96",
+      "reserved_at": "2026-09-17T07:58:01.263490+00:00",
+      "tokens": 1196,
+      "status": "completed"
+    },
+    {
+      "reservation_id": "eb7c8cee98ee4a158a3362baf036fe58",
+      "reserved_at": "2026-09-17T08:10:01.929722+00:00",
+      "tokens": 1126,
+      "status": "completed"
+    },
+    {
+      "reservation_id": "49027a7f4a6847e1a5ca68d381a9c458",
+      "reserved_at": "2026-09-17T08:10:03.102350+00:00",
+      "tokens": 5098,
+      "status": "usage_unknown"
+    },
+    {
+      "reservation_id": "187c1a5b1ffe4a05a55318ab2541b601",
+      "reserved_at": "2026-09-17T08:55:36.986786+00:00",
+      "tokens": 1078,
+      "status": "completed"
+    },
+    {
+      "reservation_id": "9a33f9c7b05c48c3b0f96048919c4873",
+      "reserved_at": "2026-09-17T08:55:37.709012+00:00",
+      "tokens": 2423,
+      "status": "completed"
+    },
+    {
+      "reservation_id": "06135a3583584c8d80e338f68cfd2550",
+      "reserved_at": "2026-09-17T09:22:44.450504+00:00",
+      "tokens": 1065,
+      "status": "completed"
+    },
+    {
+      "reservation_id": "a28debfdf66447a08a121f3bea739bab",
+      "reserved_at": "2026-09-17T09:22:45.030296+00:00",
+      "tokens": 2406,
+      "status": "completed"
+    },
+    {
+      "reservation_id": "afa63926e77d46dd9e4b091e4643610b",
+      "reserved_at": "2026-09-17T14:07:19.959142+00:00",
+      "tokens": 1056,
+      "status": "completed"
+    },
+    {
+      "reservation_id": "de494c6cae5246b39885c03750f1ab56",
+      "reserved_at": "2026-09-17T14:07:20.691822+00:00",
+      "tokens": 1513,
+      "status": "completed"
+    },
+    {
+      "reservation_id": "f317655a942e43ee987f448018fe15fa",
+      "reserved_at": "2026-09-17T14:07:21.762307+00:00",
+      "tokens": 1595,
+      "status": "completed"
+    },
+    {
+      "reservation_id": "9f33446ff76441058e3e494165edf16b",
+      "reserved_at": "2026-09-17T14:23:12.894234+00:00",
+      "tokens": 1086,
+      "status": "completed"
+    },
+    {
+      "reservation_id": "f2b003443b2e4fec9cab8f093484b406",
+      "reserved_at": "2026-09-17T14:23:13.589847+00:00",
+      "tokens": 2449,
       "status": "completed"
     }
   ]
