@@ -11,6 +11,17 @@ if ($WaitSeconds -lt 1) {
     throw 'WaitSeconds must be at least 1.'
 }
 
+# Written first, before anything else: scripts\run-persistent-loop.bat (the
+# self-healing supervisor started_ai_project_manager.bat launches) checks
+# this file after every exit of run-ai-project-manager.ps1 and stops
+# relaunching once it exists, instead of unconditionally restarting a tree
+# this script just intentionally tore down. Without this file, an operator
+# stop and the loop's own crash-recovery restart are indistinguishable to
+# the loop, and the "stop" would be silently undone within seconds.
+$stopFlagPath = Join-Path $projectRoot 'runtime\pm_stop_requested.flag'
+New-Item -ItemType Directory -Path (Split-Path -Parent $stopFlagPath) -Force | Out-Null
+Set-Content -LiteralPath $stopFlagPath -Value (Get-Date).ToUniversalTime().ToString('o') -Encoding utf8
+
 # Disable before stopping so the repetition trigger cannot immediately launch
 # a replacement while the process tree is being drained. Keep the task
 # registered: the normal installer can enable/register it again later.
@@ -27,6 +38,7 @@ else {
 function Get-ProcessRole {
     param([string]$CommandLine)
     if ($CommandLine -like "*ai_project_manager.watchdog*") { return 'Watchdog' }
+    if ($CommandLine -like "*run-persistent-loop.bat*") { return 'Supervisor-loop' }
     if ($CommandLine -like "*run-ai-project-manager.ps1*") { return 'Launcher' }
     if ($CommandLine -like "*-m ai_project_manager*") { return 'PM-child' }
     if ($CommandLine -like "*orchestrator.py*" -or $CommandLine -like "*finalize.py*") { return 'AO-child' }
@@ -43,7 +55,15 @@ function Get-ProjectProcesses {
         $isRunner = $commandLine -like "*run-ai-project-manager.ps1*" -and $projectPattern.IsMatch($commandLine)
         $isWatchdog = $commandLine -like "*ai_project_manager.watchdog*" -and $projectPattern.IsMatch($commandLine)
         $isPm = $commandLine -like "*-m ai_project_manager*" -and $projectPattern.IsMatch($commandLine)
-        if ($isRunner -or $isWatchdog -or $isPm) {
+        # The self-healing cmd.exe supervisor loop (run-persistent-loop.bat)
+        # owns no Trello/Python state itself, but it is what relaunches
+        # run-ai-project-manager.ps1 after every exit - it must be torn down
+        # too, or it would simply start a fresh instance moments after this
+        # script kills the current one. The stop-flag written above already
+        # makes the loop exit on its own after its current child returns;
+        # this catches it immediately instead of waiting on that.
+        $isLoop = $commandLine -like "*run-persistent-loop.bat*" -and $projectPattern.IsMatch($commandLine)
+        if ($isRunner -or $isWatchdog -or $isPm -or $isLoop) {
             [void]$ids.Add([int]$process.ProcessId)
         }
     }

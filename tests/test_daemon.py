@@ -1277,6 +1277,52 @@ def test_empty_workflow_without_inbox_card_still_refreshes_once_per_tick():
     assert planner_calls == []
 
 
+def test_archived_workflow_card_does_not_block_inbox_intake():
+    """Trello's live board (excluding archived cards) is the single source
+    of truth for whether governed work is active. A card a human archived
+    out of a workflow list (e.g. Pracuje se) must stop counting as active
+    governed work on the very next tick - the same live ``list_cards`` read
+    that finds it already excludes archived cards, so this holds without any
+    separate "is it still relevant" bookkeeping."""
+    client = InMemoryTrelloClient()
+    _, name_to_id = build_list_maps(client)
+    stuck = client.create_card(
+        name_to_id["In Progress"],
+        "P3 — Card a human archived instead of finishing",
+        desc="<!-- PM-DATA\n{}\n-->",
+    )
+    client.archive_card(stuck["id"])
+    assert client.get_card(stuck["id"])["closed"] is True
+
+    source = client.create_card(
+        name_to_id["Inbox"],
+        "New idea",
+        desc="A fresh Inbox request.",
+    )
+    registry = ProviderRegistry()
+    planner_calls = []
+
+    outcome = run_tick(
+        client,
+        registry,
+        lambda project, provider: pytest.fail("no dispatch expected in this tick"),
+        default_providers=["claude"],
+        inbox_list_name="Inbox",
+        process_inbox_enabled=True,
+        inbox_planner=lambda *_: planner_calls.append(True),
+        provider_refresh=lambda: True,
+    )
+
+    # The archived card must not appear as governed work, so the intake
+    # admission boundary runs and the planner is actually called.
+    assert planner_calls == [True]
+    assert client.get_card(source["id"])["list_id"] == name_to_id["Inbox"]
+    assert outcome.reason != (
+        "Inbox intake checked: planner skipped because governed work is active; "
+        "inbox_cards=1"
+    )
+
+
 def test_failed_provider_refresh_blocks_inbox_planner_and_keeps_card():
     client = InMemoryTrelloClient()
     _, name_to_id = build_list_maps(client)
@@ -2100,10 +2146,94 @@ def test_run_tick_logs_when_a_card_contract_is_unsafe_to_migrate(caplog):
     )
     before = client.get_card(bad_card["id"])
     registry = ProviderRegistry()
-
     with caplog.at_level("WARNING", logger="ai_project_manager"):
         run_tick(client, registry, lambda project, provider: {}, default_providers=["claude"])
 
     assert any("Trello Card Contract" in message for message in caplog.messages)
     assert any(bad_card["id"] in message or "Wrong authority" in message for message in caplog.messages)
     assert client.get_card(bad_card["id"]) == before
+
+
+def test_run_tick_keeps_testing_card_with_visible_reason_when_audit_run_fn_is_not_wired():
+    """A testing card stays fail-closed and explains a missing audit runner."""
+    reason = "audit_run_fn není v tomto běhu zapojen; karta zůstane v Testování bez AI volání"
+    project = ProjectRecord(
+        name="P5 — oprava bez audit_run_fn",
+        priority=5,
+        status=ProjectStatus.TESTING,
+        dod=[DoDItem(text="implementation", phase="implementation", checked=True)],
+    )
+    client = make_client_with_project(project)
+    registry = ProviderRegistry()
+    calls = []
+
+    outcome = run_tick(
+        client,
+        registry,
+        run_fn=lambda project, provider: calls.append(project.name) or {"status": "done"},
+        default_providers=["claude"],
+        inbox_list_name="INBOX / Nápady",
+        process_inbox_enabled=False,
+    )
+
+    assert outcome.ran is False
+    assert calls == []
+    id_to_name, _ = build_list_maps(client)
+    reloaded = project_from_card(client.get_card(project.trello_card_id), id_to_name)
+    assert reloaded.status == ProjectStatus.TESTING
+    assert reloaded.stop_reason == reason
+    assert reloaded.extra_data["audit_not_wired_reason"] == reason
+
+    outcome2 = run_tick(
+        client,
+        registry,
+        run_fn=lambda project, provider: calls.append(project.name) or {"status": "done"},
+        default_providers=["claude"],
+        inbox_list_name="INBOX / Nápady",
+        process_inbox_enabled=False,
+    )
+    assert outcome2.ran is False
+    assert calls == []
+
+
+def test_run_tick_does_not_fall_through_to_implementation_dispatch_when_audit_not_wired():
+    """The fail-closed Testování branch must not fall through into ordinary
+    implementation dispatch and start an unrelated Připraveno card - the
+    tick must end with no AI call at all (see WORKFLOW.md's audit_run_fn-
+    not-wired fail-closed rule)."""
+    testing_project = ProjectRecord(
+        name="P5 — testovací karta bez auditu",
+        priority=5,
+        status=ProjectStatus.TESTING,
+        dod=[DoDItem(text="implementation", phase="implementation", checked=True)],
+    )
+    ready_project = ProjectRecord(
+        name="P3 — připravená karta",
+        priority=3,
+        status=ProjectStatus.READY,
+        main_task="Nesouvisející připravená práce",
+    )
+    client = InMemoryTrelloClient()
+    for project in (testing_project, ready_project):
+        created = sync_project_to_trello(client, project)
+        project.trello_card_id = created["id"]
+
+    registry = ProviderRegistry()
+    calls = []
+
+    outcome = run_tick(
+        client,
+        registry,
+        run_fn=lambda project, provider: calls.append(project.name) or {"status": "done"},
+        default_providers=["claude"],
+        inbox_list_name="INBOX / Nápady",
+        process_inbox_enabled=False,
+    )
+
+    assert outcome.ran is False
+    assert calls == []
+    id_to_name, _ = build_list_maps(client)
+    reloaded_testing = project_from_card(client.get_card(testing_project.trello_card_id), id_to_name)
+    assert reloaded_testing.status == ProjectStatus.TESTING
+    reloaded_ready = project_from_card(client.get_card(ready_project.trello_card_id), id_to_name)
+    assert reloaded_ready.status == ProjectStatus.READY

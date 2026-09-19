@@ -503,6 +503,12 @@ o nabídku a volá brokerem vybraného providera.
   `tests/test_inbox.py:9,29`. Efektivní chování (vyloučení Hermes a Gemini) je dnes shodné, protože
   je duplikované přímo v `orchestrator_runner.py:227`, ale je to nezávislá, nikoli sdílená
   implementace.
+  **UZAVŘENO (2026-09-17):** `INBOX_PLANNING_FORBIDDEN_PROVIDERS` a `inbox_planner_providers` byly
+  z `ai_project_manager/inbox.py` odstraněny spolu s jejich jediným testem
+  (`tests/test_inbox.py`). Odstranění ověřeno: `grep` po celém repu nenašel žádného dalšího
+  volajícího, cílená i celá testovací sada (836 testů) prošla beze změny výsledku. Tento konkrétní
+  bod už není otevřený; text výše zůstává jako historický záznam zjištění, ne jako aktuální stav
+  kódu.
 - **Implementace** (`scheduler.py:98-158`, funkce `pick_next_project`): pro danou kartu se vezme
   `providers_for_project.get(project.name)` (`AI_PM_PROVIDERS_FOR_PROJECT`), jinak výchozí
   `AI_PM_PROVIDERS` pořadí; vybere se první provider v tomto pořadí, který je momentálně
@@ -658,7 +664,7 @@ nahrazuje hodnotou „provider default" / „model nezjištěn"
 | 5 | Retired V1 PM Slack helper | Historical finding only; the helper and its webhook delivery path are removed from the active V2 PM checkout. Provider/model evidence is owned by the AO receipt. |
 | 6 | `daemon.py:178-193` (`_run_recovery_pass`, návrat po vypršení `retry_after`) | Při obnově karty z čekání na providera se `project.extra_data["provider_selection"]` explicitně přepíše na `selected_model=None, model=None, actual_provider=None, actual_model=None, source="provider_default"` — jakákoli dříve zaznamenaná model/„actual" hodnota se tímto krokem zahodí, protože nový běh z checkpointu je nový výběr, ne pokračování stejného potvrzeného modelu. |
 | 7 | `card_contract.py:203-213` (`KNOWN_FIELDS`) + `models.py:140-203` (`ProjectRecord`) | Structural: **Trello karta jako jediný zdroj pravdy nemá pole pro model vůbec** — jen `provider`. I kdyby nějaká vrstva model chvilkově znala (`extra_data["provider_selection"]["model"]`), přežije to jen v neverzovaném `extra_data`, ne jako kanonické pole s vlastní validací/migrací jako `provider`. |
-| 8 | `ai_project_manager/inbox.py:34-45` (`INBOX_PLANNING_FORBIDDEN_PROVIDERS`, `inbox_planner_providers`) | Nepoužívaný duplikát politiky „žádný Hermes/Gemini v Inbox planningu" — `orchestrator_runner.py` tuto funkci nikdy nevolá (žádný `from .inbox import` v `orchestrator_runner.py`). Efektivní chování je dnes shodné s `INBOX_PLANNER_PROVIDERS` (bod 1 sekce 9.1), ale je to nezávislá kopie, ne sdílený zdroj — riziko budoucího rozjetí, ne ztráta dnes. Již zaznamenáno v sekci 8.2; potvrzeno stále platným v této iteraci. |
+| 8 | ~~`ai_project_manager/inbox.py:34-45` (`INBOX_PLANNING_FORBIDDEN_PROVIDERS`, `inbox_planner_providers`)~~ **UZAVŘENO (2026-09-17)** | Nepoužívaný duplikát politiky „žádný Hermes/Gemini v Inbox planningu" — `orchestrator_runner.py` tuto funkci nikdy nevolal (žádný `from .inbox import` v `orchestrator_runner.py`). Efektivní chování bylo shodné s `INBOX_PLANNER_PROVIDERS` (bod 1 sekce 9.1), ale šlo o nezávislou kopii, ne sdílený zdroj — riziko budoucího rozjetí, ne ztráta v době psaní. Bylo zaznamenáno v sekci 8.2 a potvrzeno platným napříč iteracemi. **Oba symboly i jejich jediný test (`tests/test_inbox.py`) byly odstraněny a ověřeny (grep po repu + plná testovací sada, 836 passed) — tento bod už není otevřený duplikát, jen historický záznam zjištění.** |
 
 ### 9.3 Shrnutí: je to bug, nebo záměr?
 
@@ -669,8 +675,10 @@ docstring vysvětlující záměr „PM nepředává `--model`, provider si vybe
 ztracená data — reálná hodnota modelu nikdy neexistovala k okamžiku dispatch,
 protože PM ji cíleně nezjišťuje předem. Jediná položka, která přesahuje čistý
 záměr, je bod 2 (mrtvé `selected_model = None` proměnné) a bod 8 (nepoužívaný
-duplicitní modul `inbox.py`) — obě jsou neškodný mrtvý kód, ne funkční chyba,
-a jejich úklid je mimo rozsah této analytické karty (viz bod 10 v sekci 7.4).
+duplicitní modul `inbox.py`) — obě jsou neškodný mrtvý kód, ne funkční chyba;
+v době psaní této karty byl jejich úklid mimo rozsah (viz bod 10 v sekci 7.4).
+**Bod 8 byl od té doby uzavřen (viz UZAVŘENO poznámka u řádku 8 výše,
+2026-09-17); k bodu 2 tento dokument samostatný závěr nevyvozuje.**
 
 ### 9.4 Co zůstává mimo rozsah této historické karty
 

@@ -217,22 +217,66 @@ def test_persistent_bat_launcher_detaches_from_the_invoking_console() -> None:
     window sends a CTRL_CLOSE/CTRL_LOGOFF signal down the shared console to
     every process attached to it, terminating the long-running tree even
     though nothing was wrong with the PM itself. Launching via `start` opens
-    a new, detached console for the runner so the invoking window can close
-    without killing it."""
+    a new, detached console for the supervisor loop so the invoking window
+    can close without killing it."""
     source = (PROJECT_ROOT / "start_ai_project_manager.bat").read_text(encoding="utf-8")
 
-    # The literal command line: `start` launching powershell.exe in a new,
-    # titled console - not merely both substrings appearing somewhere
+    # The literal command line: `start` launching the supervisor loop in a
+    # new, titled console - not merely both substrings appearing somewhere
     # (e.g. inside an explanatory comment).
-    assert 'start "AI Project Manager" /MIN powershell.exe' in source
+    assert 'start "AI Project Manager" /MIN cmd.exe /c ""%~dp0scripts\\run-persistent-loop.bat""' in source
 
 
-def test_persistent_bat_launcher_uses_relocatable_production_runner() -> None:
+def test_persistent_bat_launcher_clears_stale_stop_flag_before_starting() -> None:
+    """A stop-flag left over from a previous stop must never make a brand
+    new start look like it was instantly stopped (see
+    scripts\\run-persistent-loop.bat and scripts\\stop-ai-project-manager.ps1
+    for the cooperating halves of this contract)."""
     source = (PROJECT_ROOT / "start_ai_project_manager.bat").read_text(encoding="utf-8")
 
-    assert '"%~dp0scripts\\run-ai-project-manager.ps1"' in source
+    assert "runtime\\pm_stop_requested.flag" in source
+    assert "del /f /q" in source
+
+
+def test_persistent_bat_launcher_is_relocatable() -> None:
+    source = (PROJECT_ROOT / "start_ai_project_manager.bat").read_text(encoding="utf-8")
+
     assert "D:\\orchestrator\\ai-project-manager" not in source
-    assert "-NoLogo" in source
+    assert "%~dp0" in source
+
+
+def test_persistent_loop_relaunches_the_runner_and_is_relocatable() -> None:
+    """Investigated cause (2026-09-17/18): Windows PowerShell 5.1's console
+    host can sporadically die hours into a run with a benign-but-fatal
+    "occurred while setting the console window title" Win32 error inside
+    run-ai-project-manager.ps1's Start-Transcript call, with no reliable
+    PowerShell-level try/catch able to intercept it (it surfaces as an
+    uncaught top-level "PS>TerminatingError()"). This plain cmd.exe loop -
+    which never calls Start-Transcript itself, and has never exhibited this
+    failure class - relaunches the runner whenever it exits instead of
+    leaving the whole PM tree down until a human notices."""
+    source = (PROJECT_ROOT / "scripts" / "run-persistent-loop.bat").read_text(encoding="utf-8")
+
+    assert "D:\\orchestrator\\ai-project-manager" not in source
+    assert "%~dp0" in source
+    assert (
+        'powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File '
+        '"%projectRoot%\\scripts\\run-ai-project-manager.ps1"'
+    ) in source
+    assert ":loop" in source
+    assert "goto loop" in source
+
+
+def test_persistent_loop_stops_on_the_stop_flag_instead_of_relaunching() -> None:
+    """Must check the stop-flag both before launching a fresh runner and
+    immediately after the previous one exits - an operator stop mid-run
+    (which kills the runner) must not be mistaken for a crash and silently
+    undone by an automatic restart."""
+    source = (PROJECT_ROOT / "scripts" / "run-persistent-loop.bat").read_text(encoding="utf-8")
+
+    assert source.count('if exist "%stopFlag%"') >= 2
+    assert 'set "stopFlag=%projectRoot%\\runtime\\pm_stop_requested.flag"' in source
+    assert "exit /b 0" in source
 
 
 def test_safe_stop_launcher_delegates_to_scoped_stop_script() -> None:
@@ -251,6 +295,29 @@ def test_safe_stop_script_disables_task_and_scopes_process_tree() -> None:
     assert "run-ai-project-manager.ps1" in source
     assert "ai_project_manager.watchdog" in source
     assert "*-m ai_project_manager*" in source
+
+
+def test_safe_stop_script_writes_stop_flag_before_touching_the_task_or_processes() -> None:
+    """scripts\\run-persistent-loop.bat only stops relaunching the runner once
+    it observes this file, so it must exist before anything else here can
+    even begin draining the tree - otherwise the loop can restart the
+    runner in the window between the kill and the flag being written."""
+    source = (SCRIPTS / "stop-ai-project-manager.ps1").read_text(encoding="utf-8")
+
+    flag_write = source.index("pm_stop_requested.flag")
+    task_disable = source.index("Disable-ScheduledTask -TaskName $TaskName")
+    process_kill = source.index("Stop-Process -Id $processIdToStop")
+    assert flag_write < task_disable < process_kill
+
+
+def test_safe_stop_script_also_scopes_the_supervisor_loop() -> None:
+    """The self-healing cmd.exe loop (run-persistent-loop.bat) that
+    start_ai_project_manager.bat starts must be recognized and torn down
+    too, or it would simply relaunch a fresh runner moments after this
+    script kills the current one."""
+    source = (SCRIPTS / "stop-ai-project-manager.ps1").read_text(encoding="utf-8")
+
+    assert "run-persistent-loop.bat" in source
 
 
 def test_installer_description_uses_configured_interval() -> None:

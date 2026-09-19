@@ -51,8 +51,9 @@ Nejdůležitější volitelné proměnné:
 | `AI_ORCHESTRATOR_ROOT` | automaticky nalezený AO checkout | Volitelný kořen checkoutu ai-orchestratoru pro automatické sestavení příkazu |
 | `AI_PM_PROVIDERS` | `groq,antigravity,claude-code,codex` | Metadata provider registry PM; konkrétního providera vybírá AO broker |
 | `AI_PM_POLL_INTERVAL_SECONDS` | `300` | Maximální prodleva mezi polling tick-y |
-| `AI_PM_ARTIFACT_CLEANUP_ROOT` | vypnuto | Explicitní kořen, v němž se mezi běhy mažou pouze expirované `.pytest-basetemp-*` adresáře |
+| `AI_PM_ARTIFACT_CLEANUP_ROOT` | vypnuto | Explicitní kořen, v němž se mezi běhy mažou pouze expirované `.pytest-basetemp-*` adresáře; produkční launcher ho nastaví na stejný externí kořen jako `AI_PM_TEST_ARTIFACT_ROOT`, nikdy na checkout |
 | `AI_PM_ARTIFACT_RETENTION_HOURS` | `24` | Minimální stáří testovacího artefaktu před cleanupem; nezáporné číslo |
+| `AI_PM_TEST_ARTIFACT_ROOT` | `%LOCALAPPDATA%\AIProjectManager\pytest` (Windows), při nedostupnosti `%TEMP%\AIProjectManager\pytest`, jinak `~/.cache/ai-project-manager/pytest` | Externí kořen pro pytest `--basetemp`; repo-local hodnota se vždy odmítne fail-closed (viz `WORKFLOW.md`) |
 | `AI_ORCHESTRATOR_TIMEOUT_SECONDS` | bez limitu | Timeout jednoho běhu orchestrátoru |
 | `AI_PM_PROJECT_PATHS` | `{}` | JSON mapa stabilního project key/názvu na checkout |
 | `AI_PM_PROJECTS_ROOT` | prázdné | Schválený kořen pro izolované checkouty nových Inbox nápadů; není fallbackem pro nejasnou identitu existujícího projektu |
@@ -161,6 +162,16 @@ start nad stejným checkoutem skončí s kódem `1`, takže dvě instance nikdy
 nepollují stejný board ani nespustí tutéž práci paralelně. Soubor zámku může
 na disku zůstat; rozhodující je zámek otevřeného handle, který operační systém
 automaticky uvolní i při pádu procesu.
+
+Watchdogův zámek a zámek samotné persistentní PM smyčky jsou dvě různé
+ochrany: PM drží po dobu persistentního běhu také
+`runtime/pm_process.lock`. Přímé spuštění druhé persistentní smyčky nad týmž
+checkoutem se odmítne ještě před prvním tickem. Jednorázový `--once` tick a
+`--maintain-only` kontrola tento persistentní zámek záměrně nedrží, aby je bylo
+možné bezpečně spouštět jako řízené servisní operace. Start a ukončení PM,
+watchdogu i ai-orchestrator child procesu loguje skutečný PID a exit code;
+ukončovací skript po zásahu znovu načte tabulku procesů a zapíše, zda každý
+dotčený proces skutečně skončil.
 
 Watchdog spustí PM jako podproces; při běžném ukončení skončí i watchdog.
 Při `RESTART_REQUIRED_EXIT_CODE` spustí nový podproces (nyní už s aktuálním
@@ -276,7 +287,10 @@ nepřenášejí.
 python -m pytest -q
 ```
 
-Testy jsou plně lokální; produkční Trello ani orchestrátor nevolají.
+Testy jsou plně lokální; produkční Trello ani orchestrátor nevolají. Pytest
+basetemp se vždy vytváří mimo checkout (viz `AI_PM_TEST_ARTIFACT_ROOT` výše a
+`WORKFLOW.md`) - v repozitáři proto po běhu testů nezůstane žádný
+`.pytest-basetemp-*` adresář ani při přerušeném/neúspěšném úklidu.
 
 # Provider model selection
 

@@ -147,6 +147,21 @@ def _dependencies_satisfied(project: ProjectRecord, projects: list[ProjectRecord
     dependencies = metadata.get("depends_on_subtask_indices", [])
     if not dependencies:
         return True
+    externally_satisfied = metadata.get("externally_satisfied_subtask_indices", [])
+    if not isinstance(externally_satisfied, list) or any(
+        isinstance(index, bool) or not isinstance(index, int) or index < 0
+        for index in externally_satisfied
+    ):
+        return False
+    dependency_set = set(dependencies)
+    if not dependency_set.issuperset(externally_satisfied):
+        return False
+    dependencies = [
+        index for index in dependencies
+        if index not in set(externally_satisfied)
+    ]
+    if not dependencies:
+        return True
     source_id = metadata.get("source_card_id")
     if not source_id:
         return False

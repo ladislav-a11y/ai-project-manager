@@ -86,6 +86,7 @@ class TrelloClient(Protocol):
         ...
 
 
+
 class TrelloError(RuntimeError):
     pass
 
@@ -203,6 +204,7 @@ class InMemoryTrelloClient:
         self._cards[card_id]["closed"] = True
         self._cards[card_id]["last_activity_at"] = datetime.now(timezone.utc).isoformat()
         return deepcopy(self._cards[card_id])
+
 
 
 class RealTrelloClient:

@@ -62,6 +62,13 @@ fáze a nesmí obejít čekání, audit ani aktivní práci. Pořadí dispatch �
 - `Testování → Čeká na AI`: pouze provider-limit; návratová fáze zůstává
   `Testování`.
 
+Pokud konkrétní embedding PM běhu nemá zapojený `audit_run_fn`, karta v
+`Testování` se nesmí potichu tvářit jako čekající práce ani se nesmí vrátit do
+implementačního dispatchu náhradním AI voláním. PM ji ponechá v `Testování`,
+zapíše do `stop_reason` a `extra_data` trvalý lidsky čitelný důvod a další tick
+musí být idempotentní. Produkční CLI má auditní funkci předávat vždy; tento
+fail-closed stav je diagnostická pojistka pro chybně zapojený embedding.
+
 Terminální finalizace je vlastněna controllerem, nikdy agentem. Spouští se
 automaticky, jakmile je implementační DoD karty kompletně ověřené, těsně před
 jejím povýšením do `Testování` - není omezena na výslovnou DoD položku
@@ -126,14 +133,24 @@ před výběrem nového úkolu. U úkolů ve stejné fázi rozhoduje priorita `P
 Scheduler musí být idempotentní a při absenci bezpečně zpracovatelné práce
 nesmí volat AI.
 
-Dočasné testovací artefakty mají samostatný fail-closed lifecycle. Pytest
-vytváří unikátní `.pytest-basetemp-*` pro konkrétní session a po jejím
-dokončení smaže pouze tento vlastní adresář. Trvalý scheduler smí mezi tick-y,
-tedy až po návratu implementačního nebo auditního subprocessu, odstranit jen
-expirované přímé `.pytest-basetemp-*` potomky explicitního
-`AI_PM_ARTIFACT_CLEANUP_ROOT`. Symlinky, soubory, čerstvé adresáře, jiné názvy,
-zdroje, runtime data a pracovní změny nejsou kandidáty; bez explicitního
-kořene je autonomní cleanup vypnutý.
+Dočasné testovací artefakty mají samostatný fail-closed lifecycle a nikdy
+nesmí vzniknout uvnitř checkoutu. Pytest (`tests/conftest.py`) vytváří
+unikátní `.pytest-basetemp-*` výhradně pod externím, uživatelsky zapisovatelným
+kořenem mimo repozitář - `AI_PM_TEST_ARTIFACT_ROOT`, bez explicitního
+nastavení výchozí `%LOCALAPPDATA%\AIProjectManager\pytest` na Windows, při
+nedostupnosti uživatelský `%TEMP%\AIProjectManager\pytest`, jinak
+`~/.cache/ai-project-manager/pytest` (viz
+`ai_project_manager/test_artifact_paths.py`). Explicitní `--basetemp` se
+respektuje jen tehdy, když neleží uvnitř checkoutu; repo-local hodnota se
+odmítne fail-closed jasnou chybou už při startu pytestu, ne až tichým
+vytvořením artefaktu v repozitáři. Po dokončení session pytest smaže pouze
+tento vlastní adresář. Trvalý scheduler smí mezi tick-y, tedy až po návratu
+implementačního nebo auditního subprocessu, odstranit jen expirované přímé
+`.pytest-basetemp-*` potomky explicitního `AI_PM_ARTIFACT_CLEANUP_ROOT`, který
+produkční launcher nastavuje na stejný externí kořen jako
+`AI_PM_TEST_ARTIFACT_ROOT` - nikdy na checkout. Symlinky, soubory, čerstvé
+adresáře, jiné názvy, zdroje, runtime data a pracovní změny nejsou kandidáty;
+bez explicitního kořene je autonomní cleanup vypnutý.
 
 ### Inbox intake
 
@@ -251,6 +268,12 @@ Pokud běží PM tick, persistentní PM nebo jeho ai-orchestrator child proces,
 nesmí se současně opravovat kód, workflow pravidla ani runtime konfigurace.
 Nejprve se běh bezpečně ukončí a ověří se, že PM/AO již neběží; teprve potom
 je dovolena oprava. Po změně se PM spouští pouze řízeným `--once` tickem.
+Watchdog drží `runtime/watchdog.lock` a persistentní PM smyčka drží oddělený
+`runtime/pm_process.lock`; tím se odmítne souběh watchdogu i přímého druhého
+persistentního PM běhu. `--once` a `--maintain-only` jsou servisní operace a
+zámek persistentní smyčky nedrží. Start, skutečný PID, exit code a výsledek
+ukončení se musí ověřovat z čerstvé tabulky procesů/logu, nikoli pouze z PID
+sesbíraného předem.
 Při ověřování PM/AO se vždy používá skutečný interpreter cílového repozitáře
 `<repo>\.venv\Scripts\python.exe`, pokud existuje, a jeho `Scripts` adresář je
 první v PATH pro všechny testovací subprocessy. Systémový `python` nebo

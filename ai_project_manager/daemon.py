@@ -34,6 +34,8 @@ from .runner import (
     run_once_audit,
 )
 from .models import ProjectStatus
+
+_AUDIT_NOT_WIRED_REASON = "audit_run_fn není v tomto běhu zapojen; karta zůstane v Testování bez AI volání"
 from .self_update import (
     check_self_update as check_self_update_fn,
     compute_code_version,
@@ -899,6 +901,10 @@ def run_tick(
             # V2: retain completed siblings for dependency checks. The scheduler
             # restricts candidates to the occupied slot without losing context.
 
+        # Process Testování cards before normal implementation dispatch.
+        # A card in Testování must never be picked up by pick_next_project
+        # (see NOT_SCHEDULABLE_STATUSES), so the only way it leaves the test
+        # list is the audit path below - never a fallback to ordinary work.
         outcome = None
         resumed_implementation_projects = [
             project
@@ -946,8 +952,45 @@ def run_tick(
                 lifecycle_notifier=lifecycle_notifier,
                 provider_refresh=provider_refresh,
             )
+        # Only a Testování card actually needs the audit runner this tick -
+        # its absence is irrelevant to a board with no card awaiting audit,
+        # and must not block ordinary implementation dispatch below.
+        testing_projects_awaiting_audit = [
+            project for project in projects if project.status == ProjectStatus.TESTING
+        ]
+        audit_not_wired_blocks_dispatch = False
+        if (
+            (outcome is None or not outcome.ran)
+            and audit_run_fn is None
+            and testing_projects_awaiting_audit
+        ):
+            # No audit runner wired for this tick. A Testování card must not
+            # silently sit in the list with no visible reason - every future
+            # tick rediscovers the same card and has nothing to do with it.
+            # Write a durable, human-readable stop_reason and extra_data so the
+            # reason survives Trello round-trips and later ticks, while keeping
+            # the card in Testování (fail-closed: never move to Hotovo or back
+            # to Pracuje se, and never invent a fallback AI call - including a
+            # fallback to ordinary implementation dispatch on some other,
+            # unrelated Připraveno card; see the unconditional guard below).
+            for project in testing_projects_awaiting_audit:
+                if (project.extra_data or {}).get("audit_not_wired_reason") == _AUDIT_NOT_WIRED_REASON:
+                    continue
+                project.stop_reason = _AUDIT_NOT_WIRED_REASON
+                project.extra_data["audit_not_wired_reason"] = _AUDIT_NOT_WIRED_REASON
+                sync_project_to_trello(client, project)
+                logger.info(
+                    "audit not wired this tick; Testování card stays in place: project=%r reason=%s",
+                    project.name,
+                    _AUDIT_NOT_WIRED_REASON,
+                )
+            outcome = RunOutcome(
+                ran=False,
+                reason="audit_run_fn není zapojen; Testování karta zůstane bez AI volání",
+            )
+            audit_not_wired_blocks_dispatch = True
 
-        if outcome is None or not outcome.ran:
+        if (outcome is None or not outcome.ran) and not audit_not_wired_blocks_dispatch:
             outcome = run_once(
                 client,
                 dispatch_projects,

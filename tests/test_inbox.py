@@ -9,7 +9,6 @@ from ai_project_manager.inbox import (
     apply_classification,
     classify_inbox_card,
     find_inbox_receipt,
-    inbox_planner_providers,
     inbox_content_hash,
     inbox_source_reference,
     looks_like_feedback,
@@ -75,14 +74,6 @@ def test_verification_plan_creates_specific_audit_evidence_dod():
     assert "nenahrazuje povinný důkaz" in audit_text
     assert "GUI" not in audit_text
     assert "Změna ovlivňuje pravidla" in audit_text
-
-
-def test_inbox_planner_never_selects_retired_or_reserved_providers():
-    assert inbox_planner_providers(["hermes", "gemini", "antigravity", "claude", "codex"]) == (
-        "antigravity",
-        "claude",
-        "codex",
-    )
 
 
 def test_visible_inbox_description_fails_closed_on_unterminated_pm_data():

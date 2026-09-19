@@ -26,4 +26,15 @@ rem *that* invoking window sent a CTRL_CLOSE/CTRL_LOGOFF signal straight
 rem down the shared console to the whole watchdog+PM process tree, killing
 rem it with STATUS_CONTROL_C_EXIT (0xC000013A) even though nothing was
 rem actually wrong with the PM itself.
-start "AI Project Manager" /MIN powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File "%~dp0scripts\run-ai-project-manager.ps1"
+rem
+rem The detached console runs scripts\run-persistent-loop.bat rather than
+rem run-ai-project-manager.ps1 directly: that plain cmd.exe loop relaunches
+rem the PowerShell runner whenever it exits, so a later, unrelated
+rem PowerShell console-host crash (see that script's own header comment for
+rem the investigated incident) is self-healed instead of leaving the whole
+rem PM tree down until a human notices and reruns this .bat by hand.
+rem A stop must win any race with a fresh start: clear a stale stop-flag
+rem left over from a previous run before launching, so this start is never
+rem silently treated as instantly-stopped by an unrelated leftover file.
+if exist "%~dp0runtime\pm_stop_requested.flag" del /f /q "%~dp0runtime\pm_stop_requested.flag" >nul 2>&1
+start "AI Project Manager" /MIN cmd.exe /c ""%~dp0scripts\run-persistent-loop.bat""

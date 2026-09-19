@@ -246,6 +246,24 @@ def test_dependency_ready_child_waits_for_done_sibling_even_with_higher_priority
     assert pick_next_project([dependency, dependent], registry, default_providers=["claude"]).project is dependent
 
 
+def test_explicitly_externally_satisfied_dependency_does_not_requeue_sibling():
+    registry = make_registry(claude="AVAILABLE")
+    dependent = ProjectRecord(
+        name="Dependent",
+        priority=5,
+        status=ProjectStatus.READY,
+        extra_data={"inbox_preparation": {
+            "source_card_id": "source", "subtask_index": 1,
+            "depends_on_subtask_indices": [0],
+            "externally_satisfied_subtask_indices": [0],
+        }},
+    )
+
+    assert pick_next_project(
+        [dependent], registry, default_providers=["claude"]
+    ).project is dependent
+
+
 def test_falls_back_to_lower_priority_project_when_top_providers_unavailable():
     projects = [
         ProjectRecord(name="High", priority=5, status=ProjectStatus.READY),

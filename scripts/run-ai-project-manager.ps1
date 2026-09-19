@@ -132,15 +132,76 @@ try {
         $env:AI_PM_PROVIDER_MODELS = $inheritedProviderModels
     }
     $env:AI_PM_POLL_INTERVAL_SECONDS = [string]$PollIntervalSeconds
-    # Cleanup is constrained to direct, expired .pytest-basetemp-* children
-    # of this checkout and runs only after a scheduler tick has completed.
-    $env:AI_PM_ARTIFACT_CLEANUP_ROOT = $projectRoot
+    # pytest basetemp and the scheduler's own between-tick cleanup must both
+    # target the same external, user-writable root outside every checkout -
+    # never the checkout itself (see ai_project_manager/test_artifact_paths.py
+    # and tests/conftest.py: a .pytest-basetemp-* directory left in the repo
+    # tree is exactly the disposable, tool-owned artifact WORKFLOW.md's
+    # fail-closed test artifact lifecycle forbids). Cleanup itself still only
+    # ever removes direct, expired .pytest-basetemp-* children of this root
+    # and only after a scheduler tick has completed.
+    $artifactRootCandidates = @()
+    if (-not [string]::IsNullOrWhiteSpace($env:LOCALAPPDATA)) {
+        $artifactRootCandidates += Join-Path $env:LOCALAPPDATA 'AIProjectManager\pytest'
+    }
+    $artifactRootCandidates += Join-Path ([System.IO.Path]::GetTempPath()) 'AIProjectManager\pytest'
+    $testArtifactRoot = $null
+    foreach ($candidate in $artifactRootCandidates) {
+        $probe = $null
+        try {
+            New-Item -ItemType Directory -Path $candidate -Force -ErrorAction Stop | Out-Null
+            $probe = Join-Path $candidate ('.write-probe-' + [guid]::NewGuid().ToString('N'))
+            [System.IO.File]::WriteAllText($probe, 'probe')
+            Remove-Item -LiteralPath $probe -Force -ErrorAction Stop
+            $testArtifactRoot = $candidate
+            break
+        }
+        catch {
+            if ($probe -and (Test-Path -LiteralPath $probe)) {
+                Remove-Item -LiteralPath $probe -Force -ErrorAction SilentlyContinue
+            }
+            continue
+        }
+    }
+    if ($null -eq $testArtifactRoot) {
+        throw 'No writable external AI project manager pytest artifact root is available.'
+    }
+    $env:AI_PM_TEST_ARTIFACT_ROOT = $testArtifactRoot
+    $env:AI_PM_ARTIFACT_CLEANUP_ROOT = $testArtifactRoot
+    # AO audit and finalization child processes must use the same external
+    # pytest root as PM.  Without an explicit basetemp, the managed Windows
+    # runtime can redirect pytest into its inaccessible sandbox temp tree.
+    $pytestBasetemp = Join-Path $testArtifactRoot ('.pytest-basetemp-pm-' + [guid]::NewGuid().ToString('N'))
+    $pytestAddoptsSource = $env:PYTEST_ADDOPTS
+    if ($null -eq $pytestAddoptsSource) {
+        $pytestAddoptsSource = ''
+    }
+    $pytestAddopts = [regex]::Replace(
+        $pytestAddoptsSource,
+        '(?i)(^|\s)--basetemp(?:=\S+|\s+\S+)',
+        ' '
+    ).Trim()
+    $env:PYTEST_ADDOPTS = "$pytestAddopts --basetemp=$pytestBasetemp".Trim()
     $env:AI_PM_ARTIFACT_RETENTION_HOURS = '24'
     $env:AI_ORCHESTRATOR_TIMEOUT_SECONDS = '3600'
     # Used by PM's lifecycle notifier to reuse AO's existing Slack bot token.
     # Keep the path explicit because the scheduler may start with a different
     # current directory than this checkout.
     $env:AI_ORCHESTRATOR_ROOT = $OrchestratorRoot
+    # Controller-owned test commands run in a child process.  Git's
+    # safe.directory configuration is otherwise scoped to the launcher
+    # checkout by the managed runtime, so the child can reject the target
+    # repository as dubious ownership even though PM itself can read it.
+    $gitSafeDirectories = @(
+        $projectRoot, "$projectRoot/*",
+        $OrchestratorRoot, "$OrchestratorRoot/*",
+        $StationAgentRoot, "$StationAgentRoot/*"
+    ) | Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
+    $env:GIT_CONFIG_COUNT = [string]$gitSafeDirectories.Count
+    for ($gitSafeIndex = 0; $gitSafeIndex -lt $gitSafeDirectories.Count; $gitSafeIndex++) {
+        Set-Item -Path "Env:GIT_CONFIG_KEY_$gitSafeIndex" -Value 'safe.directory'
+        Set-Item -Path "Env:GIT_CONFIG_VALUE_$gitSafeIndex" -Value $gitSafeDirectories[$gitSafeIndex]
+    }
     $env:AI_ORCHESTRATOR_CMD = "`"$orchestratorPython`" `"$orchestratorScript`" autonomous --no-commit"
     $finalizeScript = Join-Path $OrchestratorRoot 'finalize.py'
     if (-not (Test-Path -LiteralPath $finalizeScript -PathType Leaf)) {
@@ -203,6 +264,10 @@ try {
         # preserved). This mapping repoints every remaining subtask
         # (2/11-11/11) of the same Inbox idea there.
         'cw dekoder v1 [Inbox 6a9b98c8]' = 'D:\orchestrator\cw_dekoder'
+        # The Gmail agent Inbox card declared its durable working directory
+        # explicitly. Keep the split children bound to that checkout rather
+        # than allowing a missing project identity to fail closed at dispatch.
+        'Gmail agent [Inbox 6aaa9ebe]' = Join-Path $workspaceRoot 'gmail-agent-inbox-6aaa9ebe'
     }
     $env:AI_PM_PROJECT_PATHS = $projectPaths | ConvertTo-Json -Compress
     # Must match ai-orchestrator's own config.yaml workspace_root (default:
@@ -240,6 +305,15 @@ try {
         '6a9666115f87e75a5c37742d' = 'Station Agent'
         '6a954cb7a0650b2d68cbb51f' = 'AI Project Manager'
         '6a954f060373e6917e0a7291' = 'AI Project Manager'
+        # Gmail agent [Inbox 6aaa9ebe] split children. These immutable card
+        # IDs are the one-time migration source; the project_key label then
+        # remains durable on each card regardless of title edits.
+        '6aab9d2b2a54ccd7876ceee0' = 'Gmail agent [Inbox 6aaa9ebe]'
+        '6aab9d2750e83ebbe9d5534c' = 'Gmail agent [Inbox 6aaa9ebe]'
+        '6aab9d244e46db0c9b1cbff6' = 'Gmail agent [Inbox 6aaa9ebe]'
+        '6aab9d2df934b06f1c8039b3' = 'Gmail agent [Inbox 6aaa9ebe]'
+        '6aab9d203791b19da1bd3612' = 'Gmail agent [Inbox 6aaa9ebe]'
+        '6aab9d31abc8c640b3068655' = 'Gmail agent [Inbox 6aaa9ebe]'
     }
     $env:AI_PM_CARD_PROJECT_KEYS = $cardProjectKeys | ConvertTo-Json -Compress
 
@@ -303,7 +377,9 @@ finally {
     $env:AI_PM_ENABLE_INBOX = $null
     $env:AI_PM_PROVIDERS = $null
     $env:AI_PM_PROVIDER_MODELS = $inheritedProviderModels
+    $env:PYTEST_ADDOPTS = $null
     $env:AI_PM_POLL_INTERVAL_SECONDS = $null
+    $env:AI_PM_TEST_ARTIFACT_ROOT = $null
     $env:AI_PM_ARTIFACT_CLEANUP_ROOT = $null
     $env:AI_PM_ARTIFACT_RETENTION_HOURS = $null
     $env:AI_ORCHESTRATOR_TIMEOUT_SECONDS = $null
@@ -322,6 +398,11 @@ finally {
     $env:AI_PM_PROJECTS_ROOT = $null
     $env:AI_ORCHESTRATOR_ROOT = $null
     $env:AI_ORCHESTRATOR_WORKSPACE_ROOT = $null
+    for ($gitSafeIndex = 0; $gitSafeIndex -lt 6; $gitSafeIndex++) {
+        Remove-Item -Path "Env:GIT_CONFIG_KEY_$gitSafeIndex" -ErrorAction SilentlyContinue
+        Remove-Item -Path "Env:GIT_CONFIG_VALUE_$gitSafeIndex" -ErrorAction SilentlyContinue
+    }
+    $env:GIT_CONFIG_COUNT = $null
     $env:AI_PM_GIT_USER_NAME = $null
     $env:AI_PM_GIT_USER_EMAIL = $null
     $env:AI_PM_CARD_PROJECT_KEYS = $null
