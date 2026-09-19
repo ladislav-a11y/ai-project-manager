@@ -54,6 +54,7 @@ import math
 import os
 import re
 import subprocess
+import tempfile
 import uuid
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -1541,6 +1542,63 @@ def _controller_finalize(
     indices: list[int],
     run_git: RunCommand,
 ) -> dict:
+    # The controller finalizer runs tests from the target checkout.  On this
+    # Windows host Git may reject that checkout as dubious ownership when the
+    # finalizer is launched from another repository/process environment.  Do
+    # not rely on the PM wrapper's inherited GIT_CONFIG_* variables: construct
+    # an explicit child environment at the governed finalization boundary.
+    finalizer_env = os.environ.copy()
+    checkout_path = Path(project_path).resolve()
+    artifact_candidates = []
+    configured_artifact_root = finalizer_env.get("AI_PM_TEST_ARTIFACT_ROOT", "").strip()
+    if configured_artifact_root:
+        artifact_candidates.append(Path(configured_artifact_root).expanduser())
+    artifact_candidates.append(Path(tempfile.gettempdir()) / "AIProjectManager" / "pytest")
+    for artifact_root in artifact_candidates:
+        try:
+            artifact_root = artifact_root.resolve()
+            if artifact_root == checkout_path or checkout_path in artifact_root.parents:
+                continue
+            artifact_root.mkdir(parents=True, exist_ok=True)
+            probe = artifact_root / f".write-probe-{uuid.uuid4().hex}"
+            probe.write_text("probe", encoding="utf-8")
+            probe.unlink()
+            finalizer_env["AI_PM_TEST_ARTIFACT_ROOT"] = str(artifact_root)
+            break
+        except OSError:
+            try:
+                probe.unlink()
+            except (UnboundLocalError, OSError):
+                pass
+
+    logger.info(
+        "controller finalizer environment prepared: project=%s artifact_root=%s git_config_count=%s",
+        checkout_path,
+        finalizer_env.get("AI_PM_TEST_ARTIFACT_ROOT"),
+        finalizer_env.get("GIT_CONFIG_COUNT", "0"),
+    )
+    artifact_root_for_tests = finalizer_env.get("AI_PM_TEST_ARTIFACT_ROOT", "").strip()
+    if artifact_root_for_tests:
+        basetemp = Path(artifact_root_for_tests) / f".pytest-basetemp-{uuid.uuid4().hex}"
+        pytest_options = finalizer_env.get("PYTEST_ADDOPTS", "")
+        pytest_options = re.sub(
+            r"(?:^|\s)--basetemp(?:=|\s+)\S+", " ", pytest_options
+        ).strip()
+        finalizer_env["PYTEST_ADDOPTS"] = (
+            f"{pytest_options} --basetemp={basetemp}".strip()
+        )
+
+    try:
+        git_config_count = max(int(finalizer_env.get("GIT_CONFIG_COUNT", "0")), 0)
+    except (TypeError, ValueError):
+        git_config_count = 0
+    checkout = str(Path(project_path).resolve())
+    for offset, safe_directory in enumerate((checkout, f"{checkout}/*")):
+        index = git_config_count + offset
+        finalizer_env[f"GIT_CONFIG_KEY_{index}"] = "safe.directory"
+        finalizer_env[f"GIT_CONFIG_VALUE_{index}"] = safe_directory
+    finalizer_env["GIT_CONFIG_COUNT"] = str(git_config_count + 2)
+
     def blocked_result(reason: str, finalization: Optional[dict] = None) -> dict:
         receipt = dict(finalization or {})
         receipt["status"] = "blocked"
@@ -1578,7 +1636,16 @@ def _controller_finalize(
             "controller finalization cannot verify repository HEAD before execution"
         )
     try:
-        completed = subprocess_run(full_command)
+        try:
+            completed = subprocess_run(full_command, env=finalizer_env)
+        except TypeError as exc:
+            # Keep lightweight injected runners used by older integrations and
+            # unit tests working; the real subprocess runner accepts ``env``.
+            # Only fall back for the signature mismatch, never for an actual
+            # TypeError raised inside a compatible runner.
+            if "unexpected keyword argument 'env'" not in str(exc):
+                raise
+            completed = subprocess_run(full_command)
     except Exception as exc:  # noqa: BLE001 - finalization is a governed boundary
         return blocked_result(f"controller finalization failed to start: {exc}")
     try:
@@ -1593,6 +1660,11 @@ def _controller_finalize(
         get_git_head(project_path, run_git=run_git),
         previous_head=previous_head,
     ):
+        if isinstance(payload, dict) and payload.get("test_output"):
+            logger.warning(
+                "controller finalizer test output tail: %s",
+                str(payload["test_output"])[-4000:],
+            )
         reason = payload.get("error", "controller finalization did not complete") if isinstance(payload, dict) else "invalid finalizer result"
         return blocked_result(
             "controller finalization did not provide a complete verified proof: "

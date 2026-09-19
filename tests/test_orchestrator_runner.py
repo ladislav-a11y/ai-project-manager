@@ -248,8 +248,15 @@ def test_build_finalize_fn_commits_a_fully_implemented_card(tmp_path):
     just describe what a caller should do."""
     registry_calls = []
 
-    def fake_subprocess_run(command):
+    def fake_subprocess_run(command, **kwargs):
         registry_calls.append(command)
+        safe_values = [
+            value for key, value in kwargs["env"].items()
+            if key.startswith("GIT_CONFIG_VALUE_")
+        ]
+        assert str(tmp_path / "demo-checkout") in safe_values
+        assert any(value.endswith("demo-checkout/*") for value in safe_values)
+        assert "--basetemp=" in kwargs["env"]["PYTEST_ADDOPTS"]
         return completed(json.dumps({
             "status": "completed", "done": True, "committed": True,
             "clean": True, "tests_passed": True, "pushed": True,

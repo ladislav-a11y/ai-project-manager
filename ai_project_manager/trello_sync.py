@@ -804,6 +804,32 @@ def _compact_audit_evidence(value: object) -> object:
     return compact
 
 
+def _compact_finalization_receipt(value: object) -> object:
+    """Keep the controller proof while dropping redundant finalizer output.
+
+    The finalizer may echo subprocess diagnostics, path inventories, and other
+    operational payloads.  The durable checkpoint only needs the proof fields
+    consumed by the controller/auditor plus the newest actionable reason.
+    Full output remains available in the controller receipt/log.
+    """
+    if not isinstance(value, dict):
+        return value
+    kept: dict = {}
+    proof_fields = (
+        "status", "done", "committed", "reconciled_existing_commit", "clean",
+        "tests_passed", "pushed", "commit_hash", "remote_commit", "remote",
+        "branch", "run_id", "backup_mode", "scope_policy",
+    )
+    for key in proof_fields:
+        if key in value:
+            kept[key] = value[key]
+    for key in ("reason", "error", "stop_reason"):
+        current = value.get(key)
+        if current is not None:
+            kept[key] = _bound_diagnostic_text(str(current))
+    return kept
+
+
 def _bound_contract_history(data: dict) -> dict:
     """Keep Trello writes below the API description limit.
 
@@ -847,6 +873,12 @@ def _bound_contract_history(data: dict) -> dict:
         checkpoint = dict(checkpoint)
         checkpoint["audit_evidence"] = _compact_audit_evidence(
             checkpoint.get("audit_evidence")
+        )
+        bounded["checkpoint"] = checkpoint
+    if isinstance(checkpoint, dict) and "finalization" in checkpoint:
+        checkpoint = dict(bounded.get("checkpoint") or checkpoint)
+        checkpoint["finalization"] = _compact_finalization_receipt(
+            checkpoint.get("finalization")
         )
         bounded["checkpoint"] = checkpoint
     feedback = bounded.get("open_feedback")

@@ -113,6 +113,39 @@ def test_contract_history_compacts_redundant_runtime_receipts():
     assert "status_details" not in bounded["provider_statuses"]["antigravity"]
 
 
+def test_contract_history_compacts_oversized_finalization_receipt():
+    data = {
+        "main_task": "keep task text intact",
+        "checkpoint": {
+            "finalization": {
+                "status": "blocked",
+                "done": False,
+                "committed": False,
+                "clean": None,
+                "tests_passed": False,
+                "pushed": False,
+                "commit_hash": None,
+                "remote_commit": None,
+                "remote": None,
+                "run_id": "run-1",
+                "reason": "pre-existing user changes are already staged",
+                "preexisting_paths": ["path-" + str(index) for index in range(500)],
+                "stdout": "diagnostic output " * 5000,
+            }
+        },
+    }
+
+    bounded = trello_sync._bound_contract_history(data)
+
+    assert len(trello_sync._render_data_block(bounded)) <= 14000
+    receipt = bounded["checkpoint"]["finalization"]
+    assert receipt["status"] == "blocked"
+    assert receipt["done"] is False
+    assert receipt["reason"] == "pre-existing user changes are already staged"
+    assert "preexisting_paths" not in receipt
+    assert "stdout" not in receipt
+
+
 def test_done_card_drops_stale_audit_capability_failure():
     project = ProjectRecord(
         name="P5 — completed",
