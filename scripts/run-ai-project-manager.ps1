@@ -36,6 +36,7 @@ $secretPath = Join-Path $projectRoot '.secrets\scheduler.clixml'
 $runtimeDir = Join-Path $projectRoot 'runtime\scheduler'
 $inheritedProviderStatePath = $env:AI_PM_PROVIDER_STATE_PATH
 $inheritedProviderModels = $env:AI_PM_PROVIDER_MODELS
+$inheritedGroqApiKey = $env:GROQ_API_KEY
 
 if ($PollIntervalSeconds -lt 1) {
     throw 'PollIntervalSeconds must be at least 1.'
@@ -79,6 +80,17 @@ try {
     $env:TRELLO_KEY = ConvertFrom-ProtectedString $credentials.TrelloKey
     $env:TRELLO_TOKEN = ConvertFrom-ProtectedString $credentials.TrelloToken
     $env:TRELLO_BOARD_ID = ConvertFrom-ProtectedString $credentials.TrelloBoardId
+
+    # Scheduled PowerShell processes may not inherit a user-scoped Groq key.
+    # Preserve an explicit process value; otherwise copy the user value only
+    # into this launcher process and its AO child, never into logs or files.
+    if ([string]::IsNullOrWhiteSpace($env:GROQ_API_KEY)) {
+        $groqApiKey = [Environment]::GetEnvironmentVariable('GROQ_API_KEY', 'User')
+        if (-not [string]::IsNullOrWhiteSpace($groqApiKey)) {
+            $env:GROQ_API_KEY = $groqApiKey
+        }
+        Remove-Variable groqApiKey -ErrorAction SilentlyContinue
+    }
 
     # The locally installed Codex CLI does not reliably derive the Windows
     # home directory from the service/launcher environment.  Give it the
@@ -401,6 +413,12 @@ finally {
         Remove-Item -Path "Env:GIT_CONFIG_VALUE_$gitSafeIndex" -ErrorAction SilentlyContinue
     }
     $env:GIT_CONFIG_COUNT = $null
+    if ([string]::IsNullOrWhiteSpace($inheritedGroqApiKey)) {
+        $env:GROQ_API_KEY = $null
+    }
+    else {
+        $env:GROQ_API_KEY = $inheritedGroqApiKey
+    }
     $env:AI_PM_GIT_USER_NAME = $null
     $env:AI_PM_GIT_USER_EMAIL = $null
     $env:AI_PM_CARD_PROJECT_KEYS = $null

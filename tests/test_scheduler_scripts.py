@@ -67,6 +67,15 @@ def test_runner_delegates_model_selection_to_providers() -> None:
     assert "Preserve an operator-configured legacy provider" in source
 
 
+def test_runner_loads_user_scoped_groq_key_without_overriding_process_value() -> None:
+    source = (SCRIPTS / "run-ai-project-manager.ps1").read_text(encoding="utf-8")
+
+    assert "if ([string]::IsNullOrWhiteSpace($env:GROQ_API_KEY))" in source
+    assert "[Environment]::GetEnvironmentVariable('GROQ_API_KEY', 'User')" in source
+    assert "$env:GROQ_API_KEY = $groqApiKey" in source
+    assert "Remove-Variable groqApiKey" in source
+
+
 def test_runner_does_not_hardcode_ai_project_manager_finalize_paths() -> None:
     """AI Project Manager finalization must use the controller's dynamic dirty-path
     scope. A launcher-level per-file allowlist goes stale whenever a legitimate
@@ -151,9 +160,13 @@ def test_runner_clears_every_environment_variable_it_sets() -> None:
         for line in cleanup.splitlines()
         if line.strip().startswith("$env:") and line.strip().endswith("= $null")
     }
-    # Provider model configuration is special: it is restored to the caller's
-    # inherited value instead of always being cleared.
-    assert cleared == assigned - {"$env:AI_PM_PROVIDER_MODELS"}
+    # Provider models and Groq credentials are restored to the caller's
+    # inherited values instead of always being cleared.
+    assert cleared - {"$env:GROQ_API_KEY"} == assigned - {
+        "$env:AI_PM_PROVIDER_MODELS",
+        "$env:GROQ_API_KEY",
+    }
+    assert "$env:GROQ_API_KEY = $inheritedGroqApiKey" in cleanup
     assert "$env:AI_PM_PROVIDER_STATE_PATH" in cleanup
 
 
