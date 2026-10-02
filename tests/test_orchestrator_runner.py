@@ -672,6 +672,100 @@ def test_build_finalize_fn_reconciles_existing_controller_commit_after_card_move
     assert calls
 
 
+def test_build_finalize_fn_reconciles_local_backup_without_remote(tmp_path):
+    """A local-only project must recover an already-created controller commit.
+
+    The proof is accepted only when the checkout has no configured remotes;
+    a missing APM allowlist must never turn an unverified remote into a local
+    backup.
+    """
+    head = "dc3a91014dc5993d11efc8a4853d13910e3dcac1"
+    calls = []
+
+    def fake_subprocess_run(_command):
+        raise AssertionError("an existing controller commit must not be repeated")
+
+    def fake_git(command):
+        calls.append(tuple(command))
+        if "rev-parse" in command:
+            return completed(head + "\n")
+        if "branch" in command:
+            return completed("master\n")
+        if "status" in command:
+            return completed("?? .claude/\n")
+        if "diff" in command:
+            return completed()
+        if "show" in command:
+            return completed("[ai-orchestrator] Controller finalization: local work\n")
+        if command[-1] == "remote":
+            return completed("")
+        raise AssertionError(f"unexpected git command: {command}")
+
+    project = ProjectRecord(
+        name="Bazar Scout",
+        project_key="Bazar Scout",
+        dod=[DoDItem(text="implementation complete", checked=True)],
+        checkpoint={
+            "completed_dod_indices": [0],
+            "controller_finalization_context": {
+                "preexisting_paths": [".claude/"],
+            },
+        },
+    )
+    finalize_fn = build_finalize_fn(
+        ["controller-finalize"],
+        project_paths={"Bazar Scout": str(tmp_path / "bazar-scout")},
+        allowed_push_remotes=None,
+        subprocess_run=fake_subprocess_run,
+        run_git=fake_git,
+    )
+
+    result = finalize_fn(project)
+
+    assert result["status"] == "done", result
+    assert result["already_verified"] is True
+    proof = result["finalization"]
+    assert proof["reconciled_existing_commit"] is True
+    assert proof["backup_mode"] == "local"
+    assert proof["pushed"] is False
+    assert proof["remote"] is None
+    assert proof["remote_commit"] is None
+    assert proof["commit_hash"] == head
+    assert not any("ls-remote" in call for call in calls)
+
+
+def test_local_backup_reconciliation_rejects_unallowlisted_remote(tmp_path):
+    from ai_project_manager.orchestrator_runner import _reconcile_existing_controller_commit
+
+    head = "dc3a91014dc5993d11efc8a4853d13910e3dcac1"
+
+    def fake_git(command):
+        if "rev-parse" in command:
+            return completed(head + "\n")
+        if "branch" in command:
+            return completed("master\n")
+        if "status" in command:
+            return completed("")
+        if "diff" in command:
+            return completed()
+        if "show" in command:
+            return completed("[ai-orchestrator] Controller finalization: local work\n")
+        if command[-1] == "remote":
+            return completed("origin\n")
+        raise AssertionError(f"unexpected git command: {command}")
+
+    project = ProjectRecord(
+        name="Bazar Scout",
+        project_key="Bazar Scout",
+        checkpoint={
+            "controller_finalization_context": {"preexisting_paths": []},
+        },
+    )
+    assert _reconcile_existing_controller_commit(
+        project, str(tmp_path / "bazar-scout"), fake_git, allowed_push_remotes=None
+    ) is None
+
+
 def test_finalization_refresh_is_needed_when_card_proof_has_old_head(tmp_path):
     project = ProjectRecord(
         name="Demo",

@@ -1384,10 +1384,11 @@ def _reconcile_existing_controller_commit(
     completed implementation DoD but dropped the ``finalization`` checkpoint.
     Calling the finalizer again then correctly finds only baseline dirty paths
     and returns ``no current-task changes``.  Reconcile only the narrow,
-    verifiable case: a controller-finalization commit is at HEAD, the exact
-    allowed origin branch points to that HEAD, and every remaining dirty path
-    is one of the paths captured before the implementation run.  This does
-    not create, stage, push, or infer a new commit.
+    verifiable case: a controller-finalization commit is at HEAD and every
+    remaining dirty path was captured before implementation. If a remote is
+    explicitly allowlisted, verify it points to HEAD; if no remote is
+    configured, accept local backup only when the checkout has no Git remotes.
+    This does not create, stage, push, or infer a new commit.
     """
     context = (project.checkpoint or {}).get("controller_finalization_context")
     if not isinstance(context, dict) or not isinstance(context.get("preexisting_paths"), list):
@@ -1401,7 +1402,7 @@ def _reconcile_existing_controller_commit(
     current_head = get_git_head(project_path, run_git=run_git)
     branch = get_git_branch(project_path, run_git=run_git)
     allowed_remote = _identity_setting(allowed_push_remotes, project.project_key)
-    if not current_head or not branch or not allowed_remote:
+    if not current_head or not branch:
         return None
 
     status_ok, status = get_git_status(project_path, run_git=run_git)
@@ -1421,32 +1422,45 @@ def _reconcile_existing_controller_commit(
     if subject.returncode != 0 or "controller finalization" not in subject.stdout.casefold():
         return None
 
-    remote = run_git(("git", "-C", project_path, "remote", "get-url", "origin"))
-    if remote.returncode != 0 or remote.stdout.strip() != allowed_remote:
-        return None
-    remote_ok, remote_output = get_git_remote_branch_head(
-        project_path, branch, run_git=run_git
-    )
-    remote_head = remote_output.split()[0] if remote_ok and remote_output.strip() else None
-    if remote_head != current_head:
-        return None
+    if allowed_remote:
+        remote = run_git(("git", "-C", project_path, "remote", "get-url", "origin"))
+        if remote.returncode != 0 or remote.stdout.strip() != allowed_remote:
+            return None
+        remote_ok, remote_output = get_git_remote_branch_head(
+            project_path, branch, run_git=run_git
+        )
+        remote_head = remote_output.split()[0] if remote_ok and remote_output.strip() else None
+        if remote_head != current_head:
+            return None
+        pushed = True
+        backup_mode = None
+    else:
+        remotes = run_git(("git", "-C", project_path, "remote"))
+        if remotes.returncode != 0 or remotes.stdout.strip():
+            return None
+        remote_head = None
+        pushed = False
+        backup_mode = "local"
 
-    return {
+    result = {
         "status": "completed",
         "done": True,
         "committed": True,
         "reconciled_existing_commit": True,
         "clean": True,
         "tests_passed": True,
-        "pushed": True,
+        "pushed": pushed,
         "commit_hash": current_head,
         "remote_commit": remote_head,
-        "remote": allowed_remote,
+        "remote": allowed_remote if pushed else None,
         "branch": branch,
         "preexisting_paths": sorted(dirty_paths),
         "task_paths": [],
         "scope_policy": "existing controller commit reconciled; preexisting paths preserved",
     }
+    if backup_mode:
+        result["backup_mode"] = backup_mode
+    return result
 
 
 def _controller_finalization_is_verified(
