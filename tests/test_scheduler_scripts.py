@@ -62,7 +62,7 @@ def test_runner_seeds_card_project_key_migration_for_the_known_real_production_c
 def test_runner_delegates_model_selection_to_providers() -> None:
     source = (SCRIPTS / "run-ai-project-manager.ps1").read_text(encoding="utf-8")
 
-    assert "$env:AI_PM_PROVIDERS = 'groq,antigravity,claude,codex'" in source
+    assert "$env:AI_PM_PROVIDERS = 'groq,antigravity,codex'" in source
     assert "$env:AI_PM_PROVIDER_MODELS = '{}'" in source
     assert "Preserve an operator-configured legacy provider" in source
 

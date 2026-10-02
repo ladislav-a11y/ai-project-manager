@@ -108,11 +108,9 @@ try {
     # was prepared in Připraveno. The intake remains fail-closed on project
     # identity and never touches the personal Inbox.
     $env:AI_PM_ENABLE_INBOX = '1'
-    # Ordered failover policy. The PM provider names intentionally remain
-    # stable; ``claude`` maps to claude-code. Gemini was retired from PM
-    # after its successful audit migration. Keep the provider list explicit;
-    # retired providers must not be registered or selected.
-    $env:AI_PM_PROVIDERS = 'groq,antigravity,claude,codex'
+    # Keep the active PM provider list explicit. Claude is no longer
+    # subscribed; AO also excludes it through disabled_providers.
+    $env:AI_PM_PROVIDERS = 'groq,antigravity,codex'
     if ($ProviderOverride.Trim()) {
         if ($ProviderOverride.Trim().ToLowerInvariant() -eq 'gemini') {
             throw "Gemini je z PM vy$([char]0x0159)azen; pou$([char]0x017E)ijte jin$([char]0x00E9)ho providera."
