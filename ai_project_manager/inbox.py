@@ -16,7 +16,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Mapping, MutableMapping, Optional
 
-from .dod_validator import ensure_git_repo_initialized
+from .dod_validator import ensure_git_repo_initialized, get_git_head
 from .models import DoDItem, ProjectRecord, ProjectStatus
 from .inbox_preparation import (
     PreparedTask,
@@ -677,7 +677,6 @@ def process_inbox(
                             card.get("id"), card.get("name"),
                         )
                         continue
-                    project_paths[preparation.project_key] = preparation.project_path
                 Path(preparation.project_path).mkdir(parents=True, exist_ok=True)
                 # Without this, a checkout materialized here has no ``.git``
                 # and the controller finalizer's HEAD check fails forever,
@@ -692,6 +691,30 @@ def process_inbox(
                         "Nepodařilo se inicializovat git repozitář pro nový projekt id=%s path=%s",
                         card.get("id"), preparation.project_path,
                     )
+                    continue
+                if project_paths is not None:
+                    project_paths[preparation.project_key] = preparation.project_path
+            # Live intake has a projects root. Validate every task checkout
+            # before creating any child or archiving the immutable source.
+            # An allowlisted identity alone does not prove the repo exists.
+            if projects_root and project_paths is not None:
+                invalid_checkouts = []
+                for prepared_task in preparation.tasks:
+                    key = prepared_task.project_key or preparation.project_key
+                    path = project_paths.get(key)
+                    if (
+                        not path
+                        or not Path(path).is_dir()
+                        or not (Path(path) / ".git").exists()
+                        or not get_git_head(path)
+                    ):
+                        invalid_checkouts.append(f"{key}: {path}")
+                if invalid_checkouts:
+                    logger.warning(
+                        "Inbox source retained: project checkout is not initialized id=%s paths=%s",
+                        card.get("id"), invalid_checkouts,
+                    )
+                    continue
             # Persist every split child as an independent Připraveno card.
             # The source content is immutable; archive it only after every
             # target is durable. A failed split remains retryable by source/index.

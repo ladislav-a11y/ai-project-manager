@@ -1650,3 +1650,65 @@ def test_new_unbound_planner_unknown_key_is_not_used_as_checkout_identity(tmp_pa
     assert prepared.human_required_reason is None
     assert prepared.project_key != "invented-project-slug"
     assert prepared.tasks[0].project_key == prepared.project_key
+
+
+@pytest.mark.parametrize("checkout_state", ["missing", "directory", "unborn", "ready"])
+def test_live_intake_requires_initialized_configured_checkout(tmp_path, checkout_state):
+    client = make_inbox_client()
+    _, name_to_id = build_list_maps(client)
+    source = client.create_card(
+        name_to_id["INBOX / Nápady"],
+        "Station Agent export",
+        desc="Add catalog export.",
+        labels=["Station Agent"],
+    )
+    repo = tmp_path / "projects" / "station-agent"
+    if checkout_state != "missing":
+        repo.mkdir(parents=True)
+    if checkout_state in {"unborn", "ready"}:
+        subprocess.run(["git", "-C", str(repo), "init"], check=True, capture_output=True)
+    if checkout_state == "ready":
+        subprocess.run(
+            ["git", "-C", str(repo), "-c", "user.name=Test",
+             "-c", "user.email=test@example.com", "commit", "--allow-empty", "-m", "init"],
+            check=True, capture_output=True,
+        )
+
+    changed = process_inbox(
+        client, [],
+        persist_project=lambda project: sync_project_to_trello(client, project),
+        project_paths={"Station Agent": str(repo)},
+        projects_root=str(tmp_path / "projects"),
+    )
+
+    if checkout_state == "ready":
+        assert changed
+        assert client.get_card(source["id"])["closed"] is True
+    else:
+        assert changed == []
+        assert client.get_card(source["id"])["closed"] is False
+        assert client.list_cards(name_to_id["New"]) == []
+        assert client.list_cards(name_to_id["Ready"]) == []
+
+
+def test_failed_generated_checkout_init_retains_source_and_does_not_register_path(tmp_path, monkeypatch):
+    client = make_inbox_client()
+    _, name_to_id = build_list_maps(client)
+    source = client.create_card(
+        name_to_id["INBOX / Nápady"], "New catalog idea", desc="Build a catalog export."
+    )
+    project_paths = {}
+    monkeypatch.setattr("ai_project_manager.inbox.ensure_git_repo_initialized", lambda *a, **k: False)
+
+    changed = process_inbox(
+        client, [],
+        persist_project=lambda project: sync_project_to_trello(client, project),
+        project_paths=project_paths,
+        projects_root=str(tmp_path / "projects"),
+    )
+
+    assert changed == []
+    assert project_paths == {}
+    assert client.get_card(source["id"])["closed"] is False
+    assert client.list_cards(name_to_id["New"]) == []
+    assert client.list_cards(name_to_id["Ready"]) == []
