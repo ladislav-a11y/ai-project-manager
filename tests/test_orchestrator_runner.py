@@ -1,6 +1,8 @@
 import json
+import os
 import re
 import subprocess
+import sys
 from datetime import datetime, timedelta, timezone
 
 import pytest
@@ -2581,6 +2583,35 @@ def test_inbox_planner_marks_all_candidates_on_central_call_failure():
     assert planner({"id": "source", "name": "Nápad", "desc": "Úkol"}, []) is None
     assert registry.get_status("groq").state == ProviderState.AVAILABLE
     assert registry.get_status("antigravity").state == ProviderState.AVAILABLE
+
+
+@pytest.mark.parametrize("explicit_env", [False, True])
+def test_bounded_subprocess_round_trips_unicode_with_ansi_default(monkeypatch, explicit_env):
+    # Reproduce a CP1250 host and child without changing the machine locale.
+    monkeypatch.setattr(subprocess, "_text_encoding", lambda: "cp1250")
+    monkeypatch.setenv("PYTHONIOENCODING", "cp1250")
+    payload = {"name": "N\u00e1pady \u2192 MVP \U0001f50e", "description": "\u017dlu\u0165ou\u010dk\u00fd"}
+    child_code = (
+        "import json,sys; payload=json.load(sys.stdin); "
+        "json.dump(payload,sys.stdout,ensure_ascii=False); "
+        "sys.stderr.write(payload['name'])"
+    )
+    supplied_env = dict(os.environ, PM_UTF8_TEST_SENTINEL="retained")
+    original_env = supplied_env.copy()
+    kwargs = {"env": supplied_env} if explicit_env else {}
+
+    result = _bounded_subprocess_run(
+        [sys.executable, "-c", child_code],
+        timeout=10,
+        input=json.dumps(payload, ensure_ascii=False),
+        **kwargs,
+    )
+
+    assert result.returncode == 0
+    assert json.loads(result.stdout) == payload
+    assert result.stderr == payload["name"]
+    assert supplied_env == original_env
+    assert os.environ["PYTHONIOENCODING"] == "cp1250"
 
 
 def test_bounded_inbox_subprocess_kills_windows_process_tree_on_timeout(monkeypatch):

@@ -221,6 +221,13 @@ def _bounded_subprocess_run(
     kwargs.setdefault("capture_output", True)
     kwargs.setdefault("text", True)
     kwargs.setdefault("check", False)
+    if kwargs.get("text") or kwargs.get("universal_newlines"):
+        # PM/AO exchange Unicode JSON, independent of the Windows ANSI page.
+        # Match the parent pipe codec and the Python child standard streams.
+        kwargs.setdefault("encoding", "utf-8")
+        child_env = dict(os.environ if kwargs.get("env") is None else kwargs["env"])
+        child_env["PYTHONIOENCODING"] = "utf-8"
+        kwargs["env"] = child_env
     if os.name != "nt":
         return subprocess.run(command, timeout=timeout, **kwargs)
 
