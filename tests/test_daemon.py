@@ -254,29 +254,28 @@ def test_run_tick_finalizes_before_promoting_completed_implementation():
     registry = ProviderRegistry()
     registry.mark_available("claude")
     finalize_calls = []
-    finalized = {"done": False}
+    reconciled_checkpoint = {
+        "run_id": "abc",
+        "finalization": {"done": True, "backup_mode": "local"},
+    }
 
     def run_fn(*_args):
         raise AssertionError("implementation must not be dispatched again")
 
     def finalize_fn(finalized_project):
-        # Mirrors the real build_finalize_fn's short-circuit for a HEAD
-        # already covered by a verified proof - run_once_audit's own
-        # defense-in-depth check (see incident: P5.20, Station Agent -
-        # oprava P5) calls finalize_fn again right before dispatching the
-        # audit, and that second call must be cheap/idempotent in
-        # production, not a second real commit.
+        # A recovered existing commit is already verified, so this must not
+        # trigger another commit. Its repaired proof still needs persistence
+        # even though already_verified is true.
         finalize_calls.append(finalized_project.name)
-        if finalized["done"]:
-            return {"status": "done", "already_verified": True}
-        finalized["done"] = True
         return {
             "status": "done",
-            "checkpoint": {"run_id": "abc", "finalization": {"done": True}},
+            "already_verified": True,
+            "checkpoint": reconciled_checkpoint,
         }
 
     def audit_run_fn(audited_project, _provider):
         assert audited_project.status == ProjectStatus.TESTING
+        assert audited_project.checkpoint == reconciled_checkpoint
         return {"verdict": "accepted", "evidence": "audit passed"}
 
     outcome = run_tick(
@@ -297,7 +296,7 @@ def test_run_tick_finalizes_before_promoting_completed_implementation():
     assert finalize_calls
     id_to_name, _ = build_list_maps(client)
     card = project_from_card(client.get_card(project.trello_card_id), id_to_name)
-    assert card.checkpoint.get("finalization") == {"done": True}
+    assert card.checkpoint == reconciled_checkpoint
 
 
 def test_run_tick_blocks_promotion_when_finalization_fails():

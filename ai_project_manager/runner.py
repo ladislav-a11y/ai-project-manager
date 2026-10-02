@@ -578,8 +578,8 @@ def _apply_run_result(
                             f"{reason}"
                         )
                     else:
-                        if not finalize_result.get("already_verified"):
-                            project.checkpoint = finalize_result.get("checkpoint", project.checkpoint)
+                        if "checkpoint" in finalize_result:
+                            project.checkpoint = finalize_result["checkpoint"]
                         new_status = ProjectStatus.TESTING
                         project.stop_reason = (
                             "implementation reported done; awaiting ai-orchestrator audit"
@@ -941,8 +941,8 @@ def run_once_audit(
                         provider=provider,
                         reason=project.stop_reason,
                     )
-                if not finalize_result.get("already_verified"):
-                    project.checkpoint = finalize_result.get("checkpoint", project.checkpoint)
+                if "checkpoint" in finalize_result:
+                    project.checkpoint = finalize_result["checkpoint"]
             logger.info(
                 "starting audit: project=%s provider=%s reason=%s",
                 project.name, provider_detail, provider_reason,

@@ -219,8 +219,8 @@ def _promote_completed_implementations_to_testing(
             continue
         project.extra_data.pop("controller_finalization_blocked_reason", None)
         project.extra_data.pop("controller_finalization_blocked_notified", None)
-        if not finalize_result.get("already_verified"):
-            project.checkpoint = finalize_result.get("checkpoint", project.checkpoint)
+        if "checkpoint" in finalize_result:
+            project.checkpoint = finalize_result["checkpoint"]
         project.transition_to(ProjectStatus.TESTING)
         project.stop_reason = "implementation DoD complete; awaiting ai-orchestrator audit"
         sync_project_to_trello(client, project)
