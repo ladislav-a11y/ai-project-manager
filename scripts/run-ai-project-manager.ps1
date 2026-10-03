@@ -178,6 +178,11 @@ try {
     }
     $env:AI_PM_TEST_ARTIFACT_ROOT = $testArtifactRoot
     $env:AI_PM_ARTIFACT_CLEANUP_ROOT = $testArtifactRoot
+    # Keep per-project Python test environments beside the external pytest
+    # artifacts, never in a target checkout where finalization could stage
+    # interpreter files. AO provisions requirements.txt into this managed root.
+    $env:AI_ORCHESTRATOR_TEST_VENV_ROOT = Join-Path $testArtifactRoot 'project-test-venvs'
+    New-Item -ItemType Directory -Path $env:AI_ORCHESTRATOR_TEST_VENV_ROOT -Force | Out-Null
     # AO audit and finalization child processes must use the same external
     # pytest root as PM.  Without an explicit basetemp, the managed Windows
     # runtime can redirect pytest into its inaccessible sandbox temp tree.
@@ -391,6 +396,7 @@ finally {
     $env:AI_PM_POLL_INTERVAL_SECONDS = $null
     $env:AI_PM_TEST_ARTIFACT_ROOT = $null
     $env:AI_PM_ARTIFACT_CLEANUP_ROOT = $null
+    $env:AI_ORCHESTRATOR_TEST_VENV_ROOT = $null
     $env:AI_PM_ARTIFACT_RETENTION_HOURS = $null
     $env:AI_ORCHESTRATOR_TIMEOUT_SECONDS = $null
     $env:AI_ORCHESTRATOR_CMD = $null

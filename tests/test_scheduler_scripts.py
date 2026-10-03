@@ -25,6 +25,15 @@ def test_runner_is_relocatable_and_python_is_configurable() -> None:
     assert '"D:/orchestrator/' not in source
 
 
+def test_runner_keeps_project_test_venvs_outside_target_checkouts() -> None:
+    source = (SCRIPTS / "run-ai-project-manager.ps1").read_text(encoding="utf-8")
+
+    assert (
+        "$env:AI_ORCHESTRATOR_TEST_VENV_ROOT = Join-Path $testArtifactRoot "
+        "'project-test-venvs'"
+    ) in source
+
+
 def test_runner_builds_project_paths_from_resolved_checkout_parameters() -> None:
     source = (SCRIPTS / "run-ai-project-manager.ps1").read_text(encoding="utf-8")
 
