@@ -85,12 +85,43 @@ def test_current_schema_is_validated_without_a_version_rewrite():
 def test_compact_routing_policy_keeps_invariants_without_repeated_prose():
     rendered = json.dumps(DOD_ROUTING_POLICY, ensure_ascii=False, separators=(",", ":"))
 
-    assert CURRENT_SCHEMA_VERSION == 3
+    assert CURRENT_SCHEMA_VERSION == 4
     assert len(rendered) < 1400
     assert DOD_ROUTING_POLICY["implementation_owner"] == "agent"
     assert DOD_ROUTING_POLICY["audit_owner"] == "ai-orchestrator"
     assert "no new commit" in DOD_ROUTING_POLICY["audit_evidence_rule"]
     assert "P5" in DOD_ROUTING_POLICY["repair_priority_rule"]
+
+
+def test_schema_v3_migrates_without_guessing_an_audit_finding():
+    raw = {
+        "schema_version": 3,
+        "checkpoint": {},
+        "main_task": "preserve task",
+        "dod": [{"text": "keep DoD", "checked": False}],
+        "open_feedback": ["keep user feedback"],
+        "lifecycle_status": "in_progress",
+    }
+    migrated = migrate_and_validate(raw)
+    assert migrated["schema_version"] == 4
+    assert migrated["latest_audit"] is None
+    assert migrated["dod"] == raw["dod"]
+    assert migrated["open_feedback"] == raw["open_feedback"]
+
+
+def test_schema_v3_rework_card_gets_a_labeled_legacy_audit_receipt():
+    migrated = migrate_and_validate({
+        "schema_version": 3,
+        "checkpoint": {},
+        "dod": [{"text": "repair", "checked": False}],
+        "open_feedback": ["older feedback"],
+        "lifecycle_status": "in_progress",
+        "returned_from_testing": True,
+        "stop_reason": "ai-orchestrator audit rejected DoD index(es) [0]: missing Slack transport",
+    })
+    assert migrated["latest_audit"]["verdict"] == "rejected"
+    assert migrated["latest_audit"]["reason"].endswith("missing Slack transport")
+    assert migrated["latest_audit"]["receipt_ref"] == "legacy-schema-v3"
 
 
 def test_schema_v2_migrates_verbose_routing_policy_to_compact_policy():

@@ -756,6 +756,20 @@ def _bound_diagnostic_text(value: str, limit: int = MAX_TRELLO_DIAGNOSTIC_CHARS)
     return value[:head] + marker + value[-tail:]
 
 
+def _truncate_history_text(value: str, limit: int, marker: str = "[zkráceno]") -> str:
+    """Reduce diagnostic history while retaining its leading cause and newest tail."""
+    if len(value) <= limit:
+        return value
+    available = max(0, limit - len(marker) - 2)
+    if available == 0:
+        return value[:limit]
+    head = (available + 1) // 2
+    tail = available - head
+    if not tail:
+        return value[:head] + "…"
+    return value[:head] + "\n" + marker + "\n" + value[-tail:]
+
+
 def _compact_audit_evidence(value: object) -> object:
     """Keep audit traceability without copying provider reports into PM-DATA.
 
@@ -883,14 +897,20 @@ def _bound_contract_history(data: dict) -> dict:
     feedback = bounded.get("open_feedback")
     if isinstance(feedback, list):
         entries = [str(item) for item in feedback if item]
-        if entries:
-            combined = "\n\n".join(entries)
-            if len(combined) > MAX_TRELLO_FEEDBACK_CHARS:
-                combined = (
-                    "[starší auditní historie zkrácena; zachován nejnovější důvod]\n"
-                    + combined[-MAX_TRELLO_FEEDBACK_CHARS:]
-                )
-            bounded["open_feedback"] = [combined]
+        retained: list[str] = []
+        size = 0
+        for entry in reversed(entries):
+            extra = len(entry) + (2 if retained else 0)
+            if size + extra > MAX_TRELLO_FEEDBACK_CHARS:
+                break
+            retained.append(entry)
+            size += extra
+        if entries and not retained:
+            retained = [_truncate_history_text(
+                entries[-1], MAX_TRELLO_FEEDBACK_CHARS,
+                marker="[zkrácený starší feedback; aktuální audit je uložen zvlášť]",
+            )]
+        bounded["open_feedback"] = list(reversed(retained))
     last_output = bounded.get("last_output")
     if isinstance(last_output, str) and len(last_output) > MAX_TRELLO_LAST_OUTPUT_CHARS:
         bounded["last_output"] = (
@@ -904,6 +924,8 @@ def _bound_contract_history(data: dict) -> dict:
     # a large checkpoint. Trim diagnostic history only. Task text and the
     # machine contract are never silently shortened because doing so could
     # change the work the agent receives or invalidate its checkpoint.
+    # History can be reduced, but the current audit receipt is a protected
+    # contract field and is deliberately absent from this compaction list.
     prose_fields = ("open_feedback", "last_output", "stop_reason", "blocked_by", "human_notified_reason")
     rendered_length = len(_render_data_block(bounded))
     while rendered_length > MAX_TRELLO_DESC_CHARS:
@@ -911,22 +933,26 @@ def _bound_contract_history(data: dict) -> dict:
         for field in prose_fields:
             value = bounded.get(field)
             if isinstance(value, list) and value:
-                text = str(value[-1])
-                marker = "[zkráceno] "
-                reduction = max(1000, rendered_length - MAX_TRELLO_DESC_CHARS)
-                retained = max(0, len(text) - reduction - len(marker))
-                shortened = marker + text[-retained:] if retained else marker.rstrip()
-                if shortened == text:
+                if field == "open_feedback" and len(value) > 1:
+                    bounded[field] = value[1:]
+                    changed = True
+                    break
+                text = str(value[0] if field == "open_feedback" else value[-1])
+                reduction = max(1, rendered_length - MAX_TRELLO_DESC_CHARS)
+                marker_cost = len("[zkráceno]") + 2
+                target_length = max(96, len(text) - reduction - marker_cost)
+                shortened = _truncate_history_text(text, target_length)
+                if len(shortened) >= len(text):
                     continue
                 bounded[field] = [shortened]
                 changed = True
                 break
             elif isinstance(value, str) and value:
-                marker = "[zkráceno] "
-                reduction = max(1000, rendered_length - MAX_TRELLO_DESC_CHARS)
-                retained = max(0, len(value) - reduction - len(marker))
-                shortened = marker + value[-retained:] if retained else marker.rstrip()
-                if shortened == value:
+                reduction = max(1, rendered_length - MAX_TRELLO_DESC_CHARS)
+                marker_cost = len("[zkráceno]") + 2
+                target_length = max(160, len(value) - reduction - marker_cost)
+                shortened = _truncate_history_text(value, target_length)
+                if len(shortened) >= len(value):
                     continue
                 bounded[field] = shortened
                 changed = True
@@ -1344,6 +1370,7 @@ def project_from_card(card: dict, list_id_to_name: dict[str, str]) -> ProjectRec
         human_notified_reason=data.get("human_notified_reason"),
         human_action_step=data.get("human_action_step"),
         dod=dod,
+        latest_audit=data.get("latest_audit"),
         github_repo=github_repo,
         google_drive_ref=google_drive_ref,
         trello_card_id=card.get("id"),
@@ -1413,6 +1440,7 @@ def card_updates_from_project(project: ProjectRecord, list_name_to_id: dict[str,
         "human_notified_reason": project.human_notified_reason,
         "human_action_step": project.human_action_step,
         "dod": [item.to_dict() for item in project.dod],
+        "latest_audit": dict(project.latest_audit) if project.latest_audit else None,
         "github_repo": project.github_repo.to_dict() if project.github_repo else None,
         "google_drive_ref": project.google_drive_ref.to_dict() if project.google_drive_ref else None,
         "provider": project.provider,

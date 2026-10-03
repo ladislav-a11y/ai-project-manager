@@ -3,6 +3,7 @@ from datetime import datetime, timedelta, timezone
 from ai_project_manager.guard import OrchestratorGuard
 from ai_project_manager.lock import ProjectLockManager
 from ai_project_manager.models import DoDItem, ProjectRecord, ProjectStatus
+from ai_project_manager.orchestrator_handoff import InvalidTaskError
 from ai_project_manager.providers import ProviderRegistry, ProviderState
 from ai_project_manager.runner import (
     _capture_live_trello_readback,
@@ -121,6 +122,58 @@ def test_run_once_releases_lock_and_reports_error_when_run_fn_raises():
     id_to_name, _ = build_list_maps(client)
     reloaded = project_from_card(client.get_card(project.trello_card_id), id_to_name)
     assert reloaded.stop_reason == "boom"
+
+
+def test_invalid_ai_handoff_moves_card_to_waiting_with_actionable_reason():
+    project = ProjectRecord(name="Demo", priority=3, status=ProjectStatus.READY)
+    client = make_client_with_project(project)
+    registry = ProviderRegistry()
+    registry.mark_available("claude")
+
+    outcome = run_once(
+        client,
+        [project],
+        registry,
+        lambda _project, _provider: (_ for _ in ()).throw(
+            InvalidTaskError("audit-rejected card has no complete latest_audit receipt")
+        ),
+        default_providers=["claude"],
+    )
+
+    id_to_name, _ = build_list_maps(client)
+    reloaded = project_from_card(client.get_card(project.trello_card_id), id_to_name)
+    assert outcome.halted is True
+    assert reloaded.status == ProjectStatus.PAUSED
+    assert "Předání do AI zastaveno" in reloaded.stop_reason
+    assert "latest_audit receipt" in reloaded.stop_reason
+    assert "PM-DATA/DoD" in reloaded.next_step
+
+
+def test_invalid_audit_handoff_moves_card_to_waiting_without_provider_penalty():
+    project = ProjectRecord(
+        name="Demo", priority=3, status=ProjectStatus.TESTING,
+        dod=[DoDItem(text="implementation", checked=True)],
+    )
+    client = make_client_with_project(project)
+    registry = ProviderRegistry()
+    registry.mark_available("claude")
+
+    outcome = run_once_audit(
+        client,
+        [project],
+        registry,
+        lambda _project, _provider: (_ for _ in ()).throw(
+            InvalidTaskError("audit card has no required verification contract")
+        ),
+        default_providers=["claude"],
+    )
+
+    id_to_name, _ = build_list_maps(client)
+    reloaded = project_from_card(client.get_card(project.trello_card_id), id_to_name)
+    assert outcome.halted is True
+    assert reloaded.status == ProjectStatus.PAUSED
+    assert "Předání do AI zastaveno" in reloaded.stop_reason
+    assert registry.get_status("claude").state == ProviderState.AVAILABLE
 
 
 def test_run_once_skips_project_already_locked_by_another_holder():
@@ -512,6 +565,7 @@ def test_run_once_audit_is_the_only_path_to_hotovo():
         registry,
         lambda _project, _provider: {
             "verdict": "accepted",
+            "audit_run_id": "run-test",
             "evidence": "ai-orchestrator verified the implementation",
         },
         default_providers=["claude"],
@@ -546,6 +600,7 @@ def test_run_once_audit_applies_limited_status_from_successful_failover_receipt(
         registry,
         lambda _project, _provider: {
             "verdict": "accepted",
+            "audit_run_id": "run-test",
             "evidence": "ai-orchestrator verified the implementation",
             "active_provider": "codex",
             "provider_sequence": ["groq", "codex"],
@@ -594,6 +649,7 @@ def test_run_once_audit_does_not_select_model_from_pm_catalog():
         registry,
         lambda _project, _provider: {
             "verdict": "accepted",
+            "audit_run_id": "run-test",
             "evidence": "ai-orchestrator verified the implementation",
         },
         default_providers=["claude"],
@@ -647,6 +703,7 @@ def test_implementation_receipt_does_not_drive_following_audit_model():
         )
         or {
             "verdict": "accepted",
+            "audit_run_id": "run-test",
             "evidence": "ai-orchestrator verified the implementation",
             "active_provider": "claude",
             "active_model": "claude-opus-4-1",
@@ -676,6 +733,7 @@ def test_run_once_audit_rejected_returns_concrete_feedback_to_pracuje_se():
         registry,
         lambda _project, _provider: {
             "verdict": "rejected",
+            "audit_run_id": "run-test",
             "reason": "export still times out on large accounts",
             "evidence": "ran the export against a 10k-row fixture, it timed out after 30s",
         },
@@ -689,8 +747,8 @@ def test_run_once_audit_rejected_returns_concrete_feedback_to_pracuje_se():
     id_to_name, _ = build_list_maps(client)
     reloaded = project_from_card(client.get_card(project.trello_card_id), id_to_name)
     assert reloaded.status == ProjectStatus.IN_PROGRESS
-    assert any("export still times out" in item for item in reloaded.open_feedback)
-    assert any("Evidence:" in item for item in reloaded.open_feedback)
+    assert reloaded.latest_audit["reason"] == "export still times out on large accounts"
+    assert "10k-row fixture" in reloaded.latest_audit["evidence"]
 
 
 def test_run_once_audit_records_provider_capability_limit_for_plan_without_verdict():
@@ -713,6 +771,7 @@ def test_run_once_audit_records_provider_capability_limit_for_plan_without_verdi
         registry,
         lambda _project, _provider: {
             "verdict": "rejected",
+            "audit_run_id": "run-test",
             "reason": "needs verification",
             "evidence": "pending audit verdict; no live verification was performed",
         },
@@ -744,6 +803,7 @@ def test_run_once_audit_rejected_with_explicit_reject_target_ready():
         registry,
         lambda _project, _provider: {
             "verdict": "rejected",
+            "audit_run_id": "run-test",
             "reason": "approach is unsalvageable, start over",
             "evidence": "tried three fixes, all regressed the same test",
             "reject_target": "ready",
@@ -778,6 +838,7 @@ def test_run_once_audit_rejected_audit_only_stays_in_testing_and_persists_readba
         seen["readback"] = project.extra_data["live_trello_readback"]
         return {
             "verdict": "rejected",
+            "audit_run_id": "run-test",
             "reason": "fresh live readback was not accepted",
             "evidence": "auditor checked the current card and requested another audit pass",
             "reject_target": "testing",
@@ -836,6 +897,7 @@ def test_audit_readback_preserves_live_provider_model_and_slack_receipt():
         seen["readback"] = audit_project.extra_data["live_trello_readback"]
         return {
             "verdict": "rejected",
+            "audit_run_id": "run-test",
             "reason": "audit evidence intentionally withheld by test",
             "evidence": "readback was inspected",
             "reject_target": "testing",
@@ -891,6 +953,7 @@ def test_audit_readback_preserves_inbox_split_priority_identity_dependency_and_w
         seen["readback"] = audit_project.extra_data["live_trello_readback"]
         return {
             "verdict": "rejected",
+            "audit_run_id": "run-test",
             "reason": "audit evidence intentionally withheld by test",
             "evidence": "readback was inspected",
             "reject_target": "testing",
@@ -1150,7 +1213,7 @@ def test_run_once_audit_finalizes_before_dispatching_when_not_yet_verified():
 
     def audit_run_fn(audited_project, _provider):
         audit_calls.append(True)
-        return {"verdict": "accepted", "evidence": "audit passed"}
+        return {"verdict": "accepted", "audit_run_id": "run-test", "evidence": "audit passed"}
 
     outcome = run_once_audit(
         client,
@@ -1188,7 +1251,7 @@ def test_run_once_audit_returns_unfinalized_card_to_work_without_spending_audit_
 
     def audit_run_fn(*_args):
         audit_calls.append(True)
-        return {"verdict": "accepted", "evidence": "audit passed"}
+        return {"verdict": "accepted", "audit_run_id": "run-test", "evidence": "audit passed"}
 
     outcome = run_once_audit(
         client,

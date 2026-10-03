@@ -25,6 +25,7 @@ from .lock import ProjectLockError, ProjectLockManager
 from .models import ProjectRecord, ProjectStatus
 from .orchestrator_handoff import (
     AuditVerdictError,
+    InvalidTaskError,
     apply_audit_verdict,
     apply_dod_progress,
     dod_fully_verified,
@@ -702,11 +703,24 @@ def run_once(
                 )
             except Exception as exc:  # noqa: BLE001 - run failures are reported on the card, not raised
                 signature = str(exc)
-                halted = guard.record_denial(project.name, signature)
-                project.stop_reason = signature
-                if halted:
-                    project.transition_to(ProjectStatus.BLOCKED)
-                    project.blocked_by = f"repeated failure: {signature}"
+                if isinstance(exc, InvalidTaskError):
+                    signature = f"Předání do AI zastaveno: {signature}"
+                    project.stop_reason = signature
+                    project.next_step = (
+                        "Zkontrolovat důvod zastaveného předání, opravit příslušný "
+                        "PM-DATA/DoD údaj a kartu ručně znovu zařadit."
+                    )
+                    project.retry_after = None
+                    project.blocked_by = None
+                    project.extra_data["resume_status"] = ProjectStatus.IN_PROGRESS.value
+                    project.transition_to(ProjectStatus.PAUSED)
+                    halted = True
+                else:
+                    halted = guard.record_denial(project.name, signature)
+                    project.stop_reason = signature
+                    if halted:
+                        project.transition_to(ProjectStatus.BLOCKED)
+                        project.blocked_by = f"repeated failure: {signature}"
                 logger.warning(
                     "run failed project=%r provider=%s error=%s halted=%s",
                     project.name, provider, signature, halted,
@@ -1073,6 +1087,8 @@ def run_once_audit(
                         evidence=result.get("evidence"),
                         reject_target=reject_target,
                         rejected_indices=result.get("rejected_indices"),
+                        audit_run_id=result.get("audit_run_id"),
+                        audit_details=result.get("audit_evidence"),
                     )
                 else:
                     # A provider/session limit is a workflow wait, not an
@@ -1091,17 +1107,30 @@ def run_once_audit(
                 # selected again on the very next tick. Keep the card in the
                 # audit phase, preserve its checkpoint, and let the normal
                 # provider selector fail over after a short local backoff.
-                provider_registry.mark_error(
-                    provider,
-                    signature,
-                    retry_after=timedelta(minutes=5),
-                    checkpoint=project.checkpoint,
-                )
-                halted = guard.record_denial(project.name, signature)
-                project.stop_reason = signature
-                if halted:
-                    project.transition_to(ProjectStatus.BLOCKED)
-                    project.blocked_by = f"repeated audit failure: {signature}"
+                if isinstance(exc, InvalidTaskError):
+                    signature = f"Předání do AI zastaveno: {signature}"
+                    project.stop_reason = signature
+                    project.next_step = (
+                        "Zkontrolovat důvod zastaveného předání, opravit příslušný "
+                        "PM-DATA/DoD údaj a kartu ručně znovu zařadit do Testování."
+                    )
+                    project.retry_after = None
+                    project.blocked_by = None
+                    project.extra_data["resume_status"] = ProjectStatus.TESTING.value
+                    project.transition_to(ProjectStatus.PAUSED)
+                    halted = True
+                else:
+                    provider_registry.mark_error(
+                        provider,
+                        signature,
+                        retry_after=timedelta(minutes=5),
+                        checkpoint=project.checkpoint,
+                    )
+                    halted = guard.record_denial(project.name, signature)
+                    project.stop_reason = signature
+                    if halted:
+                        project.transition_to(ProjectStatus.BLOCKED)
+                        project.blocked_by = f"repeated audit failure: {signature}"
                 provider_statuses = current_provider_statuses()
                 project.extra_data["provider_statuses"] = provider_statuses
                 logger.warning(

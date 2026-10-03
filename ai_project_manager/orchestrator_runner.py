@@ -2364,6 +2364,7 @@ def build_audit_run_fn(
                 verdict = AUDIT_VERDICT_ACCEPTED
                 return {
                     "verdict": verdict,
+                    "audit_run_id": run_id,
                     "evidence": evidence,
                     "audit_evidence": audit_evidence,
                     "usage": payload.get("usage"),
@@ -2380,6 +2381,7 @@ def build_audit_run_fn(
                 detail = report.rejection_summary or "DoD validace selhala"
                 return {
                     "verdict": AUDIT_VERDICT_REJECTED,
+                    "audit_run_id": run_id,
                     "reason": f"ai-orchestrator audit rejected DoD index(es) {report.rejected_indices}: {detail}",
                     "evidence": evidence,
                     "reject_target": _audit_reject_target(project, report.rejected_indices),
@@ -2406,6 +2408,7 @@ def build_audit_run_fn(
             )
             return {
                 "verdict": AUDIT_VERDICT_REJECTED,
+                "audit_run_id": run_id,
                 "reason": f"ai-orchestrator audit rejected DoD index(es) {all_rejected}: {detail}",
                 "evidence": audit_text,
                 "audit_evidence": audit_evidence,
@@ -2431,6 +2434,7 @@ def build_audit_run_fn(
         if verdict == AUDIT_VERDICT_ACCEPTED and not report.is_valid:
             return {
                 "verdict": AUDIT_VERDICT_REJECTED,
+                "audit_run_id": run_id,
                 "reason": f"ai-orchestrator audit rejected DoD index(es) {report.rejected_indices}: {report.rejection_summary}",
                 "evidence": evidence,
                 "audit_evidence": audit_evidence,
@@ -2453,6 +2457,7 @@ def build_audit_run_fn(
         if verdict == AUDIT_VERDICT_ACCEPTED and terminal_issue:
             return {
                 "verdict": AUDIT_VERDICT_REJECTED,
+                "audit_run_id": run_id,
                 "reason": terminal_issue,
                 "evidence": evidence,
                 "audit_evidence": audit_evidence,
@@ -2465,7 +2470,7 @@ def build_audit_run_fn(
                 },
             }
 
-        result: dict = {"verdict": verdict, "reason": payload.get("reason")}
+        result: dict = {"verdict": verdict, "reason": payload.get("reason"), "audit_run_id": run_id}
         if "evidence" in payload or evidence:
             result["evidence"] = payload.get("evidence") or evidence
         if audit_evidence:

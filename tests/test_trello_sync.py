@@ -30,6 +30,8 @@ from ai_project_manager.card_contract import (
 def test_priority_from_labels_reads_p_label():
     assert priority_from_labels([{"name": "P3"}]) == 3
     assert priority_from_labels([{"name": "bug"}, {"name": "P5"}]) == 5
+    assert priority_from_labels([{"name": "bug"}]) == 0
+    assert priority_from_labels([]) == 0
 
 
 def test_card_update_bounds_untrusted_audit_history_before_trello_write():
@@ -41,9 +43,22 @@ def test_card_update_bounds_untrusted_audit_history_before_trello_write():
     updates = card_updates_from_project(project, {"Pracuje se": "list-2"})
 
     assert len(updates["desc"]) <= 14000
-    assert "starší auditní historie zkrácena" in updates["desc"]
-    assert priority_from_labels([{"name": "bug"}]) == 0
-    assert priority_from_labels([]) == 0
+    assert "zkrácený starší feedback" in updates["desc"]
+
+
+def test_history_compaction_never_changes_the_current_audit_receipt():
+    receipt = {
+        "run_id": "audit-42", "verdict": "rejected", "reason": "current blocker",
+        "evidence": "fresh audit evidence", "rejected_indices": [1],
+        "findings": [{"index": 1, "summary": "missing transport", "observed": "no Slack sender"}],
+        "receipt_ref": "audit-42",
+    }
+    bounded = trello_sync._bound_contract_history({
+        "latest_audit": receipt,
+        "open_feedback": ["old " * 2000, "older " * 2000, "new user note"],
+    })
+    assert bounded["latest_audit"] == receipt
+    assert bounded["open_feedback"][-1] == "new user note"
 
 
 def test_card_update_drops_provider_history_and_rendered_slack_from_contract():
@@ -203,7 +218,25 @@ def test_contract_history_truncation_always_makes_progress(monkeypatch):
     bounded = trello_sync._bound_contract_history(data)
 
     assert len(trello_sync._render_data_block(bounded)) <= 1200
-    assert bounded["open_feedback"][0].startswith("[zkráceno]")
+    assert bounded["open_feedback"][0].startswith("newest audit reason")
+    assert "[zkráceno]" in bounded["open_feedback"][0]
+    assert bounded["open_feedback"][0].endswith("f" * 40)
+
+
+def test_contract_history_skips_short_diagnostics_before_compacting_longer_reason(monkeypatch):
+    monkeypatch.setattr(trello_sync, "MAX_TRELLO_DESC_CHARS", 1200)
+    data = {
+        "main_task": "m" * 700,
+        "open_feedback": ["x"],
+        "stop_reason": "current audit failure " + "d" * 1400,
+    }
+
+    bounded = trello_sync._bound_contract_history(data)
+
+    assert len(trello_sync._render_data_block(bounded)) <= 1200
+    assert bounded["open_feedback"] == ["x"]
+    assert bounded["stop_reason"].startswith("current audit failure")
+    assert "[zkráceno]" in bounded["stop_reason"]
 
 
 def test_large_audit_evidence_is_compacted_without_losing_verdict_identity():

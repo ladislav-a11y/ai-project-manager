@@ -132,6 +132,41 @@ def _goal_text(project: ProjectRecord) -> str:
         return True
 
     has_prepared_task = bool(project.orchestrator_ready_task and project.orchestrator_ready_task.strip())
+    latest_audit = project.latest_audit
+    if project.returned_from_testing and (
+        not isinstance(latest_audit, dict)
+        or latest_audit.get("verdict") != AUDIT_VERDICT_REJECTED
+        or not str(latest_audit.get("reason") or "").strip()
+        or not latest_audit.get("run_id")
+    ):
+        raise InvalidTaskError(
+            "audit-rejected card has no complete latest_audit receipt; refusing to dispatch without the exact finding"
+        )
+    if isinstance(latest_audit, dict) and latest_audit.get("verdict") == AUDIT_VERDICT_REJECTED:
+        # This is the authoritative current review feedback. Emit it before
+        # ordinary card history and never pass it through history truncation.
+        audit_lines = [
+            "CURRENT INDEPENDENT AUDIT REJECTION (authoritative rework input):",
+            f"Audit run: {latest_audit['run_id']}",
+            f"Rejected DoD indices: {', '.join(map(str, latest_audit['rejected_indices'])) or 'not reported'}",
+            "Reason: " + latest_audit["reason"],
+        ]
+        if str(latest_audit["receipt_ref"]).startswith("legacy-"):
+            audit_lines.append(
+                "This finding was migrated from a pre-v4 Trello card; its original AO outbox run ID was not stored."
+            )
+        else:
+            audit_lines.append(
+                "Full audit receipt is archived in ai-orchestrator outbox as run "
+                + latest_audit["receipt_ref"] + "."
+            )
+        if latest_audit["evidence"]:
+            audit_lines.append("Audit evidence: " + latest_audit["evidence"])
+        for finding in latest_audit["findings"]:
+            audit_lines.append(
+                f"DoD[{finding['index']}] {finding['summary']}\nObserved: {finding['observed']}"
+            )
+        add_component("\n".join(audit_lines))
     if has_prepared_task:
         add_component(project.orchestrator_ready_task)
     elif project.main_task and project.main_task.strip():
@@ -476,6 +511,8 @@ def apply_audit_verdict(
     evidence: Optional[str] = None,
     reject_target: Optional[ProjectStatus] = None,
     rejected_indices: Optional[list[int]] = None,
+    audit_run_id: Optional[str] = None,
+    audit_details: Optional[dict] = None,
 ) -> None:
     """Apply ai-orchestrator's audit verdict to a Testování project - the
     only place a Testování card's lifecycle may change.
@@ -523,6 +560,9 @@ def apply_audit_verdict(
             raise AuditVerdictError(
                 f"accepted audit verdict requires concrete evidence, but got trivial placeholder '{evidence.strip()}'"
             )
+        latest_audit_receipt = _build_latest_audit(
+            verdict, reason, evidence, rejected_indices, audit_run_id, audit_details
+        )
         for item in project.dod:
             item.checked = True
         # A successful audit closes the corrective loop. Leaving the return
@@ -530,6 +570,7 @@ def apply_audit_verdict(
         # corrective work to later board-maintenance/prioritization passes.
         project.extra_data.pop("returned_from_testing", None)
         project.extra_data.pop("return_reason", None)
+        project.latest_audit = latest_audit_receipt
         project.stop_reason = None
         project.blocked_by = None
         project.next_step = None
@@ -555,9 +596,10 @@ def apply_audit_verdict(
             f"invalid audit reject_target {target!r}; expected one of {sorted(_VALID_REJECT_TARGETS, key=str)}"
         )
 
-    feedback_entry = reason.strip()
-    feedback_entry = f"{feedback_entry}\nEvidence: {evidence.strip()}"
-    project.open_feedback = [*project.open_feedback, feedback_entry]
+    latest_audit_receipt = _build_latest_audit(
+        verdict, reason, evidence, rejected_indices, audit_run_id, audit_details
+    )
+    project.latest_audit = latest_audit_receipt
     project.stop_reason = reason.strip()
     if target == ProjectStatus.IN_PROGRESS:
         project.extra_data.pop(AUDIT_WAITING_FOR_CHANGE_KEY, None)
@@ -625,6 +667,59 @@ def apply_audit_verdict(
     else:
         project.extra_data.pop(AUDIT_WAITING_FOR_CHANGE_KEY, None)
     project.transition_to(target)
+
+
+def _build_latest_audit(
+    verdict: str,
+    reason: Optional[str],
+    evidence: Optional[str],
+    rejected_indices: Optional[list[int]],
+    audit_run_id: Optional[str],
+    audit_details: Optional[dict],
+) -> dict:
+    """Build a compact protected card receipt; never silently clip findings."""
+    if not audit_run_id or not isinstance(audit_run_id, str):
+        raise AuditVerdictError("completed audit verdict requires its ai-orchestrator run_id")
+    reason_text = (reason or "").strip()
+    evidence_text = (evidence or "").strip()
+    if len(reason_text) > 6000:
+        raise AuditVerdictError("audit reason exceeds protected Trello feedback limit")
+    if len(evidence_text) > 2500:
+        raise AuditVerdictError("audit evidence exceeds protected Trello feedback limit")
+    indices = rejected_indices or []
+    if any(isinstance(index, bool) or not isinstance(index, int) or index < 0 for index in indices):
+        raise AuditVerdictError("audit rejected_indices must be non-negative integers")
+    findings = []
+    details = audit_details if isinstance(audit_details, dict) else {}
+    for raw_index in rejected_indices or []:
+        value = details.get(str(raw_index), details.get(raw_index, {}))
+        if not isinstance(value, dict):
+            continue
+        verification = value.get("verification")
+        verification = verification if isinstance(verification, dict) else {}
+        summary = str(
+            value.get("summary") or verification.get("summary")
+            or verification.get("result") or ""
+        ).strip()
+        observed = str(value.get("observed") or verification.get("observed") or "").strip()
+        if len(summary) > 2000 or len(observed) > 4000:
+            raise AuditVerdictError(
+                f"audit finding for DoD[{raw_index}] exceeds protected Trello feedback limit"
+            )
+        if summary or observed:
+            findings.append({"index": raw_index, "summary": summary, "observed": observed})
+    receipt = {
+        "run_id": audit_run_id,
+        "verdict": verdict,
+        "reason": reason_text,
+        "evidence": evidence_text,
+        "rejected_indices": sorted(set(indices)),
+        "findings": findings,
+        "receipt_ref": audit_run_id,
+    }
+    if len(json.dumps(receipt, ensure_ascii=False)) > 9000:
+        raise AuditVerdictError("complete audit finding exceeds protected Trello feedback limit")
+    return receipt
 
 
 # A dispatcher performs the actual call out to the ai-orchestrator process

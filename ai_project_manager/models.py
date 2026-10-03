@@ -191,6 +191,9 @@ class ProjectRecord:
     # a run can only ever add checked items, never drop or re-shuffle the
     # original set (see orchestrator_handoff.apply_dod_progress).
     dod: list = field(default_factory=list)
+    # Current independent audit receipt. Kept separate from open_feedback so
+    # generic history compaction cannot truncate the active rework finding.
+    latest_audit: Optional[dict] = None
 
     github_repo: Optional[GitHubRef] = None
     google_drive_ref: Optional[GoogleDriveRef] = None
@@ -282,6 +285,7 @@ class ProjectRecord:
             "human_action_step": self.human_action_step,
             "trello_card_url": self.trello_card_url,
             "dod": [item.to_dict() for item in self.dod],
+            "latest_audit": dict(self.latest_audit) if self.latest_audit else None,
             "github_repo": self.github_repo.to_dict() if self.github_repo else None,
             "google_drive_ref": self.google_drive_ref.to_dict() if self.google_drive_ref else None,
             "trello_card_id": self.trello_card_id,

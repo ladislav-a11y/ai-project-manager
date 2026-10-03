@@ -3,12 +3,13 @@
 from __future__ import annotations
 
 from copy import deepcopy
+import json
 import re
 
 
-# Version 3 keeps the routing invariants while removing duplicated prose from
-# every Trello PM-DATA block. Older cards migrate through adjacent versions.
-CURRENT_SCHEMA_VERSION = 3
+# Version 4 stores the current audit finding separately from historical user
+# feedback, so history compaction can never erase the reason for rework.
+CURRENT_SCHEMA_VERSION = 4
 GOVERNANCE_POLICY = {
     "source_of_truth": "trello",
     "control_hierarchy": ["ai-project-manager", "ai-orchestrator", "agents"],
@@ -237,12 +238,37 @@ def _migrate_schema_2_to_3(data: dict) -> None:
     data["schema_version"] = 3
 
 
+def _migrate_schema_3_to_4(data: dict) -> None:
+    """Add a protected current-audit receipt to existing cards.
+
+    A v3 card marked by PM as returned from audit has an authoritative
+    stop_reason but predates the AO run ID field. Preserve that reason as
+    a clearly marked legacy receipt; never claim that it links to an outbox.
+    """
+    if "latest_audit" not in data:
+        reason = data.get("stop_reason")
+        if data.get("returned_from_testing") is True and isinstance(reason, str) and reason.strip():
+            data["latest_audit"] = {
+                "run_id": "legacy-schema-v3",
+                "verdict": "rejected",
+                "reason": reason.strip(),
+                "evidence": "",
+                "rejected_indices": [],
+                "findings": [],
+                "receipt_ref": "legacy-schema-v3",
+            }
+        else:
+            data["latest_audit"] = None
+    data["schema_version"] = 4
+
+
 # This ordered, adjacent-version table is the sole schema migration authority.
 # Loading, validation, and maintenance repair all pass through it.
 _SCHEMA_MIGRATIONS = {
     0: _migrate_schema_0_to_1,
     1: _migrate_schema_1_to_2,
     2: _migrate_schema_2_to_3,
+    3: _migrate_schema_3_to_4,
 }
 
 
@@ -271,6 +297,7 @@ KNOWN_FIELDS = {
     "github_repo", "google_drive_ref", "provider", "status_updated_at",
     "waiting_since", "completed_at",
     "card_identity",
+    "latest_audit",
     "governance",
     "dod_routing_policy",
 }
@@ -457,6 +484,43 @@ def migrate_and_validate(raw: dict) -> dict:
         raise CardContractError("every dod item must be an object with string text")
     if not isinstance(data.get("open_feedback"), list):
         raise CardContractError("open_feedback must be a JSON array")
+    latest_audit = data.get("latest_audit")
+    if latest_audit is not None:
+        if not isinstance(latest_audit, dict):
+            raise CardContractError("latest_audit must be a JSON object or null")
+        required_audit_fields = {
+            "run_id", "verdict", "reason", "evidence", "rejected_indices", "findings", "receipt_ref"
+        }
+        if set(latest_audit) != required_audit_fields:
+            raise CardContractError("latest_audit has an unsupported field set")
+        if not isinstance(latest_audit.get("run_id"), str) or not latest_audit["run_id"].strip():
+            raise CardContractError("latest_audit.run_id must be a non-empty string")
+        if latest_audit.get("verdict") not in {"accepted", "rejected"}:
+            raise CardContractError("latest_audit.verdict must be accepted or rejected")
+        if not isinstance(latest_audit.get("reason"), str):
+            raise CardContractError("latest_audit.reason must be a string")
+        if not isinstance(latest_audit.get("evidence"), str):
+            raise CardContractError("latest_audit.evidence must be a string")
+        if not isinstance(latest_audit.get("rejected_indices"), list) or any(
+            isinstance(index, bool) or not isinstance(index, int) or index < 0
+            for index in latest_audit["rejected_indices"]
+        ):
+            raise CardContractError("latest_audit.rejected_indices must be non-negative integers")
+        if not isinstance(latest_audit.get("findings"), list) or not all(
+            isinstance(item, dict)
+            and set(item) == {"index", "summary", "observed"}
+            and not isinstance(item.get("index"), bool)
+            and isinstance(item.get("index"), int)
+            and item.get("index") >= 0
+            and isinstance(item.get("summary"), str)
+            and isinstance(item.get("observed"), str)
+            for item in latest_audit["findings"]
+        ):
+            raise CardContractError("latest_audit.findings must contain index, summary, and observed strings")
+        if latest_audit.get("receipt_ref") != latest_audit["run_id"]:
+            raise CardContractError("latest_audit.receipt_ref must match its run_id")
+        if len(json.dumps(latest_audit, ensure_ascii=False)) > 9000:
+            raise CardContractError("latest_audit exceeds its protected size limit")
     lifecycle = data.get("lifecycle_status")
     if lifecycle is not None and not isinstance(lifecycle, str):
         raise CardContractError("lifecycle_status must be a string or null")

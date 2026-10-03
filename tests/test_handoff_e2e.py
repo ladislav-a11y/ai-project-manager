@@ -257,6 +257,7 @@ def test_full_visible_trello_dod_checklist_survives_to_completion(tmp_path):
         run_fn,
         audit_run_fn=lambda _project, _provider: {
             "verdict": "accepted",
+            "audit_run_id": "run-test",
             "evidence": "independent audit verified all 8 items",
         },
         default_providers=["claude"],

@@ -43,15 +43,15 @@ def test_rejected_implementation_is_reopened_for_actual_rework():
         reason="the export still times out on large accounts",
         evidence="ran the export against a 10k-row fixture, it timed out after 30s",
         rejected_indices=[0],
+        audit_run_id="run-test",
     )
 
     assert project.status == ProjectStatus.IN_PROGRESS
     assert project.stop_reason == "the export still times out on large accounts"
     assert project.returned_from_testing is True
-    assert project.open_feedback == [
-        "the export still times out on large accounts\n"
-        "Evidence: ran the export against a 10k-row fixture, it timed out after 30s"
-    ]
+    assert project.open_feedback == []
+    assert project.latest_audit["reason"] == "the export still times out on large accounts"
+    assert project.latest_audit["receipt_ref"] == "run-test"
     assert project.dod[0].checked is False
     assert project.checkpoint["completed_dod_indices"] == []
     assert project.next_step == (
@@ -79,6 +79,7 @@ def test_rejected_audit_only_item_does_not_reopen_implementation():
         evidence="audit needs a fresh readback",
         reject_target=ProjectStatus.TESTING,
         rejected_indices=[1],
+        audit_run_id="run-test",
     )
 
     assert project.status == ProjectStatus.TESTING
@@ -105,6 +106,7 @@ def test_actionable_audit_rejection_creates_rework_item_and_returns_to_implement
         reason="live evidence is missing",
         evidence="the audit could not verify the current runtime response",
         rejected_indices=[1],
+        audit_run_id="run-test",
     )
 
     assert project.status == ProjectStatus.IN_PROGRESS
@@ -137,6 +139,7 @@ def test_rejected_audit_verdict_can_target_ready_for_a_fresh_attempt():
         reason="approach is unsalvageable, start over",
         evidence="tried three fixes, all regressed the same test",
         reject_target=ProjectStatus.READY,
+        audit_run_id="run-test",
     )
 
     assert project.status == ProjectStatus.READY
@@ -160,6 +163,7 @@ def test_rejected_audit_verdict_can_remain_in_testing_for_audit_only_dod():
         reason="live board evidence is missing",
         evidence="the audit could not verify the current Trello card",
         reject_target=ProjectStatus.TESTING,
+        audit_run_id="run-test",
     )
 
     assert project.status == ProjectStatus.TESTING
@@ -181,6 +185,7 @@ def test_apply_audit_verdict_rejects_invalid_reject_target():
             reason="needs work",
             evidence="evidence",
             reject_target=ProjectStatus.DONE,
+            audit_run_id="run-test",
         )
 
 
@@ -337,6 +342,13 @@ def test_build_orchestrator_task_carries_trello_feedback_on_rework():
         next_step="add the missing recovery test",
         last_output="Previous attempt changed the adapter but the audit still rejected recovery.",
         extra_data={"returned_from_testing": True},
+        latest_audit={
+            "run_id": "audit-1", "verdict": "rejected", "reason": "specific finding",
+            "evidence": "AO evidence",
+            "rejected_indices": [0],
+            "findings": [{"index": 0, "summary": "central failure", "observed": "Slack transport missing"}],
+            "receipt_ref": "audit-1",
+        },
     )
 
     task = build_orchestrator_task(project)
@@ -345,6 +357,19 @@ def test_build_orchestrator_task_carries_trello_feedback_on_rework():
     assert "audit rejected missing recovery test" in task.task
     assert "add the missing recovery test" in task.task
     assert "Previous attempt changed the adapter" in task.task
+    assert "CURRENT INDEPENDENT AUDIT REJECTION" in task.task
+    assert "central failure" in task.task
+    assert "Slack transport missing" in task.task
+
+
+def test_audit_rework_without_structured_finding_fails_closed():
+    project = ProjectRecord(
+        name="Demo",
+        orchestrator_ready_task="Continue the current implementation",
+        extra_data={"returned_from_testing": True},
+    )
+    with pytest.raises(InvalidTaskError, match="no complete latest_audit receipt"):
+        build_orchestrator_task(project)
 
 
 def test_build_orchestrator_task_does_not_repeat_identical_prepared_task_and_next_step():
@@ -353,6 +378,11 @@ def test_build_orchestrator_task_does_not_repeat_identical_prepared_task_and_nex
         orchestrator_ready_task="Implement the current slice",
         next_step="Implement the current slice",
         extra_data={"returned_from_testing": True},
+        latest_audit={
+            "run_id": "audit-1", "verdict": "rejected", "reason": "specific finding",
+            "evidence": "",
+            "rejected_indices": [0], "findings": [], "receipt_ref": "audit-1",
+        },
     )
 
     task = build_orchestrator_task(project)
@@ -689,6 +719,7 @@ def test_accepted_audit_verdict_closes_previous_rejection_authoritatively():
         project,
         "accepted",
         evidence="independent audit accepted; tests passed; live evidence verified",
+        audit_run_id="run-test",
     )
 
     assert project.status == ProjectStatus.DONE

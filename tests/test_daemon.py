@@ -134,7 +134,7 @@ def test_run_tick_resumes_due_implementation_wait_before_testing():
 
     def audit_run_fn(project, provider):
         calls.append(("audit", project.name, provider))
-        return {"verdict": "accepted", "evidence": "audit passed"}
+        return {"verdict": "accepted", "audit_run_id": "run-test", "evidence": "audit passed"}
 
     outcome = run_tick(
         client,
@@ -168,7 +168,7 @@ def test_run_tick_promotes_completed_implementation_before_audit():
 
     def audit_run_fn(project, _provider):
         audit_phases.append(project.status)
-        return {"verdict": "accepted", "evidence": "audit passed"}
+        return {"verdict": "accepted", "audit_run_id": "run-test", "evidence": "audit passed"}
 
     outcome = run_tick(
         client,
@@ -206,7 +206,7 @@ def test_run_tick_promotes_complete_implementation_with_stale_return_marker():
 
     def audit_run_fn(project, _provider):
         audit_phases.append(project.status)
-        return {"verdict": "accepted", "evidence": "audit passed"}
+        return {"verdict": "accepted", "audit_run_id": "run-test", "evidence": "audit passed"}
 
     outcome = run_tick(
         client,
@@ -276,7 +276,7 @@ def test_run_tick_finalizes_before_promoting_completed_implementation():
     def audit_run_fn(audited_project, _provider):
         assert audited_project.status == ProjectStatus.TESTING
         assert audited_project.checkpoint == reconciled_checkpoint
-        return {"verdict": "accepted", "evidence": "audit passed"}
+        return {"verdict": "accepted", "audit_run_id": "run-test", "evidence": "audit passed"}
 
     outcome = run_tick(
         client,
@@ -327,7 +327,7 @@ def test_run_tick_blocks_promotion_when_finalization_fails():
 
     def audit_run_fn(*_args):
         audit_calls.append(True)
-        return {"verdict": "accepted", "evidence": "audit passed"}
+        return {"verdict": "accepted", "audit_run_id": "run-test", "evidence": "audit passed"}
 
     outcome = run_tick(
         client,
