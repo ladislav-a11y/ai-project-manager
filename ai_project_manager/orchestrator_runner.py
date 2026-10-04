@@ -1260,6 +1260,183 @@ def _read_outbox_result(outbox_dir: str, project_name: str, run_id: str) -> dict
     )
 
 
+_UNRECORDED_AUDIT_LIMIT_REASON = "audit evidence exceeds protected Trello feedback limit"
+_AO_REJECTED_AUDIT_ERROR = (
+    "independent audit rejected the controller-owned accepted/rejected gate; "
+    "refusing to repeat implementation iterations"
+)
+
+
+def _replay_unrecorded_rejected_audit(
+    project: ProjectRecord,
+    project_path: str,
+    outbox_dir: str,
+) -> Optional[dict]:
+    """Replay an exact AO rejection that PM failed to record due to receipt size.
+
+    This deliberately recognizes one known failure mode and requires the AO
+    outbox, PM checkpoint, and project checkout to agree. It never creates an
+    accepted verdict or guesses from a missing result.
+    """
+    if project.stop_reason != _UNRECORDED_AUDIT_LIMIT_REASON or project.latest_audit:
+        return None
+
+    checkpoint_items = (project.checkpoint or {}).get("audit_evidence")
+    if not isinstance(checkpoint_items, list) or not checkpoint_items:
+        return None
+    checkpoint_indices = set()
+    for item in checkpoint_items:
+        if not isinstance(item, dict) or not isinstance(item.get("index"), int):
+            return None
+        if item["index"] in checkpoint_indices or not isinstance(item.get("evidence"), dict):
+            return None
+        checkpoint_indices.add(item["index"])
+
+    outbox = Path(outbox_dir)
+    candidates = sorted(
+        outbox.glob("autonomous-*.json"),
+        key=lambda path: path.stat().st_mtime,
+        reverse=True,
+    )
+    for candidate in candidates:
+        try:
+            with candidate.open("r", encoding="utf-8") as handle:
+                payload = json.load(handle)
+        except (OSError, ValueError, json.JSONDecodeError):
+            continue
+        if not isinstance(payload, dict):
+            continue
+
+        run_id = payload.get("run_id")
+        if (
+            not isinstance(run_id, str)
+            or not run_id
+            or candidate.stem != f"autonomous-{run_id}"
+            or payload.get("status") != "blocked"
+            or payload.get("error") != _AO_REJECTED_AUDIT_ERROR
+            or not isinstance(payload.get("project"), str)
+        ):
+            continue
+        try:
+            if Path(payload["project"]).resolve() != Path(project_path).resolve():
+                continue
+        except OSError:
+            continue
+
+        audit_evidence = payload.get("audit_evidence")
+        ao_checkpoint = payload.get("checkpoint")
+        if (
+            not isinstance(audit_evidence, dict)
+            or not isinstance(ao_checkpoint, dict)
+        ):
+            continue
+        ao_checkpoint_evidence = ao_checkpoint.get("audit_evidence")
+        if isinstance(ao_checkpoint_evidence, dict):
+            checkpoint_matches_outbox = ao_checkpoint_evidence == audit_evidence
+        elif isinstance(ao_checkpoint_evidence, list):
+            checkpoint_map = {}
+            for item in ao_checkpoint_evidence:
+                if (
+                    not isinstance(item, dict)
+                    or not isinstance(item.get("index"), int)
+                    or not isinstance(item.get("evidence"), dict)
+                    or str(item["index"]) in checkpoint_map
+                ):
+                    checkpoint_map = {}
+                    break
+                checkpoint_map[str(item["index"])] = item["evidence"]
+            checkpoint_matches_outbox = bool(checkpoint_map) and checkpoint_map == audit_evidence
+        else:
+            checkpoint_matches_outbox = False
+        if not checkpoint_matches_outbox:
+            continue
+
+        # Trello deliberately stores a compact projection of the AO receipt in
+        # PM-DATA. Match either supported projection (100-char normal bound or
+        # 80-char near-limit fallback) exactly; comparing raw AO JSON to the
+        # compact card checkpoint would reject a valid persisted verdict.
+        from .trello_sync import _bound_diagnostic_text, _compact_audit_evidence
+
+        try:
+            source_items = [
+                {"index": int(index), "evidence": value}
+                for index, value in audit_evidence.items()
+                if str(index).isdigit() and isinstance(value, dict)
+            ]
+        except (TypeError, ValueError):
+            continue
+        if len(source_items) != len(audit_evidence) or {
+            item["index"] for item in source_items
+        } != checkpoint_indices:
+            continue
+        normal_projection = _compact_audit_evidence(source_items)
+        minimal_projection = []
+        for raw in source_items:
+            evidence = raw.get("evidence")
+            verification = evidence.get("verification") if isinstance(evidence, dict) else None
+            item = {"index": raw["index"]}
+            if isinstance(verification, dict):
+                item["evidence"] = {
+                    "verification": {
+                        key: _bound_diagnostic_text(str(verification[key]), 80)
+                        for key in ("kind", "result")
+                        if verification.get(key) is not None
+                    }
+                }
+            minimal_projection.append(item)
+        if checkpoint_items not in (normal_projection, minimal_projection):
+            continue
+
+        iterations = payload.get("iterations")
+        last_iteration = iterations[-1] if isinstance(iterations, list) and iterations else None
+        rejected_indices = (
+            last_iteration.get("audit_rejected_indices")
+            if isinstance(last_iteration, dict)
+            else None
+        )
+        if (
+            not isinstance(last_iteration, dict)
+            or last_iteration.get("audit_performed") is not True
+            or not isinstance(rejected_indices, list)
+            or not rejected_indices
+            or any(not isinstance(index, int) for index in rejected_indices)
+        ):
+            continue
+        rejected_indices = sorted(set(rejected_indices))
+        if any(
+            str(index) not in audit_evidence
+            or not isinstance(audit_evidence[str(index)], dict)
+            or audit_evidence[str(index)].get("accepted") is not False
+            for index in rejected_indices
+        ):
+            continue
+
+        details = [
+            str(audit_evidence[str(index)].get("verification", {}).get("result", ""))
+            for index in rejected_indices
+            if isinstance(audit_evidence[str(index)].get("verification"), dict)
+        ]
+        details = [detail.strip() for detail in details if detail.strip()]
+        reason = f"AO audit rejected DoD index(es) {rejected_indices}"
+        if details:
+            reason += ": " + "; ".join(details)
+        return {
+            "verdict": AUDIT_VERDICT_REJECTED,
+            "audit_run_id": run_id,
+            "reason": reason,
+            "evidence": json.dumps(audit_evidence, ensure_ascii=False, separators=(",", ":")),
+            "audit_evidence": audit_evidence,
+            "reject_target": _audit_reject_target(project, rejected_indices),
+            "rejected_indices": rejected_indices,
+            **{
+                key: payload[key]
+                for key in ("active_provider", "active_model", "model", "provider_sequence", "usage")
+                if key in payload
+            },
+        }
+    return None
+
+
 def _mark_limited_result(
     provider_registry: ProviderRegistry,
     provider: str,
@@ -2183,6 +2360,12 @@ def build_audit_run_fn(
                 f"configured repository path for {project.project_key!r} does not exist "
                 f"or is not a directory: {project_path}"
             )
+
+        replayed_audit = _replay_unrecorded_rejected_audit(
+            project, project_path, abs_outbox_dir
+        )
+        if replayed_audit is not None:
+            return replayed_audit
 
         initial_head = get_git_head(project_path, run_git=git_cmd)
         run_id = run_id_fn()

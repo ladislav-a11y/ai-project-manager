@@ -1066,6 +1066,145 @@ def test_audit_and_implementation_leave_model_selection_to_ao(tmp_path):
     assert "--provider-models" not in audit_seen["command"]
 
 
+def test_audit_replays_exact_ao_rejection_when_pm_receipt_was_too_long(tmp_path):
+    from ai_project_manager.trello_sync import _bound_diagnostic_text
+
+    checkout = tmp_path / "bazar-scout"
+    checkout.mkdir()
+    evidence = {
+        str(index): {
+                "accepted": False,
+                "method": "runtime verification",
+                "evidence": "backup verification could not run",
+                "verification": {
+                    "kind": "runtime verification",
+                    "result": (
+                        f"REJECTED: backup/restore evidence missing for item {index}; "
+                        "configured interpreter path and recovery test could not be verified "
+                        "in the local Windows checkout"
+                    ),
+            },
+        }
+        for index in range(3)
+    }
+    run_id = "persisted-audit-run"
+    checkpoint_items = [
+        {
+            "index": int(index),
+            "evidence": {
+                "verification": {
+                    "kind": item["method"],
+                    "result": _bound_diagnostic_text(item["verification"]["result"], 80),
+                }
+            },
+        }
+        for index, item in evidence.items()
+    ]
+    project = ProjectRecord(
+        name="Bazar Scout production setup",
+        project_key="Bazar Scout",
+        status=ProjectStatus.TESTING,
+        main_task="Verify production setup",
+        stop_reason="audit evidence exceeds protected Trello feedback limit",
+        latest_audit=None,
+        checkpoint={"audit_evidence": checkpoint_items},
+        dod=[DoDItem(text=f"item {index}", checked=True) for index in range(3)],
+    )
+    write_outbox_result(
+        tmp_path / "outbox",
+        project.name,
+        {
+            "project": str(checkout),
+            "status": "blocked",
+            "error": (
+                "independent audit rejected the controller-owned accepted/rejected gate; "
+                "refusing to repeat implementation iterations"
+            ),
+            "audit_evidence": evidence,
+            "checkpoint": {
+                "audit_evidence": [
+                    {"index": int(index), "evidence": item}
+                    for index, item in evidence.items()
+                ]
+            },
+            "iterations": [{
+                "audit_performed": True,
+                "audit_rejected_indices": [0, 1, 2],
+            }],
+            "active_provider": "codex",
+            "active_model": "gpt-5.6-codex",
+        },
+        run_id=run_id,
+    )
+
+    def unexpected_subprocess(_command):
+        pytest.fail("matching AO verdict should be replayed without another provider call")
+
+    result = build_audit_run_fn(
+        ProviderRegistry(),
+        command=["ai-orchestrator"],
+        project_paths={"Bazar Scout": str(checkout)},
+        outbox_dir=str(tmp_path / "outbox"),
+        subprocess_run=unexpected_subprocess,
+    )(project, "provider-broker")
+
+    assert result["verdict"] == "rejected"
+    assert result["audit_run_id"] == run_id
+    assert result["rejected_indices"] == [0, 1, 2]
+    assert result["reject_target"] == "in_progress"
+    assert result["active_provider"] == "codex"
+    assert "backup/restore evidence missing" in result["reason"]
+
+
+def test_audit_replay_fails_closed_when_checkpoint_does_not_match_ao(tmp_path):
+    checkout = tmp_path / "bazar-scout"
+    checkout.mkdir()
+    ao_evidence = {"0": {"accepted": False, "verification": {"result": "REJECTED"}}}
+    project = ProjectRecord(
+        name="Bazar Scout production setup",
+        project_key="Bazar Scout",
+        status=ProjectStatus.TESTING,
+        main_task="Verify production setup",
+        stop_reason="audit evidence exceeds protected Trello feedback limit",
+        checkpoint={"audit_evidence": [{"index": 0, "evidence": {"accepted": True}}]},
+        dod=[DoDItem(text="item", checked=True)],
+    )
+    write_outbox_result(
+        tmp_path / "outbox",
+        project.name,
+        {
+            "project": str(checkout),
+            "status": "blocked",
+            "error": (
+                "independent audit rejected the controller-owned accepted/rejected gate; "
+                "refusing to repeat implementation iterations"
+            ),
+            "audit_evidence": ao_evidence,
+            "checkpoint": {"audit_evidence": ao_evidence},
+            "iterations": [{"audit_performed": True, "audit_rejected_indices": [0]}],
+        },
+        run_id="mismatched-audit-run",
+    )
+    calls = []
+
+    def fresh_audit(command):
+        calls.append(command)
+        return completed(stderr="fresh AO dispatch", returncode=1)
+
+    audit_run_fn = build_audit_run_fn(
+        ProviderRegistry(),
+        command=["ai-orchestrator"],
+        project_paths={"Bazar Scout": str(checkout)},
+        outbox_dir=str(tmp_path / "outbox"),
+        subprocess_run=fresh_audit,
+        run_id_fn=lambda: "new-run",
+    )
+
+    with pytest.raises(OrchestratorProcessError, match="no matching outbox"):
+        audit_run_fn(project, "provider-broker")
+    assert len(calls) == 1
+
+
 def test_audit_capability_block_is_returned_without_fabricating_verdict(tmp_path):
     registry = ProviderRegistry()
     registry.mark_available("groq")
