@@ -684,7 +684,9 @@ def _build_latest_audit(
     evidence_text = (evidence or "").strip()
     if len(reason_text) > 6000:
         raise AuditVerdictError("audit reason exceeds protected Trello feedback limit")
-    if len(evidence_text) > 2500:
+    # Keep this aligned with trello_sync.MAX_TRELLO_FEEDBACK_CHARS: audit
+    # evidence is protected feedback and must fit in the bounded card payload.
+    if len(evidence_text) > 3500:
         raise AuditVerdictError("audit evidence exceeds protected Trello feedback limit")
     indices = rejected_indices or []
     if any(isinstance(index, bool) or not isinstance(index, int) or index < 0 for index in indices):

@@ -61,6 +61,42 @@ def test_rejected_implementation_is_reopened_for_actual_rework():
     )
 
 
+def test_rejected_audit_preserves_evidence_within_trello_feedback_budget():
+    project = ProjectRecord(
+        name="Demo",
+        status=ProjectStatus.TESTING,
+        dod=[DoDItem(text="implementation", checked=True)],
+    )
+    evidence = "audit evidence " * 179  # 2,684 characters; real P5.09 payload is 2,677.
+    evidence = evidence[:2684]
+
+    apply_audit_verdict(
+        project,
+        "rejected",
+        reason="the public Windows launcher cannot start without the project venv",
+        evidence=evidence,
+        rejected_indices=[0],
+        audit_run_id="run-large-evidence",
+        audit_details={
+            "0": {
+                "summary": "The launcher requires the missing project venv.",
+                "observed": "run-server.ps1 exited 1 because .venv\\Scripts\\python.exe was absent.",
+            }
+        },
+    )
+
+    assert project.status == ProjectStatus.IN_PROGRESS
+    assert project.latest_audit["evidence"] == evidence
+    assert project.latest_audit["rejected_indices"] == [0]
+    assert project.latest_audit["findings"] == [
+        {
+            "index": 0,
+            "summary": "The launcher requires the missing project venv.",
+            "observed": "run-server.ps1 exited 1 because .venv\\Scripts\\python.exe was absent.",
+        }
+    ]
+
+
 def test_rejected_audit_only_item_does_not_reopen_implementation():
     project = ProjectRecord(
         name="Demo",
