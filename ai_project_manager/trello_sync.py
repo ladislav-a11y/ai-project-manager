@@ -924,8 +924,10 @@ def _bound_contract_history(data: dict) -> dict:
     # a large checkpoint. Trim diagnostic history only. Task text and the
     # machine contract are never silently shortened because doing so could
     # change the work the agent receives or invalidate its checkpoint.
-    # History can be reduced, but the current audit receipt is a protected
-    # contract field and is deliberately absent from this compaction list.
+    # History can be reduced. The current audit receipt remains protected by
+    # its verdict, run ID, rejected indices, reason, and per-item findings;
+    # redundant prose evidence may be reduced to an explicit AO outbox pointer
+    # only when necessary to fit Trello's description limit.
     prose_fields = ("open_feedback", "last_output", "stop_reason", "blocked_by", "human_notified_reason")
     rendered_length = len(_render_data_block(bounded))
     while rendered_length > MAX_TRELLO_DESC_CHARS:
@@ -1042,6 +1044,65 @@ def _bound_contract_history(data: dict) -> dict:
                     rendered_length = new_rendered_length
                     continue
                 bounded["audit_capability_failure"] = capability_failure
+
+            latest_audit = bounded.get("latest_audit")
+            if isinstance(latest_audit, dict):
+                compact_receipt = dict(latest_audit)
+                run_id = str(
+                    compact_receipt.get("receipt_ref")
+                    or compact_receipt.get("run_id")
+                    or "unknown"
+                )
+                evidence = compact_receipt.get("evidence")
+                if isinstance(evidence, str) and len(evidence) > 256:
+                    compact_receipt["evidence"] = (
+                        f"[Úplný AO důkaz je v outboxu; run_id={run_id}]"
+                    )
+
+                findings = compact_receipt.get("findings")
+                if isinstance(findings, list):
+                    limits = (
+                        (500, 320),
+                        (240, 160),
+                        (120, 80),
+                    )
+                    summary_limit, observed_limit = limits[-1]
+                    for candidate_summary_limit, candidate_observed_limit in limits:
+                        if any(
+                            isinstance(finding, dict)
+                            and (
+                                len(str(finding.get("summary") or "")) > candidate_summary_limit
+                                or len(str(finding.get("observed") or "")) > candidate_observed_limit
+                            )
+                            for finding in findings
+                        ):
+                            summary_limit, observed_limit = (
+                                candidate_summary_limit,
+                                candidate_observed_limit,
+                            )
+                            break
+                    compact_findings = []
+                    for finding in findings:
+                        if not isinstance(finding, dict):
+                            continue
+                        compact_finding = dict(finding)
+                        for field, limit in (
+                            ("summary", summary_limit),
+                            ("observed", observed_limit),
+                        ):
+                            value = compact_finding.get(field)
+                            if isinstance(value, str) and len(value) > limit:
+                                compact_finding[field] = _bound_diagnostic_text(value, limit)
+                        compact_findings.append(compact_finding)
+                    compact_receipt["findings"] = compact_findings
+
+                if compact_receipt != latest_audit:
+                    bounded["latest_audit"] = compact_receipt
+                    new_rendered_length = len(_render_data_block(bounded))
+                    if new_rendered_length < rendered_length:
+                        rendered_length = new_rendered_length
+                        continue
+                    bounded["latest_audit"] = latest_audit
 
             # This is an unusually large task/DoD/checkpoint. Keep the
             # contract intact and fail closed rather than sending a payload

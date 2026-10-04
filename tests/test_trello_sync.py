@@ -61,6 +61,49 @@ def test_history_compaction_never_changes_the_current_audit_receipt():
     assert bounded["open_feedback"][-1] == "new user note"
 
 
+def test_history_compaction_preserves_audit_verdict_when_pm_data_is_at_limit():
+    receipt = {
+        "run_id": "audit-overflow-42",
+        "verdict": "rejected",
+        "reason": "Backup and restore were not verified.",
+        "evidence": "provider evidence " + ("x" * 3400),
+        "rejected_indices": [0, 1, 2],
+        "findings": [
+            {
+                "index": index,
+                "summary": f"Finding {index}: required backup failed.",
+                "observed": (
+                    "The backup command could not use the configured interpreter; "
+                    "the archive was not written and restore was not tested. "
+                    + ("detail " * 50)
+                    + " .venv\\Scripts\\python.exe was missing."
+                ),
+            }
+            for index in range(3)
+        ],
+        "receipt_ref": "audit-overflow-42",
+    }
+    bounded = trello_sync._bound_contract_history({
+        "latest_audit": receipt,
+        "inbox_preparation": {"source_context": "s" * 10500},
+        "audit_capability_failure": {
+            "reason": "a previous audit capability error",
+            "evidence": "old diagnostic " + ("d" * 1400),
+        },
+    })
+
+    compacted = bounded["latest_audit"]
+    assert len(trello_sync._render_data_block(bounded)) <= 14000
+    assert compacted["run_id"] == "audit-overflow-42"
+    assert compacted["receipt_ref"] == "audit-overflow-42"
+    assert compacted["verdict"] == "rejected"
+    assert compacted["reason"] == receipt["reason"]
+    assert compacted["rejected_indices"] == [0, 1, 2]
+    assert "audit-overflow-42" in compacted["evidence"]
+    assert [item["index"] for item in compacted["findings"]] == [0, 1, 2]
+    assert all("missing." in item["observed"] for item in compacted["findings"])
+
+
 def test_card_update_drops_provider_history_and_rendered_slack_from_contract():
     project = ProjectRecord(
         name="P2 — compact contract",
