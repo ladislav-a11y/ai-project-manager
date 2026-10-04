@@ -988,15 +988,14 @@ def _bound_contract_history(data: dict) -> dict:
                     checkpoint = dict(bounded.get("checkpoint") or {})
                     checkpoint["audit_evidence"] = minimal_audit
                     bounded["checkpoint"] = checkpoint
-                    changed = True
-            if changed:
-                new_rendered_length = len(_render_data_block(bounded))
-                if new_rendered_length >= rendered_length:
-                    raise CardContractError(
-                        "refusing Trello write: diagnostic truncation did not reduce PM-DATA"
-                    )
-                rendered_length = new_rendered_length
-                continue
+                    new_rendered_length = len(_render_data_block(bounded))
+                    if new_rendered_length < rendered_length:
+                        rendered_length = new_rendered_length
+                        continue
+                    bounded["checkpoint"] = {
+                        **checkpoint,
+                        "audit_evidence": audit,
+                    }
 
             statuses = bounded.get("provider_statuses")
             if isinstance(statuses, dict):
@@ -1015,20 +1014,42 @@ def _bound_contract_history(data: dict) -> dict:
                     changed = True
             if changed:
                 new_rendered_length = len(_render_data_block(bounded))
-                if new_rendered_length >= rendered_length:
-                    raise CardContractError(
-                        "refusing Trello write: diagnostic truncation did not reduce PM-DATA"
+                if new_rendered_length < rendered_length:
+                    rendered_length = new_rendered_length
+                    continue
+                bounded["provider_statuses"] = statuses
+                changed = False
+
+            # A previous capability-gate failure is diagnostic history. Keep
+            # its cause in a short form when a later audit receipt pushes the
+            # card over the Trello limit; it must not block persistence of the
+            # current audit result.
+            capability_failure = bounded.get("audit_capability_failure")
+            if isinstance(capability_failure, dict):
+                compact_failure = dict(capability_failure)
+                if compact_failure.get("reason") is not None:
+                    compact_failure["reason"] = _bound_diagnostic_text(
+                        str(compact_failure["reason"]), 160
                     )
-                rendered_length = new_rendered_length
-                continue
+                bounded["audit_capability_failure"] = compact_failure
+                new_rendered_length = len(_render_data_block(bounded))
+                if new_rendered_length < rendered_length:
+                    rendered_length = new_rendered_length
+                    continue
+                bounded.pop("audit_capability_failure", None)
+                new_rendered_length = len(_render_data_block(bounded))
+                if new_rendered_length < rendered_length:
+                    rendered_length = new_rendered_length
+                    continue
+                bounded["audit_capability_failure"] = capability_failure
 
             # This is an unusually large task/DoD/checkpoint. Keep the
             # contract intact and fail closed rather than sending a payload
             # that Trello may truncate or reject.
-                raise CardContractError(
-                    "refusing Trello write: PM-DATA exceeds the safe description "
-                    f"limit of {MAX_TRELLO_DESC_CHARS} characters after diagnostic truncation"
-                )
+            raise CardContractError(
+                "refusing Trello write: PM-DATA exceeds the safe description "
+                f"limit of {MAX_TRELLO_DESC_CHARS} characters after diagnostic truncation"
+            )
         new_rendered_length = len(_render_data_block(bounded))
         if new_rendered_length >= rendered_length:
             raise CardContractError(

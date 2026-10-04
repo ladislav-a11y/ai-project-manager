@@ -239,6 +239,32 @@ def test_contract_history_skips_short_diagnostics_before_compacting_longer_reaso
     assert "[zkráceno]" in bounded["stop_reason"]
 
 
+def test_oversized_audit_write_compacts_old_capability_failure(monkeypatch):
+    monkeypatch.setattr(trello_sync, "MAX_TRELLO_DESC_CHARS", 1200)
+    audit_receipt = [{
+        "index": 0,
+        "accepted": True,
+        "evidence": {"verification": {"kind": "runtime", "result": "accepted"}},
+    }]
+    data = {
+        "main_task": "preserve this task " + ("m" * 620),
+        "checkpoint": {"audit_evidence": audit_receipt},
+        "provider_statuses": {"codex": {"state": "AVAILABLE", "reason": "completed"}},
+        "audit_capability_failure": {
+            "reason": "previous auditor capability gate unavailable " + ("d" * 1100),
+            "attempts": 5,
+        },
+    }
+
+    bounded = trello_sync._bound_contract_history(data)
+
+    assert len(trello_sync._render_data_block(bounded)) <= 1200
+    assert bounded["main_task"] == data["main_task"]
+    assert bounded["checkpoint"]["audit_evidence"] == audit_receipt
+    failure = bounded.get("audit_capability_failure")
+    assert failure is None or len(failure["reason"]) <= 160
+
+
 def test_large_audit_evidence_is_compacted_without_losing_verdict_identity():
     data = {
         "main_task": "audit",
