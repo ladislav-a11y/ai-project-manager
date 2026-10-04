@@ -31,6 +31,7 @@ AUDIT_MODE = "audit"
 AUDIT_VERDICT_ACCEPTED = "accepted"
 AUDIT_VERDICT_REJECTED = "rejected"
 _VALID_AUDIT_VERDICTS = {AUDIT_VERDICT_ACCEPTED, AUDIT_VERDICT_REJECTED}
+_AUDIT_EVIDENCE_TEXT_LIMIT = 3500
 
 # Where a rejected audit may send the card: Pracuje se (more implementation
 # work continues), Připraveno (start the next attempt fresh), or Testování
@@ -684,10 +685,15 @@ def _build_latest_audit(
     evidence_text = (evidence or "").strip()
     if len(reason_text) > 6000:
         raise AuditVerdictError("audit reason exceeds protected Trello feedback limit")
-    # Keep this aligned with trello_sync.MAX_TRELLO_FEEDBACK_CHARS: audit
-    # evidence is protected feedback and must fit in the bounded card payload.
-    if len(evidence_text) > 3500:
-        raise AuditVerdictError("audit evidence exceeds protected Trello feedback limit")
+    # Keep this aligned with trello_sync.MAX_TRELLO_FEEDBACK_CHARS. Long prose
+    # evidence is explicitly shortened with a durable AO receipt reference;
+    # structured findings below retain the per-DoD details and verdict.
+    if len(evidence_text) > _AUDIT_EVIDENCE_TEXT_LIMIT:
+        marker = f"\n[část textu zkrácena; úplný AO důkaz: {audit_run_id}]\n"
+        available = _AUDIT_EVIDENCE_TEXT_LIMIT - len(marker)
+        head = (available + 1) // 2
+        tail = available - head
+        evidence_text = evidence_text[:head] + marker + evidence_text[-tail:]
     indices = rejected_indices or []
     if any(isinstance(index, bool) or not isinstance(index, int) or index < 0 for index in indices):
         raise AuditVerdictError("audit rejected_indices must be non-negative integers")

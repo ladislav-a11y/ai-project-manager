@@ -97,6 +97,44 @@ def test_rejected_audit_preserves_evidence_within_trello_feedback_budget():
     ]
 
 
+def test_rejected_audit_compacts_long_evidence_with_receipt_reference():
+    project = ProjectRecord(
+        name="Demo",
+        status=ProjectStatus.TESTING,
+        dod=[DoDItem(text="backup and restore", checked=True)],
+    )
+    evidence = "A" * 1800 + "middle finding" + "B" * 2200
+    details = {
+        "0": {
+            "summary": "The backup script requires the absent project venv.",
+            "observed": "backup.ps1 exited before writing the archive.",
+        }
+    }
+
+    apply_audit_verdict(
+        project,
+        "rejected",
+        reason="The required backup and restore could not be verified.",
+        evidence=evidence,
+        rejected_indices=[0],
+        audit_run_id="run-long-evidence",
+        audit_details=details,
+    )
+
+    receipt = project.latest_audit
+    assert receipt["verdict"] == "rejected"
+    assert receipt["receipt_ref"] == "run-long-evidence"
+    assert len(receipt["evidence"]) <= 3500
+    assert "[část textu zkrácena; úplný AO důkaz: run-long-evidence]" in receipt["evidence"]
+    assert receipt["evidence"].startswith(evidence[:100])
+    assert receipt["evidence"].endswith(evidence[-100:])
+    assert receipt["findings"] == [{
+        "index": 0,
+        "summary": "The backup script requires the absent project venv.",
+        "observed": "backup.ps1 exited before writing the archive.",
+    }]
+
+
 def test_rejected_audit_only_item_does_not_reopen_implementation():
     project = ProjectRecord(
         name="Demo",
