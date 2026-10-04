@@ -55,7 +55,7 @@ from .models import ProjectRecord, ProjectStatus
 
 DEFAULT_MAX_ATTEMPTS = 5
 _BASE_BACKOFF = timedelta(minutes=10)
-_MAX_BACKOFF = timedelta(hours=6)
+_MAX_BACKOFF = timedelta(minutes=15)
 
 
 class BlockCause(str, Enum):
@@ -280,6 +280,30 @@ def _is_due(project: ProjectRecord, now: datetime) -> bool:
     return now >= review_at
 
 
+def _clamp_retryable_review_at(
+    project: ProjectRecord,
+    now: datetime,
+    backoff: Callable[[int], timedelta],
+    attempt: int,
+) -> None:
+    """Make one immediate check when an old timer exceeds the new retry cap."""
+    if not project.review_at:
+        return
+    try:
+        review_at = datetime.fromisoformat(project.review_at)
+    except (TypeError, ValueError):
+        return
+    if review_at.tzinfo is None:
+        review_at = review_at.replace(tzinfo=timezone.utc)
+    current_time = now.replace(tzinfo=timezone.utc) if now.tzinfo is None else now.astimezone(timezone.utc)
+    retry_deadline = current_time + backoff(attempt)
+    if review_at.astimezone(timezone.utc) > retry_deadline:
+        # This path persists through the normal requeue transition in the
+        # same tick. Set it due now for one verification; if the broker still
+        # has no usable provider, the next failure schedules the bounded cap.
+        project.review_at = current_time.isoformat()
+
+
 def _classify_recoverable_cause(project: ProjectRecord, reason_text: str) -> Optional[BlockCause]:
     real_main = not _is_placeholder(project.main_task)
     real_next = not _is_placeholder(project.next_step)
@@ -428,6 +452,21 @@ def recover_project(
         )
     )
     attempts_exhausted = project.recovery_attempts >= max_attempts
+    blocked_reason = " ".join(
+        part for part in (project.blocked_by, project.stop_reason) if part
+    )
+    retryable_block = (
+        capability_block
+        or bool(_PROVIDER_PROTOCOL_ERROR_PATTERNS.search(blocked_reason))
+        or bool(_TRANSIENT_EXTERNAL_PATTERNS.search(blocked_reason))
+    )
+    if attempts_exhausted and retryable_block:
+        # Old cards may still carry a several-hour review_at from the previous
+        # cap. Clamp it on read so the live retry schedule takes effect without
+        # waiting for that stale timestamp to expire.
+        _clamp_retryable_review_at(
+            project, now, backoff, max_attempts + 1
+        )
     if not _is_due(project, now) and (not capability_block or attempts_exhausted):
         return RecoveryOutcome(
             project_name=project.name, trello_card_id=project.trello_card_id,

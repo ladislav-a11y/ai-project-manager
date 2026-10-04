@@ -617,6 +617,23 @@ def test_exhausted_capability_block_honors_review_interval():
     assert project.review_at == (NOW + retry_delay * 2).isoformat()
 
 
+def test_exhausted_capability_block_clamps_legacy_six_hour_review_at():
+    project = _blocked(
+        blocked_by="audit capability unavailable: no provider has required capabilities",
+        recovery_attempts=DEFAULT_MAX_ATTEMPTS,
+        review_at=(NOW + timedelta(hours=6)).isoformat(),
+        extra_data={"capability_blocked_from_status": ProjectStatus.TESTING.value},
+    )
+
+    recovered = recover_project(project, NOW)
+
+    retry_delay = default_backoff(DEFAULT_MAX_ATTEMPTS + 1)
+    assert retry_delay == timedelta(minutes=15)
+    assert recovered.action == "requeued"
+    assert project.review_at == (NOW + retry_delay).isoformat()
+    assert project.status == ProjectStatus.TESTING
+
+
 def test_default_backoff_grows_and_is_capped():
     small = default_backoff(1)
     bigger = default_backoff(3)
@@ -624,7 +641,7 @@ def test_default_backoff_grows_and_is_capped():
 
     assert small < bigger
     assert capped == default_backoff(100)
-    assert capped <= timedelta(hours=6)
+    assert capped == timedelta(minutes=15)
 
 
 # ---- scan_for_recovery over a mixed project list ------------------------
