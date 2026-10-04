@@ -751,11 +751,12 @@ def run_once(
             # Only reset the unattended-recovery attempt counter (see
             # recovery.py) once the project is actually no longer blocked.
             # A run that immediately reports "blocked" again for the same
-            # underlying reason must NOT wipe the counter - that would
-            # silently defeat recovery's max-attempts loop guard by
-            # letting an unfixable block requeue forever, once per tick.
+            # underlying reason must NOT wipe the counter - the recovery
+            # pass uses it to slow repeated provider/transient retries after
+            # the fast retry budget is spent.
             if not project.is_blocked:
                 project.recovery_attempts = 0
+                project.review_at = None
             actual_provider = result.get("active_provider") or provider
             logger.info(
                 "run result project=%r provider=%s selected_provider=%s status=%s stop_reason=%s retry_after=%s",

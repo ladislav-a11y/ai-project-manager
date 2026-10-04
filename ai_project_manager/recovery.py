@@ -24,9 +24,9 @@ every blocked card a periodic, rate-limited second look that:
      ``blocked_by`` reason a human can act on;
   5. is rate-limited by ``review_at`` (an exponential backoff keyed off
      ``recovery_attempts``) so a card that keeps re-blocking is not
-     rescanned every tick, and is permanently forced to human-required
-     once ``max_attempts`` auto-recovery cycles have been spent without
-     the project staying unblocked - this is what bounds the loop.
+     rescanned every tick. After ``max_attempts`` fast retries, recognized
+     provider/transient blocks continue at the capped backoff interval;
+     human-required and unknown causes still stop for human action.
 
 ``recovery_attempts`` only increments when a repair actually requeues the
 project; it is reset to 0 by the caller once a requeued project makes
@@ -96,7 +96,7 @@ _HUMAN_REQUIRED_PATTERNS = re.compile(
     r"credential|secret|api[ _-]?key|token expired|manuáln|schválen|"
     r"rozhodnut[ií] člověka|human (?:input|review|approval|decision)|"
     r"potřebuje? (?:člověka|schválení)|legal|security review|"
-    r"přístup(?:ová)? práva|permission denied|access denied|repeated failure",
+    r"přístup(?:ová)? práva|permission denied|access denied",
     re.IGNORECASE,
 )
 
@@ -353,10 +353,6 @@ _REPAIR_FAILURE_STEPS = {
     ),
 }
 _DEFAULT_REPAIR_FAILURE_STEP = "Proveďte ruční kontrolu karty a rozhodněte další krok."
-_EXHAUSTED_ATTEMPTS_STEP = (
-    "Zkontrolujte příčinu poslední blokace na kartě, opravte ji a ručně přesuňte kartu zpět "
-    "do 'Pracuje se' (nebo vymažte pole blocked_by), aby mohlo pokračovat automatické zpracování."
-)
 _HUMAN_PATTERN_STEP = (
     "Doplňte chybějící přístupové údaje/schválení popsané v důvodu a poté kartu ručně "
     "odblokujte (přesuňte ji mimo Blocked)."
@@ -423,15 +419,16 @@ def recover_project(
         return None
     # A capability block is produced by the orchestrator's current adapter
     # contract, not by a human dependency. Recheck it immediately after a
-    # capability repair so a stale review_at from the old contract cannot
-    # strand the card until the normal backoff expires. Other block causes
-    # retain their rate limit.
+    # capability repair during the bounded fast-retry phase. Once those
+    # attempts are spent, honor review_at so a persistent loop does not
+    # dispatch a provider/audit attempt on every tick.
     capability_block = bool(
         _CAPABILITY_UNAVAILABLE_PATTERNS.search(
             " ".join(part for part in (project.blocked_by, project.stop_reason) if part)
         )
     )
-    if not _is_due(project, now) and not capability_block:
+    attempts_exhausted = project.recovery_attempts >= max_attempts
+    if not _is_due(project, now) and (not capability_block or attempts_exhausted):
         return RecoveryOutcome(
             project_name=project.name, trello_card_id=project.trello_card_id,
             cause=None, action="deferred",
@@ -471,16 +468,6 @@ def recover_project(
             ),
         )
 
-    # The loop guard: once this many auto-recovery cycles have been spent
-    # without the project staying unblocked, stop attempting more and
-    # force a human-required state - never retry forever.
-    if project.recovery_attempts >= max_attempts:
-        reason = (
-            f"automatic recovery exhausted after {project.recovery_attempts} attempt(s) without "
-            f"staying unblocked; last known block: {reason_text or 'unknown'} — needs a human"
-        )
-        return _mark_human_required(project, now, backoff, BlockCause.HUMAN_REQUIRED, reason, step=_EXHAUSTED_ATTEMPTS_STEP)
-
     if reason_text and _HUMAN_REQUIRED_PATTERNS.search(reason_text):
         # Show the short original reason as-is - no prefix/wrapper. The
         # "why" (credentials/approval needed) is already conveyed by
@@ -502,7 +489,14 @@ def recover_project(
         step = _REPAIR_FAILURE_STEPS.get(cause, _DEFAULT_REPAIR_FAILURE_STEP)
         return _mark_human_required(project, now, backoff, cause, note, step=step)
 
-    project.recovery_attempts += 1
+    if project.recovery_attempts < max_attempts:
+        project.recovery_attempts += 1
+        project.review_at = None
+    else:
+        # Keep retrying known provider/transient failures at the capped
+        # interval. The actual provider choice and availability check stay
+        # with the AO broker on the next dispatched run.
+        project.review_at = (now + backoff(project.recovery_attempts + 1)).isoformat()
     project.blocked_by = None
     # Recovery only makes the card eligible again. Preserve the audit phase
     # for a capability block; returning such a card to Připraveno would
@@ -518,7 +512,6 @@ def recover_project(
         project.extra_data.pop("capability_blocked_from_status", None)
     project.transition_to(resume_status)
     project.stop_reason = f"auto-recovery ({cause.value}): {note}"
-    project.review_at = None
     return RecoveryOutcome(
         project_name=project.name, trello_card_id=project.trello_card_id,
         cause=cause, action="requeued", reason=project.stop_reason,

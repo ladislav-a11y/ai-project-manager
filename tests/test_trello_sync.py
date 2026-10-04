@@ -1477,13 +1477,13 @@ def test_recovery_attempts_and_review_at_round_trip_through_trello():
     """Unattended blocked-task recovery (recovery.py) must not lose its
     own state across a Trello sync - a fresh process re-reading the card
     needs the exact same attempt count and backoff deadline to keep the
-    max-attempts loop guard working across restarts."""
+    bounded retry interval consistent across restarts."""
     client = InMemoryTrelloClient()
     project = ProjectRecord(
         name="Widget",
         priority=2,
         status=ProjectStatus.BLOCKED,
-        blocked_by="automatic recovery exhausted after 3 attempt(s)",
+        blocked_by="connection reset while calling the provider",
         recovery_attempts=3,
         review_at="2026-02-01T00:00:00+00:00",
     )

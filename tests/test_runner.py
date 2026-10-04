@@ -421,8 +421,7 @@ def test_run_once_resets_recovery_attempts_once_project_is_no_longer_blocked():
 def test_run_once_does_not_reset_recovery_attempts_when_run_immediately_re_blocks():
     """A run that reports "blocked" again for the same underlying reason
     must not wipe the unattended-recovery attempt counter (recovery.py) -
-    doing so would let an unfixable block requeue forever, once per tick,
-    defeating recovery's max-attempts loop guard."""
+    doing so would reset the bounded periodic retry interval."""
     project = ProjectRecord(
         name="Demo", priority=3, status=ProjectStatus.IN_PROGRESS, recovery_attempts=3,
     )

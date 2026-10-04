@@ -561,29 +561,60 @@ def test_recover_project_self_heals_legacy_corrupted_blocked_by_on_first_tick():
 # ---- no infinite retry loop ---------------------------------------------
 
 
-def test_max_attempts_is_enforced_and_never_exceeded():
+def test_exhausted_provider_retries_continue_at_bounded_interval():
     project = _blocked(blocked_by="connection reset while calling the provider")
+    project.recovery_attempts = DEFAULT_MAX_ATTEMPTS
     now = NOW
 
-    seen_actions = []
-    for _ in range(DEFAULT_MAX_ATTEMPTS + 5):
-        outcome = recover_project(project, now)
-        seen_actions.append(outcome.action)
-        # Simulate the project immediately re-blocking with the same
-        # transient signature on the very next tick (worst case for a
-        # naive implementation that would otherwise retry forever).
-        if outcome.action == "requeued":
-            project.status = ProjectStatus.BLOCKED
-            project.blocked_by = "connection reset while calling the provider"
-        now = now + timedelta(hours=24)  # always past any backoff
-
+    outcome = recover_project(project, now)
+    assert outcome.action == "requeued"
     assert project.recovery_attempts <= DEFAULT_MAX_ATTEMPTS
-    # Once exhausted, it must permanently stop requeuing and stay human_required.
-    assert seen_actions[-1] == "human_required"
-    assert seen_actions.count("requeued") <= DEFAULT_MAX_ATTEMPTS
-    final_outcome = recover_project(project, now + timedelta(days=365))
-    assert final_outcome.action == "human_required"
-    assert "exhausted" in final_outcome.reason
+    retry_delay = default_backoff(DEFAULT_MAX_ATTEMPTS + 1)
+    assert project.review_at == (NOW + retry_delay).isoformat()
+
+    # Simulate the AO broker finding no usable provider on that retry. The
+    # card remains blocked and PM waits until the scheduled review time.
+    project.status = ProjectStatus.BLOCKED
+    project.blocked_by = "connection reset while calling the provider"
+    deferred = recover_project(project, now + retry_delay - timedelta(minutes=1))
+    assert deferred.action == "deferred"
+    assert project.status == ProjectStatus.BLOCKED
+
+    retried = recover_project(project, now + retry_delay)
+    assert retried.action == "requeued"
+    assert project.recovery_attempts == DEFAULT_MAX_ATTEMPTS
+    assert project.review_at == (NOW + retry_delay * 2).isoformat()
+
+
+def test_repeated_provider_failure_wrapper_remains_automatically_recoverable():
+    project = _blocked(
+        blocked_by="repeated failure: rate_limit_exceeded, tokens per minute",
+        recovery_attempts=DEFAULT_MAX_ATTEMPTS,
+    )
+
+    outcome = recover_project(project, NOW)
+
+    assert outcome.action == "requeued"
+    assert outcome.cause == BlockCause.PROVIDER_ERROR_RESOLVED
+    assert project.review_at == (NOW + default_backoff(DEFAULT_MAX_ATTEMPTS + 1)).isoformat()
+
+
+def test_exhausted_capability_block_honors_review_interval():
+    project = _blocked(
+        blocked_by="audit capability unavailable: no provider has required capabilities",
+        recovery_attempts=DEFAULT_MAX_ATTEMPTS,
+        review_at=(NOW + default_backoff(DEFAULT_MAX_ATTEMPTS + 1)).isoformat(),
+    )
+
+    deferred = recover_project(project, NOW)
+    assert deferred.action == "deferred"
+    assert project.status == ProjectStatus.BLOCKED
+
+    retry_delay = default_backoff(DEFAULT_MAX_ATTEMPTS + 1)
+    due = recover_project(project, NOW + retry_delay)
+    assert due.action == "requeued"
+    assert due.cause == BlockCause.CAPABILITY_UNAVAILABLE
+    assert project.review_at == (NOW + retry_delay * 2).isoformat()
 
 
 def test_default_backoff_grows_and_is_capped():

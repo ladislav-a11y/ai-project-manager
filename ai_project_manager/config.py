@@ -144,10 +144,9 @@ class Config:
     # always read from and written to the same fixed file regardless of
     # whatever working directory the process happens to be started from.
     provider_state_path: str = "provider_state.json"
-    # How many unattended blocked-task auto-recovery cycles (see
-    # recovery.py) a project may go through before recovery gives up and
-    # forces it to a human-required BLOCKED state - the loop guard that
-    # keeps a persistently-blocked card from being requeued forever.
+    # How many fast unattended blocked-task auto-recovery cycles (see
+    # recovery.py) a project may go through before recognized provider and
+    # transient failures switch to their bounded periodic retry interval.
     recovery_max_attempts: int = 5
     # Optional explicit root containing disposable pytest basetemp siblings.
     # No root means no autonomous cleanup; this avoids guessing a workspace.

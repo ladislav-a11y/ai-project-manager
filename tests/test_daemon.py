@@ -2091,11 +2091,9 @@ def test_run_tick_does_not_rescan_a_blocked_project_before_its_review_at():
     assert reloaded.blocked_by == "connection reset while calling the provider"
 
 
-def test_run_tick_recovery_never_retries_the_same_block_forever():
-    """Regression for the loop guard: a project that keeps re-blocking
-    with the exact same transient signature after every auto-recovery
-    requeue must eventually be forced to a permanent human-required state
-    instead of being requeued forever."""
+def test_run_tick_recovery_retries_the_same_provider_block_at_intervals():
+    """A project that keeps re-blocking is retried at a bounded interval,
+    without requiring a human to manually move it back into processing."""
     clock = FakeClock(datetime(2026, 1, 1, tzinfo=timezone.utc))
     registry = ProviderRegistry(clock=clock)
     registry.mark_available("claude")
@@ -2126,11 +2124,9 @@ def test_run_tick_recovery_never_retries_the_same_block_forever():
     id_to_name, _ = build_list_maps(client)
     final = project_from_card(client.get_card(project.trello_card_id), id_to_name)
     assert final.status == ProjectStatus.BLOCKED
-    # The diagnosis ("exhausted") lives in the human-facing notice, never
-    # rewritten back into blocked_by - which the dispatched run here never
-    # set in the first place (its "blocked" result carries stop_reason, not
-    # blocked_by; see runner._apply_run_result).
-    assert "exhausted" in (final.human_notified_reason or "")
+    assert final.human_notified_reason is None
+    assert final.recovery_attempts == DEFAULT_MAX_ATTEMPTS
+    assert final.review_at is not None
     assert final.blocked_by is None
 
 
