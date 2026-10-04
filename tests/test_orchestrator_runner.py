@@ -1197,6 +1197,65 @@ def test_audit_run_fn_reads_internal_audit_rejection_with_concrete_reason(tmp_pa
     assert result["rejected_indices"] == [0]
 
 
+def test_audit_run_fn_uses_structured_findings_without_duplicate_oversized_note(tmp_path):
+    registry = ProviderRegistry()
+    registry.mark_available("claude")
+    project = ProjectRecord(
+        name="Demo",
+        status=ProjectStatus.TESTING,
+        orchestrator_ready_task="Verify the feature",
+        dod=[DoDItem(text="implemented", checked=True)],
+        checkpoint={"completed_dod_indices": [0]},
+    )
+    audit_evidence = {
+        "0": {
+            "accepted": False,
+            "evidence": "evidence details " * 100,
+            "verification": {
+                "kind": "runtime",
+                "summary": "the public entrypoint did not start",
+                "observed": "the required project venv is missing",
+                "result": "rejected",
+            },
+        }
+    }
+    compact_evidence = json.dumps(audit_evidence, ensure_ascii=False, separators=(",", ":"))
+
+    def fake_subprocess_run(command):
+        write_outbox_result(
+            tmp_path / "outbox",
+            "Demo",
+            {
+                "status": "completed",
+                "audit_evidence": audit_evidence,
+                "iterations": [{
+                    "audit_performed": True,
+                    "audit_rejected_indices": [0],
+                    "audit_protocol_error": False,
+                    "note": "repeated audit note " * 200,
+                    "test_output": "repeated test output " * 200,
+                }],
+            },
+            run_id="audit-run-structured-evidence",
+        )
+        return completed()
+
+    result = build_audit_run_fn(
+        registry,
+        command=["ai-orchestrator"],
+        project_paths={"Demo": str(tmp_path / "demo-checkout")},
+        spec_dir=str(tmp_path / "specs"),
+        outbox_dir=str(tmp_path / "outbox"),
+        subprocess_run=fake_subprocess_run,
+        run_id_fn=lambda: "audit-run-structured-evidence",
+    )(project, "claude")
+
+    assert result["verdict"] == "rejected"
+    assert result["evidence"] == compact_evidence
+    assert result["audit_evidence"] == audit_evidence
+    assert len(result["evidence"]) < 3500
+
+
 def test_audit_run_fn_routes_audit_only_rejection_back_to_testing(tmp_path):
     registry = ProviderRegistry()
     registry.mark_available("claude")

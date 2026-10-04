@@ -2399,13 +2399,22 @@ def build_audit_run_fn(
         if audit_performed and rejected_indices:
             all_rejected = sorted(set(list(rejected_indices) + report.rejected_indices))
             detail = report.rejection_summary or (last_iteration.get("note") if isinstance(last_iteration, dict) else None) or payload.get("stop_reason") or "ai-orchestrator audit rejected the implementation"
-            audit_text = "\n".join(
-                part for part in (
-                    evidence,
-                    last_iteration.get("note") if isinstance(last_iteration, dict) else None,
-                    payload.get("last_output"),
-                ) if part
-            )
+            if isinstance(audit_evidence, dict) and audit_evidence:
+                # Keep the exact structured per-item audit evidence. The
+                # iteration note often repeats the same findings and pytest
+                # output; concatenating both can exceed PM's protected card
+                # receipt limit and discard an otherwise complete rejection.
+                audit_text = json.dumps(
+                    audit_evidence, ensure_ascii=False, separators=(",", ":")
+                )
+            else:
+                audit_text = "\n".join(
+                    part for part in (
+                        evidence,
+                        last_iteration.get("note") if isinstance(last_iteration, dict) else None,
+                        payload.get("last_output"),
+                    ) if part
+                )
             return {
                 "verdict": AUDIT_VERDICT_REJECTED,
                 "audit_run_id": run_id,
